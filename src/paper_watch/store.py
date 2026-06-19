@@ -248,3 +248,88 @@ class Store:
             (entry_id,),
         ).fetchone()
         return int(row["n"])
+
+    # -- digest history ----------------------------------------------------
+    def record_shown(
+        self,
+        *,
+        entry_id: int,
+        digest_at: str,
+        rank: int,
+        score: float,
+        resurfaced: bool,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO shown (entry_id, digest_at, rank, score, resurfaced) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (entry_id, digest_at, rank, score, 1 if resurfaced else 0),
+        )
+        self.conn.commit()
+
+    def was_shown(self, entry_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM shown WHERE entry_id = ? LIMIT 1", (entry_id,)
+        ).fetchone()
+        return row is not None
+
+    def entries_shown_since(self, since: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT DISTINCT e.id, e.title, e.authors_json, e.tags_json
+            FROM shown s JOIN entries e ON e.id = s.entry_id
+            WHERE s.digest_at >= ?
+            ORDER BY e.id
+            """,
+            (since,),
+        ).fetchall()
+
+    # -- feedback ----------------------------------------------------------
+    def record_feedback(
+        self,
+        *,
+        entry_id: int,
+        week: str,
+        picked: bool,
+        group_rating: int | None,
+        notes: str | None,
+        imported_at: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO feedback
+                (entry_id, week, picked, group_rating, notes, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(entry_id, week) DO UPDATE SET
+                picked = excluded.picked,
+                group_rating = excluded.group_rating,
+                notes = excluded.notes,
+                imported_at = excluded.imported_at
+            """,
+            (entry_id, week, 1 if picked else 0, group_rating, notes, imported_at),
+        )
+        self.conn.commit()
+
+    def get_feedback_weight(self, key_type: str, key_value: str) -> float:
+        row = self.conn.execute(
+            "SELECT weight FROM feedback_weights WHERE key_type = ? AND key_value = ?",
+            (key_type, key_value),
+        ).fetchone()
+        return float(row["weight"]) if row else 0.0
+
+    def set_feedback_weight(self, key_type: str, key_value: str, weight: float) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO feedback_weights (key_type, key_value, weight, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(key_type, key_value) DO UPDATE SET
+                weight = excluded.weight, updated_at = excluded.updated_at
+            """,
+            (key_type, key_value, weight),
+        )
+        self.conn.commit()
+
+    def get_feedback_weights(self) -> dict[tuple[str, str], float]:
+        rows = self.conn.execute(
+            "SELECT key_type, key_value, weight FROM feedback_weights"
+        ).fetchall()
+        return {(r["key_type"], r["key_value"]): float(r["weight"]) for r in rows}

@@ -89,17 +89,63 @@ def sources(config_path: str) -> None:
 
 @cli.group()
 def feedback() -> None:
-    """Export/import reading-group feedback. (Wired in M9.)"""
+    """Export/import reading-group feedback."""
 
 
 @feedback.command("export")
-def feedback_export() -> None:
-    raise click.ClickException("feedback export: not implemented yet (M9)")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option("--since", default="7d", show_default=True, help="Lookback window, e.g. 7d.")
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default="candidates.csv",
+    show_default=True,
+)
+def feedback_export(config_path: str, since: str, out: Path) -> None:
+    """Write recently-shown papers to a CSV to fill in picks + 1-5 ratings."""
+    from paper_watch.config import Config
+    from paper_watch.dates import since_to_iso
+    from paper_watch.feedback import export_candidates
+    from paper_watch.store import Store
+
+    cfg = Config.load(config_path)
+    store = Store(cfg.db_path)
+    try:
+        n = export_candidates(store, since=since_to_iso(since), path=out)
+    finally:
+        store.close()
+    click.echo(f"Wrote {n} candidate(s) to {out}")
 
 
 @feedback.command("import")
-def feedback_import() -> None:
-    raise click.ClickException("feedback import: not implemented yet (M9)")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--file",
+    "in_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default="candidates.csv",
+    show_default=True,
+)
+@click.option("--week", default=None, help="Week label (default: current ISO week).")
+def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
+    """Import a filled candidates CSV and update feedback weights."""
+    from datetime import date
+
+    from paper_watch.config import Config
+    from paper_watch.feedback import import_feedback
+    from paper_watch.store import Store
+
+    if week is None:
+        iso = date.today().isocalendar()
+        week = f"{iso.year}-W{iso.week:02d}"
+
+    cfg = Config.load(config_path)
+    store = Store(cfg.db_path)
+    try:
+        n = import_feedback(store, path=in_file, week=week)
+    finally:
+        store.close()
+    click.echo(f"Imported {n} feedback row(s) for {week}")
 
 
 @cli.command("seed-handles")
