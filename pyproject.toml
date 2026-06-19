@@ -10,6 +10,7 @@ dependencies = [
     "click>=8.1",
     "httpx>=0.28.1",
     "feedparser>=6.0.12",
+    "anthropic>=0.111.0",
 ]
 
 [project.scripts]

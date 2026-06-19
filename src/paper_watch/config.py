@@ -34,7 +34,8 @@ class SmtpConfig(BaseModel):
 
 class LlmConfig(BaseModel):
     # Cheap tier is plenty for TL;DR / tagging / relevance gating.
-    model: str = "claude-haiku-4-5-20251001"
+    # Bump to claude-opus-4-8 in config for higher-quality enrichment.
+    model: str = "claude-haiku-4-5"
     max_enrich_per_run: int = 50
 
 

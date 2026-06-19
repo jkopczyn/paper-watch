@@ -43,7 +43,7 @@ smtp:
   to_addr: ""
 
 llm:
-  model: claude-haiku-4-5-20251001
+  model: claude-haiku-4-5   # or claude-opus-4-8 for higher-quality enrichment
   max_enrich_per_run: 50
 """
 

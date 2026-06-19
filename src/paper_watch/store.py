@@ -215,6 +215,33 @@ class Store:
             "SELECT * FROM mentions WHERE entry_id = ? ORDER BY id", (entry_id,)
         ).fetchall()
 
+    # -- enrichment --------------------------------------------------------
+    def get_unenriched(self, limit: int) -> list[sqlite3.Row]:
+        """Entries that have not been LLM-enriched yet (tldr IS NULL)."""
+        return self.conn.execute(
+            "SELECT * FROM entries WHERE tldr IS NULL ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def set_enrichment(
+        self,
+        entry_id: int,
+        *,
+        tldr: str,
+        why: str,
+        tags: list[str],
+        safety_relevant: bool,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE entries
+            SET tldr = ?, why = ?, tags_json = ?, safety_relevant = ?
+            WHERE id = ?
+            """,
+            (tldr, why, json.dumps(tags), 1 if safety_relevant else 0, entry_id),
+        )
+        self.conn.commit()
+
     def count_distinct_sources(self, entry_id: int) -> int:
         row = self.conn.execute(
             "SELECT COUNT(DISTINCT source) AS n FROM mentions WHERE entry_id = ?",
