@@ -103,9 +103,36 @@ def feedback_import() -> None:
 
 
 @cli.command("seed-handles")
-def seed_handles() -> None:
-    """Seed Twitter handles from the AGI Safety Core list. (Wired in M5.)"""
-    raise click.ClickException("seed-handles: not implemented yet (M5)")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--from-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Newline-separated handles (e.g. extracted from the AGI Safety Core list).",
+)
+@click.option("--handle", "handles", multiple=True, help="Add a single handle (repeatable).")
+def seed_handles(config_path: str, from_file: Path | None, handles: tuple[str, ...]) -> None:
+    """Merge Twitter handles into the config.
+
+    The AGI Safety Core list members page needs an authenticated session, so
+    extract handles with the web-browser skill into a file, then:
+    `paper-watch seed-handles --from-file handles.txt`
+    """
+    from paper_watch.handles import merge_handles
+
+    collected = list(handles)
+    if from_file is not None:
+        collected += [
+            line.strip() for line in from_file.read_text().splitlines() if line.strip()
+        ]
+    if not collected:
+        raise click.ClickException("provide --from-file and/or --handle")
+
+    added = merge_handles(config_path, collected)
+    if added:
+        click.echo(f"Added {len(added)} handle(s): {', '.join(added)}")
+    else:
+        click.echo("No new handles (all already present).")
 
 
 if __name__ == "__main__":
