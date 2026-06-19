@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>ML Safety Newsletter</title>
+    <link>https://newsletter.mlsafety.org</link>
+    <item>
+      <title>SAEs find interpretable features</title>
+      <link>https://newsletter.mlsafety.org/p/issue-42</link>
+      <description>This week: a great paper &lt;a href="https://arxiv.org/abs/2406.05678"&gt;on SAEs&lt;/a&gt; worth reading.</description>
+      <pubDate>Wed, 18 Jun 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Older issue</title>
+      <link>https://newsletter.mlsafety.org/p/issue-41</link>
+      <description>Last week's roundup, nothing new.</description>
+      <pubDate>Wed, 04 Jun 2026 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
