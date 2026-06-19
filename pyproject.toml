@@ -8,6 +8,8 @@ dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "click>=8.1",
+    "httpx>=0.28.1",
+    "feedparser>=6.0.12",
 ]
 
 [project.scripts]
