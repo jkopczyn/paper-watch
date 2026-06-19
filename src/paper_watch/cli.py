@@ -76,15 +76,32 @@ def init(path: Path, force: bool) -> None:
 @click.option("--dry-run", is_flag=True, help="Render the digest but don't send.")
 @click.option("--since", default=None, help="Override lookback window, e.g. 7d.")
 def run(config_path: str, dry_run: bool, since: str | None) -> None:
-    """Fetch, score, and send the digest. (Wired in M10.)"""
-    raise click.ClickException("run: not implemented yet (M10)")
+    """Fetch, score, and send (or render) the digest."""
+    from paper_watch import runtime
+
+    result = runtime.run(config_path, dry_run=dry_run, since=since)
+    click.echo(
+        f"Ingested {result.new_count} new, enriched {result.enriched_count}, "
+        f"selected {len(result.chosen_ids)} for the digest."
+    )
+    if result.digest_path is not None:
+        click.echo(f"Dry run: wrote {result.digest_path}")
+    elif result.sent:
+        click.echo("Digest sent.")
+    else:
+        click.echo("Nothing to send.")
 
 
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
 def sources(config_path: str) -> None:
-    """List configured sources. (Wired in M3-M5.)"""
-    raise click.ClickException("sources: not implemented yet")
+    """List configured sources."""
+    from paper_watch.config import Config
+
+    cfg = Config.load(config_path)
+    click.echo(f"arXiv authors: {len(cfg.authors)}")
+    click.echo(f"RSS feeds:     {len(cfg.feeds)}")
+    click.echo(f"Twitter handles: {len(cfg.handles)} (via {len(cfg.nitter_instances)} nitter instance(s))")
 
 
 @cli.group()

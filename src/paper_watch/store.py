@@ -333,3 +333,40 @@ class Store:
             "SELECT key_type, key_value, weight FROM feedback_weights"
         ).fetchall()
         return {(r["key_type"], r["key_value"]): float(r["weight"]) for r in rows}
+
+    # -- metrics / windows (for velocity & candidacy) ----------------------
+    def record_metrics(self, entry_id: int, citation_count: int, measured_at: str) -> None:
+        prev = self.conn.execute(
+            "SELECT citation_count FROM metrics WHERE entry_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (entry_id,),
+        ).fetchone()
+        prev_count = prev["citation_count"] if prev else None
+        self.conn.execute(
+            "INSERT INTO metrics (entry_id, citation_count, citation_count_prev, measured_at) "
+            "VALUES (?, ?, ?, ?)",
+            (entry_id, citation_count, prev_count, measured_at),
+        )
+        self.conn.commit()
+
+    def latest_metrics(self, entry_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT citation_count, citation_count_prev FROM metrics "
+            "WHERE entry_id = ? ORDER BY id DESC LIMIT 1",
+            (entry_id,),
+        ).fetchone()
+
+    def count_mentions_since(self, entry_id: int, since: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM mentions WHERE entry_id = ? AND fetched_at >= ?",
+            (entry_id, since),
+        ).fetchone()
+        return int(row["n"])
+
+    def active_entry_ids_since(self, since: str) -> list[int]:
+        """Entries with at least one mention fetched at/after `since`."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT entry_id FROM mentions WHERE fetched_at >= ? ORDER BY entry_id",
+            (since,),
+        ).fetchall()
+        return [int(r["entry_id"]) for r in rows]
