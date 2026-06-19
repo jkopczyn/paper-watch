@@ -64,3 +64,29 @@ def test_insert_and_fetch_entry(tmp_path: Path):
     assert row["arxiv_id"] == "2406.00001"
     assert store.get_entry_by_arxiv_id("2406.00001")["id"] == entry_id
     store.close()
+
+
+def test_add_mention_is_idempotent_and_counts_sources(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="T", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    url = "https://arxiv.org/abs/2406.00001"
+    first = store.add_mention(
+        entry_id=eid, source="arxiv", source_item_url=url, fetched_at="2026-06-19T00:00:00Z"
+    )
+    dup = store.add_mention(
+        entry_id=eid, source="arxiv", source_item_url=url, fetched_at="2026-06-19T01:00:00Z"
+    )
+    assert first is not None
+    assert dup is None  # ignored duplicate
+
+    store.add_mention(
+        entry_id=eid,
+        source="rss:Blog",
+        source_item_url="https://blog/p",
+        fetched_at="2026-06-19T00:00:00Z",
+    )
+    assert store.count_distinct_sources(eid) == 2
+    assert len(store.get_mentions(eid)) == 2
+    store.close()

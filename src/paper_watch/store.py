@@ -182,3 +182,42 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM entries WHERE title_norm = ?", (title_norm,)
         ).fetchone()
+
+    # -- mentions ----------------------------------------------------------
+    def add_mention(
+        self,
+        *,
+        entry_id: int,
+        source: str,
+        fetched_at: str,
+        source_item_url: str | None = None,
+        mention_text: str | None = None,
+        published_at: str | None = None,
+    ) -> int | None:
+        """Record one source appearance. Idempotent on (entry, source, url).
+
+        Returns the new row id, or None if this mention already existed.
+        """
+        cur = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO mentions
+                (entry_id, source, source_item_url, mention_text,
+                 published_at, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (entry_id, source, source_item_url, mention_text, published_at, fetched_at),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid) if cur.rowcount else None
+
+    def get_mentions(self, entry_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM mentions WHERE entry_id = ? ORDER BY id", (entry_id,)
+        ).fetchall()
+
+    def count_distinct_sources(self, entry_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT source) AS n FROM mentions WHERE entry_id = ?",
+            (entry_id,),
+        ).fetchone()
+        return int(row["n"])
