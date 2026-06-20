@@ -15,5 +15,5 @@ build/
 # Local output
 out/
 
-# Local Nitter session tokens (X account secrets)
 deploy/nitter/sessions.jsonl
+.worktrees/
