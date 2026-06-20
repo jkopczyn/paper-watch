@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 import requests
 import json
+import os
 import sys
+import getpass
 import pyotp
 import cloudscraper
 
-# NOTE: pyotp, requests and cloudscraper are dependencies
-# > pip install pyotp requests cloudscraper
+# NOTE: pyotp, requests and cloudscraper are dependencies; install pinned via
+# `uv run --with-requirements requirements-session.txt` (see gen-session.sh).
+#
+# Secrets are NOT taken from argv (which leaks via /proc/<pid>/cmdline). The
+# password and 2FA secret come from env vars TW_PASSWORD / TW_2FA_SECRET, or are
+# prompted for interactively (hidden). Only the non-secret username and output
+# path are positional args.
 
 TW_CONSUMER_KEY = '3nVuSoBZnx6U4vzUxf5w'
 TW_CONSUMER_SECRET = 'Bcs59EFbbsdF6Sl9Ng71smgStWEGwXXKSjYvPVt7qys'
@@ -137,14 +144,19 @@ def auth(username, password, otp_secret):
     return None
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        print("Usage: python3 get_session.py <username> <password> <2fa secret> <path>")
+    if len(sys.argv) != 3:
+        print("Usage: python3 get_session.py <username> <path>")
+        print("Set TW_PASSWORD / TW_2FA_SECRET env vars, or you'll be prompted.")
         sys.exit(1)
 
     username = sys.argv[1]
-    password = sys.argv[2]
-    otp_secret = sys.argv[3]
-    path = sys.argv[4]
+    path = sys.argv[2]
+
+    # Read secrets from env (set by gen-session.sh) or prompt; never from argv.
+    password = os.environ.get("TW_PASSWORD") or getpass.getpass("Password: ")
+    otp_secret = os.environ.get("TW_2FA_SECRET")
+    if otp_secret is None:
+        otp_secret = getpass.getpass("2FA secret (blank if none): ")
 
     result = auth(username, password, otp_secret)
     if result is None:
@@ -157,8 +169,11 @@ if __name__ == "__main__":
     }
 
     try:
-        with open(path, "a") as f:
+        # Create with 0o600 so the token file is never group/world-readable.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(json.dumps(session_entry) + "\n")
+        os.chmod(path, 0o600)  # tighten even if the file pre-existed
         print("Authentication successful. Session appended to", path)
     except Exception as e:
         print(f"Failed to write session information: {e}")

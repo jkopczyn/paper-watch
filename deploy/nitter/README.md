@@ -22,12 +22,18 @@ accounts and let Nitter rotate across all of them.
 
 ```bash
 cd deploy/nitter
- ./gen-session.sh <username> <password> <2fa_secret>   # leading space keeps it out of history
+./gen-session.sh <username>
 ```
 
-Pass `''` for `<2fa_secret>` if the account has no TOTP 2FA. Repeat for each account;
-each run appends a line to `sessions.jsonl`. More accounts = higher effective rate
-limit and resilience when one gets flagged.
+It prompts (hidden) for the password and 2FA secret and passes them via env vars,
+not argv, so they never show up in `ps`/`/proc`. Leave the 2FA prompt blank if the
+account has no TOTP 2FA. Repeat for each account; each run appends a line to
+`sessions.jsonl` (created `0600`). More accounts = higher effective rate limit and
+resilience when one gets flagged.
+
+Dependencies are pinned and hash-locked in `requirements-session.txt` (they handle
+credentials, so they shouldn't float); regenerate it with
+`uv pip compile requirements-session.in --generate-hashes -o requirements-session.txt`.
 
 If `get_session.py` fails X's bot checks, use the browser-based generator from upstream
 instead (`tools/create_session_browser.py`, needs `nodriver`).
