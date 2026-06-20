@@ -25,7 +25,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 2
-    user: "998:998"
+    # Run as the host user that owns sessions.jsonl (mode 0600), so the container
+    # can read it without making the secret world-readable. Override if your uid
+    # differs: NITTER_UID=$(id -u) NITTER_GID=$(id -g) docker compose up -d
+    user: "${NITTER_UID:-1000}:${NITTER_GID:-1000}"
     read_only: true
     security_opt:
       - no-new-privileges:true

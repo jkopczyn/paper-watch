@@ -45,6 +45,11 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml logs -f nitter   # watch for auth errors
 ```
 
+`sessions.jsonl` is mode `0600` (readable only by its owner), so the container must
+run as that user. The compose file defaults to uid/gid `1000`; if your `id -u` differs,
+start it with `NITTER_UID=$(id -u) NITTER_GID=$(id -g) docker compose up -d` (otherwise
+Nitter crash-loops on `cannot open: ./sessions.jsonl`).
+
 A healthy start serves RSS:
 
 ```bash
