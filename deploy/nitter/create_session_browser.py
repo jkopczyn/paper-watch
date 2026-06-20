@@ -36,12 +36,25 @@ async def login_and_get_cookies(username, password, totp_seed=None, headless=Fal
     # headless mode increases bot-detection risk; visible is the default.
     browser = await uc.start(headless=headless)
     tab = await browser.get("https://x.com/i/flow/login")
+    # The login SPA is slow to hydrate on first paint; give it a moment so the
+    # first selector lookup doesn't race the render.
+    await tab.sleep(2)
 
     try:
         print(f"[*] Entering username {username}...", file=sys.stderr)
         retry = 0
         while retry < 5:
-            username_input = await tab.find('input[autocomplete="username"]', timeout=10)
+            # NB: tab.select() is CSS + waits for the element; tab.find() is a
+            # text search and would never match a CSS selector. Both return None
+            # (not raise) on timeout, so guard explicitly.
+            username_input = await tab.select(
+                'input[autocomplete="username"]', timeout=30
+            )
+            if username_input is None:
+                raise Exception(
+                    "username field not found; the login page may not have loaded "
+                    "or X changed its markup."
+                )
             pos = await username_input.get_position()
             await tab.mouse_move(pos.x, pos.y, steps=50, flash=True)
             await asyncio.sleep(0.1)
@@ -63,9 +76,14 @@ async def login_and_get_cookies(username, password, totp_seed=None, headless=Fal
         print("[*] Entering password...", file=sys.stderr)
         pretry = 0
         while pretry < 5:
-            password_input = await tab.find(
+            password_input = await tab.select(
                 'input[autocomplete="current-password"]', timeout=15
             )
+            if password_input is None:
+                raise Exception(
+                    "password field not found after the username step; X may have "
+                    "shown an unexpected challenge."
+                )
             await password_input.click()
             await asyncio.sleep(0.5)
             await password_input.send_keys(password)
@@ -91,7 +109,9 @@ async def login_and_get_cookies(username, password, totp_seed=None, headless=Fal
                 )
             print("[*] 2FA detected, entering TOTP code...", file=sys.stderr)
             totp_code = pyotp.TOTP(totp_seed).now()
-            code_input = await tab.select('input[type="text"]')
+            code_input = await tab.select('input[type="text"]', timeout=15)
+            if code_input is None:
+                raise Exception("2FA code field not found.")
             await code_input.send_keys(totp_code + "\n")
             await asyncio.sleep(3)
 
