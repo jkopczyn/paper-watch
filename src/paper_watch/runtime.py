@@ -463,7 +463,14 @@ def build_sources(config: Config, fetch=None, *, nitter_instances: list[str] | N
     if config.feeds:
         sources.append(RssSource(config.feeds, fetch=fetch))
     if config.handles:
-        sources.append(NitterSource(config.handles, instances, fetch=fetch))
+        sources.append(
+            NitterSource(
+                config.handles,
+                instances,
+                fetch=fetch,
+                min_interval=config.nitter_min_interval,
+            )
+        )
     if config.slack and config.slack.workspaces:
         from paper_watch.sources.slack import SlackSource
 

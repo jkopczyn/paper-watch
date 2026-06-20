@@ -87,6 +87,7 @@ handles: []
 nitter_instances:
   - https://nitter.net
   - https://nitter.poast.org
+nitter_min_interval: 2.0          # seconds between Nitter requests; raise if you see 429s
 
 # Slack #papers channels (MATS, FAR) and the alignment-Slack channel where
 # Aaron Scher collects papers. Each workspace needs a user token (xoxp-…) with

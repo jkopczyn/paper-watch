@@ -109,6 +109,10 @@ class Config(BaseModel):
     nitter_instances: list[str] = Field(
         default_factory=lambda: ["https://nitter.net"]
     )
+    # Seconds to wait between Nitter requests. Nitter scrapes Twitter's
+    # heavily rate-limited guest API, so a self-hosted instance often needs a
+    # generous pause; raise this if you still see 429s.
+    nitter_min_interval: float = 2.0
     slack: SlackConfig | None = None
     # Local run times the cron installer reads; "configurable" per design.
     schedule: list[str] = Field(default_factory=lambda: ["08:00", "16:00"])
