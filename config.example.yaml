@@ -86,6 +86,7 @@ handles: []
 nitter_instances:
   - https://nitter.net
   - https://nitter.poast.org
+nitter_min_interval: 2.0          # seconds between Nitter requests; raise if you see 429s
 
 scoring:
   overlap: 1.0

@@ -10,7 +10,8 @@ ID or DOI is recoverable) - a cheap, source-specific relevance filter.
 from __future__ import annotations
 
 import logging
-from typing import Iterator
+import time
+from typing import Callable, Iterator
 
 import feedparser
 
@@ -61,13 +62,19 @@ class NitterSource:
         handles: list[str],
         instances: list[str],
         fetch: Fetcher = get_text,
+        min_interval: float = 2.0,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self.handles = handles
         self.instances = instances
         self._fetch = fetch
+        self.min_interval = min_interval
+        self._sleep = sleep
 
     def fetch(self, since: str | None = None) -> Iterator[RawItem]:
-        for handle in self.handles:
+        for i, handle in enumerate(self.handles):
+            if i > 0:
+                self._sleep(self.min_interval)  # pace requests; Nitter rate-limits
             xml = self._fetch_with_fallback(handle)
             if xml is None:
                 continue

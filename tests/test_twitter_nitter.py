@@ -57,6 +57,20 @@ def test_source_skips_handle_when_all_instances_fail():
     assert list(src.fetch()) == []
 
 
+def test_source_sleeps_between_handles(fixture_text):
+    slept = []
+    src = NitterSource(
+        handles=["A", "B", "C"],
+        instances=["https://nitter.net"],
+        fetch=lambda url: fixture_text("nitter_feed.xml"),
+        min_interval=1.5,
+        sleep=slept.append,
+    )
+    list(src.fetch())
+    # 3 handles => exactly two inter-handle pauses
+    assert slept == [1.5, 1.5]
+
+
 def test_source_filters_by_since(fixture_text):
     src = NitterSource(
         handles=["NeelNanda5"],

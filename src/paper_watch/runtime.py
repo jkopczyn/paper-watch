@@ -208,7 +208,14 @@ def build_sources(config: Config, fetch=None):
     if config.feeds:
         sources.append(RssSource(config.feeds, fetch=fetch))
     if config.handles:
-        sources.append(NitterSource(config.handles, config.nitter_instances, fetch=fetch))
+        sources.append(
+            NitterSource(
+                config.handles,
+                config.nitter_instances,
+                fetch=fetch,
+                min_interval=config.nitter_min_interval,
+            )
+        )
     return sources
 
 
