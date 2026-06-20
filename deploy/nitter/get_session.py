@@ -14,29 +14,111 @@ import cloudscraper
 # password and 2FA secret come from env vars TW_PASSWORD / TW_2FA_SECRET, or are
 # prompted for interactively (hidden). Only the non-secret username and output
 # path are positional args.
+#
+# Set TW_DEBUG=1 to dump every HTTP status + body to stderr.
 
 TW_CONSUMER_KEY = '3nVuSoBZnx6U4vzUxf5w'
 TW_CONSUMER_SECRET = 'Bcs59EFbbsdF6Sl9Ng71smgStWEGwXXKSjYvPVt7qys'
 
+DEBUG = bool(os.environ.get("TW_DEBUG"))
+
+# Known login subtasks X returns when the simple user/pass flow can't complete.
+SUBTASK_HELP = {
+    "LoginAcid":
+        "X wants an extra verification code (email or phone) for this new-device "
+        "login. This automated flow can't enter it -- use the browser-based "
+        "generator (create_session_browser.py) instead.",
+    "LoginTwoFactorAuthChallenge":
+        "The account has 2FA enabled but no/!invalid TOTP secret was provided. "
+        "Pass the account's base32 2FA SECRET (not the 6-digit code) at the "
+        "'2FA secret' prompt.",
+    "DenyLoginSubtask":
+        "X denied the login (flagged this request as automated). Try the "
+        "browser-based generator, or a different account/IP.",
+    "ArkoseLogin":
+        "X is demanding a FunCaptcha/Arkose challenge. The scripted flow can't "
+        "solve it -- use the browser-based generator (create_session_browser.py).",
+    "LoginEnterAlternateIdentifierSubtask":
+        "X is asking for an alternate identifier (phone/email) because the "
+        "username alone wasn't accepted. Try logging in with the full email or "
+        "phone as <username>.",
+}
+
+
+def _err(msg):
+    print(f"  ! {msg}", file=sys.stderr)
+
+
+def _debug(label, resp):
+    if DEBUG:
+        print(f"[debug] {label}: HTTP {resp.status_code}\n{resp.text}\n",
+              file=sys.stderr)
+
+
+def _parse(resp, label):
+    """Return parsed JSON, or None after printing a diagnostic."""
+    _debug(label, resp)
+    try:
+        data = resp.json()
+    except Exception:
+        _err(f"{label}: HTTP {resp.status_code}, non-JSON response:")
+        _err(resp.text[:500] or "(empty body)")
+        return None
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if errors:
+        for e in errors:
+            _err(f"{label}: X error {e.get('code')}: {e.get('message')}")
+        return None
+    if resp.status_code >= 400:
+        _err(f"{label}: HTTP {resp.status_code}: {resp.text[:300]}")
+        return None
+    return data
+
+
+def _flow_token(data, label):
+    token = data.get("flow_token") if isinstance(data, dict) else None
+    if not token:
+        _err(f"{label}: no flow_token in response (login flow broke here).")
+        if isinstance(data, dict):
+            ids = [s.get("subtask_id") for s in data.get("subtasks", [])]
+            if ids:
+                _err(f"{label}: subtasks returned: {ids}")
+    return token
+
+
+def _report_unhandled(subtasks):
+    ids = [s.get("subtask_id") for s in subtasks]
+    _err(f"login returned no account credentials. Subtasks: {ids or '(none)'}")
+    for sid in ids:
+        if sid in SUBTASK_HELP:
+            _err(f"-> {sid}: {SUBTASK_HELP[sid]}")
+
+
 def auth(username, password, otp_secret):
-    bearer_token_req = requests.post("https://api.twitter.com/oauth2/token",
+    bearer_resp = requests.post(
+        "https://api.twitter.com/oauth2/token",
         auth=(TW_CONSUMER_KEY, TW_CONSUMER_SECRET),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data='grant_type=client_credentials'
-    ).json()
-    bearer_token = ' '.join(str(x) for x in bearer_token_req.values())
+        data='grant_type=client_credentials',
+    )
+    bearer_data = _parse(bearer_resp, "bearer token")
+    if not bearer_data or "access_token" not in bearer_data:
+        _err("could not obtain a bearer token (the legacy app key may be blocked).")
+        return None
+    bearer_token = f"{bearer_data['token_type']} {bearer_data['access_token']}"
 
-    guest_token = requests.post(
+    guest_resp = requests.post(
         "https://api.twitter.com/1.1/guest/activate.json",
         headers={
             'Authorization': bearer_token,
-             "User-Agent": "TwitterAndroid/10.21.0-release.0 (310210000-r-0) ONEPLUS+A3010/9"
-        }
-    ).json().get('guest_token')
-
+            "User-Agent": "TwitterAndroid/10.21.0-release.0 (310210000-r-0) ONEPLUS+A3010/9",
+        },
+    )
+    guest_data = _parse(guest_resp, "guest token")
+    guest_token = guest_data.get("guest_token") if guest_data else None
     if not guest_token:
-        print("Failed to obtain guest token.")
-        sys.exit(1)
+        _err("could not obtain a guest token; cannot start the login flow.")
+        return None
 
     twitter_header = {
         'Authorization': bearer_token,
@@ -49,7 +131,7 @@ def auth(username, password, otp_secret):
         "System-User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ONEPLUS A3010 Build/PKQ1.181203.001)",
         "X-Twitter-Active-User": "yes",
         "X-Guest-Token": guest_token,
-        "X-Twitter-Client-DeviceID": ""
+        "X-Twitter-Client-DeviceID": "",
     }
 
     scraper = cloudscraper.create_scraper()
@@ -61,7 +143,7 @@ def auth(username, password, otp_secret):
             'flow_name': 'login',
             'api_version': '1',
             'known_device_token': '',
-            'sim_country_code': 'us'
+            'sim_country_code': 'us',
         },
         json={
             "flow_token": None,
@@ -70,83 +152,106 @@ def auth(username, password, otp_secret):
                 "flow_context": {
                     "referrer_context": {
                         "referral_details": "utm_source=google-play&utm_medium=organic",
-                        "referrer_url": ""
+                        "referrer_url": "",
                     },
-                    "start_location": {
-                        "location": "deeplink"
-                    }
+                    "start_location": {"location": "deeplink"},
                 },
                 "requested_variant": None,
-                "target_user_id": 0
-            }
-        }
+                "target_user_id": 0,
+            },
+        },
     )
+    data1 = _parse(task1, "flow init")
+    if not data1 or not _flow_token(data1, "flow init"):
+        return None
 
     scraper.headers['att'] = task1.headers.get('att')
 
     task2 = scraper.post(
         'https://api.twitter.com/1.1/onboarding/task.json',
         json={
-            "flow_token": task1.json().get('flow_token'),
+            "flow_token": data1.get('flow_token'),
             "subtask_inputs": [{
                 "enter_text": {
                     "suggestion_id": None,
                     "text": username,
-                    "link": "next_link"
+                    "link": "next_link",
                 },
-                "subtask_id": "LoginEnterUserIdentifier"
-            }]
-        }
+                "subtask_id": "LoginEnterUserIdentifier",
+            }],
+        },
     )
+    data2 = _parse(task2, "username step")
+    if not data2 or not _flow_token(data2, "username step"):
+        _err("the username/identifier was rejected. Double-check it, or try the "
+             "account's email or phone instead.")
+        return None
 
     task3 = scraper.post(
         'https://api.twitter.com/1.1/onboarding/task.json',
         json={
-            "flow_token": task2.json().get('flow_token'),
+            "flow_token": data2.get('flow_token'),
             "subtask_inputs": [{
                 "enter_password": {
                     "password": password,
-                    "link": "next_link"
+                    "link": "next_link",
                 },
-                "subtask_id": "LoginEnterPassword"
+                "subtask_id": "LoginEnterPassword",
             }],
-        }
+        },
     )
+    data3 = _parse(task3, "password step")
+    if not data3:
+        _err("the password step failed (often a wrong password or a flagged login).")
+        return None
 
-    for t3_subtask in task3.json().get('subtasks', []):
+    subtasks = data3.get('subtasks', [])
+    for t3_subtask in subtasks:
         if "open_account" in t3_subtask:
             return t3_subtask["open_account"]
-        elif "enter_text" in t3_subtask:
-            response_text = t3_subtask["enter_text"]["hint_text"]
-            totp = pyotp.TOTP(otp_secret)
-            generated_code = totp.now()
-            task4resp = scraper.post(
+        elif t3_subtask.get("subtask_id") == "LoginTwoFactorAuthChallenge":
+            if not otp_secret:
+                _err(SUBTASK_HELP["LoginTwoFactorAuthChallenge"])
+                return None
+            try:
+                generated_code = pyotp.TOTP(otp_secret).now()
+            except Exception as exc:
+                _err(f"could not generate a TOTP code from the 2FA secret: {exc}")
+                _err("Make sure you pasted the base32 SECRET, not a 6-digit code.")
+                return None
+            task4 = scraper.post(
                 "https://api.twitter.com/1.1/onboarding/task.json",
                 json={
-                    "flow_token": task3.json().get("flow_token"),
-                    "subtask_inputs": [
-                        {
-                            "enter_text": {
-                                "suggestion_id": None,
-                                "text": generated_code,
-                                "link": "next_link",
-                            },
-                            "subtask_id": "LoginTwoFactorAuthChallenge",
-                        }
-                    ],
-                }
+                    "flow_token": data3.get("flow_token"),
+                    "subtask_inputs": [{
+                        "enter_text": {
+                            "suggestion_id": None,
+                            "text": generated_code,
+                            "link": "next_link",
+                        },
+                        "subtask_id": "LoginTwoFactorAuthChallenge",
+                    }],
+                },
             )
-            task4 = task4resp.json()
-            for t4_subtask in task4.get("subtasks", []):
+            data4 = _parse(task4, "2FA step")
+            if not data4:
+                _err("the 2FA code was rejected (clock skew or wrong secret?).")
+                return None
+            for t4_subtask in data4.get("subtasks", []):
                 if "open_account" in t4_subtask:
                     return t4_subtask["open_account"]
+            _report_unhandled(data4.get("subtasks", []))
+            return None
 
+    _report_unhandled(subtasks)
     return None
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python3 get_session.py <username> <path>")
         print("Set TW_PASSWORD / TW_2FA_SECRET env vars, or you'll be prompted.")
+        print("Set TW_DEBUG=1 for full HTTP traces.")
         sys.exit(1)
 
     username = sys.argv[1]
@@ -160,12 +265,22 @@ if __name__ == "__main__":
 
     result = auth(username, password, otp_secret)
     if result is None:
-        print("Authentication failed.")
+        print("\nAuthentication failed -- see the diagnostics above.", file=sys.stderr)
+        print("If the cause is a captcha/extra-verification/denied-login subtask, "
+              "this scripted flow can't proceed; use upstream's browser-based "
+              "generator: tools/create_session_browser.py (needs `nodriver`).",
+              file=sys.stderr)
+        print("Re-run with TW_DEBUG=1 for full HTTP traces.", file=sys.stderr)
+        sys.exit(1)
+
+    if not result.get("oauth_token") or not result.get("oauth_token_secret"):
+        print(f"Login succeeded but no oauth tokens were returned: {result}",
+              file=sys.stderr)
         sys.exit(1)
 
     session_entry = {
         "oauth_token": result.get("oauth_token"),
-        "oauth_token_secret": result.get("oauth_token_secret")
+        "oauth_token_secret": result.get("oauth_token_secret"),
     }
 
     try:
