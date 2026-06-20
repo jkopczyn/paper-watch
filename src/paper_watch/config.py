@@ -50,6 +50,10 @@ class Config(BaseModel):
     # Local run times the cron installer reads; "configurable" per design.
     schedule: list[str] = Field(default_factory=lambda: ["08:00", "16:00"])
     top_n: int = 15
+    # How far back to fetch papers when `--since` isn't given. Wider than one
+    # cron interval so nothing slips through the gaps; already-shown papers are
+    # deduped downstream, so a generous window is cheap.
+    lookback: str = "7d"
     resurface_window_days: int = 21
     scoring: ScoringWeights = Field(default_factory=ScoringWeights)
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)

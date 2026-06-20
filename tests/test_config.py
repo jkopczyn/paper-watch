@@ -19,6 +19,8 @@ def test_load_empty_config_uses_defaults(tmp_path: Path):
     assert cfg.smtp.port == 587
     # resurface window is in the 14-28 day band per design
     assert 14 <= cfg.resurface_window_days <= 28
+    # default ingest lookback is wider than a single cron interval
+    assert cfg.lookback == "7d"
 
 
 def test_load_populated_config(tmp_path: Path):
@@ -34,6 +36,7 @@ feeds:
 handles:
   - NeelNanda5
 top_n: 20
+lookback: 14d
 resurface_window_days: 21
 scoring:
   overlap: 2.0
@@ -53,6 +56,7 @@ llm:
     assert cfg.feeds[0].url == "https://newsletter.mlsafety.org/feed"
     assert cfg.handles == ["NeelNanda5"]
     assert cfg.top_n == 20
+    assert cfg.lookback == "14d"
     assert cfg.scoring.overlap == 2.0
     assert cfg.scoring.velocity == 1.5
     # unspecified weight keeps its default

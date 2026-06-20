@@ -4,6 +4,7 @@
 
 db_path: paper_watch.db
 top_n: 15
+lookback: 7d                     # how far back to fetch when --since isn't given
 resurface_window_days: 21        # bring a paper back if attention surges within this window
 
 schedule:                        # local run times the cron installer reads

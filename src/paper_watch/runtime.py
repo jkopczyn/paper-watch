@@ -257,7 +257,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
     store = Store(config.db_path)
     try:
         now = datetime.now(timezone.utc)
-        since_iso = since_to_iso(since or "2d", now=now)
+        since_iso = since_to_iso(since or config.lookback, now=now)
         sources = build_sources(config)
         enricher = _build_enricher(config)
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))

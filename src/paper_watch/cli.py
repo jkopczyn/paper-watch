@@ -16,6 +16,7 @@ EXAMPLE_CONFIG = """\
 # paper-watch configuration. Secrets go in .env, not here.
 db_path: paper_watch.db
 top_n: 15
+lookback: 7d
 resurface_window_days: 21
 
 schedule:        # local run times the cron installer reads
