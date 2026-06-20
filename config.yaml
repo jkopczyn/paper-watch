@@ -107,6 +107,7 @@ handles:
 - tshevl
 - vaelgates
 nitter_instances:
+- http://localhost:8080
 - https://nitter.net
 - https://nitter.poast.org
 scoring:
