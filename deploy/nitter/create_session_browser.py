@@ -31,107 +31,178 @@ import pyotp
 from add_cookie_session import parse_user_id
 
 
+# Click a *visible* button/link whose trimmed text matches one of `txts`.
+# Done in JS, not nodriver's tab.find(): tab.find() searches ALL text nodes
+# including <script> contents, and X's page embeds the word "Next" in its
+# __INITIAL_STATE__ script -- so tab.find("Next") clicks a <script> (a no-op),
+# which is what made the login hang after the username step. offsetParent !=
+# null filters out the hidden/phantom duplicate buttons X keeps in the DOM.
+_CLICK_BY_TEXT_JS = """
+(txts) => {
+  const want = txts.map(t => t.toLowerCase());
+  const els = [...document.querySelectorAll('button,[role="button"]')];
+  const el = els.find(b =>
+    b.offsetParent !== null &&
+    want.includes((b.innerText || b.textContent || '').trim().toLowerCase()));
+  if (el) { el.click(); return (el.innerText || el.textContent || '').trim(); }
+  return null;
+}
+"""
+
+
+async def _click_advance(tab, *texts):
+    """Click a visible button matching one of `texts`; return its label or None."""
+    expr = "(" + _CLICK_BY_TEXT_JS + ")(" + json.dumps(list(texts)) + ")"
+    try:
+        return await tab.evaluate(expr, return_by_value=True)
+    except Exception:
+        return None
+
+
+async def _visible_input(tab, selectors, timeout=3):
+    """Return the first *visible*, enabled input matching any selector, else None.
+
+    X renders hidden duplicate inputs (e.g. input[name="password"] exists on the
+    username step too), so we must check visibility, not just presence.
+    """
+    loop = asyncio.get_event_loop()
+    end = loop.time() + timeout
+    while True:
+        for sel in selectors:
+            for el in await tab.select_all(sel, timeout=1):
+                try:
+                    if await el.apply("(e) => e.offsetParent !== null && !e.disabled"):
+                        return el
+                except Exception:
+                    continue
+        if loop.time() >= end:
+            return None
+        await asyncio.sleep(0.5)
+
+
+async def _cookies_if_logged_in(browser, username):
+    cookies = await browser.cookies.get_all()
+    cd = {c.name: c.value for c in cookies}
+    if "auth_token" in cd and "ct0" in cd:
+        return {
+            "username": username,
+            "id": parse_user_id(cd.get("twid", "")),
+            "auth_token": cd["auth_token"],
+            "ct0": cd["ct0"],
+        }
+    return None
+
+
 async def login_and_get_cookies(username, password, totp_seed=None, headless=False):
-    """Authenticate with X.com in a real browser and extract session cookies."""
+    """Drive X's login in a real browser and harvest the session cookies.
+
+    X serves automated browsers a shifting, hostile login flow (the username
+    field is `autocomplete~=username` not `name=text`; the button is "Continue"
+    or "Log in", not always "Next"; hidden duplicate fields abound). Rather than
+    a fixed username->Next->password sequence, this is screen-driven and
+    *assisted*: each pass it fills whatever visible field is in front of it and
+    clicks the advance button, while polling for the auth cookies -- so if X
+    throws a captcha or "verify it's you" step, you can finish it by hand in the
+    visible window and the loop still captures the result.
+    """
     # headless mode increases bot-detection risk; visible is the default.
     browser = await uc.start(headless=headless)
     tab = await browser.get("https://x.com/i/flow/login")
-    # The login SPA is slow to hydrate on first paint; give it a moment so the
-    # first selector lookup doesn't race the render.
-    await tab.sleep(2)
+    await tab.sleep(3)
+
+    username_done = password_done = totp_done = False
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + 180  # ~3 min total, incl. manual challenge solving
+    nudged = False
 
     try:
-        print(f"[*] Entering username {username}...", file=sys.stderr)
-        retry = 0
-        while retry < 5:
-            # NB: tab.select() is CSS + waits for the element; tab.find() is a
-            # text search and would never match a CSS selector. Both return None
-            # (not raise) on timeout, so guard explicitly.
-            username_input = await tab.select(
-                'input[autocomplete="username"]', timeout=30
-            )
-            if username_input is None:
-                raise Exception(
-                    "username field not found; the login page may not have loaded "
-                    "or X changed its markup."
+        while loop.time() < deadline:
+            got = await _cookies_if_logged_in(browser, username)
+            if got:
+                return got
+
+            # 1) Username / identifier field.
+            if not username_done:
+                u = await _visible_input(
+                    tab,
+                    ['input[autocomplete~="username"]', 'input[name="text"]'],
+                    timeout=2,
                 )
-            pos = await username_input.get_position()
-            await tab.mouse_move(pos.x, pos.y, steps=50, flash=True)
-            await asyncio.sleep(0.1)
-            await username_input.click()
-            await asyncio.sleep(0.5)
-            await username_input.send_keys(username)
-            await asyncio.sleep(0.2)
-            await username_input.send_keys("\n")
+                if u is not None:
+                    print(f"[*] Entering username {username}...", file=sys.stderr)
+                    await u.click()
+                    await asyncio.sleep(0.3)
+                    await u.send_keys(username)
+                    await asyncio.sleep(0.6)
+                    await _click_advance(tab, "Next", "Continue", "Log in")
+                    username_done = True
+                    await asyncio.sleep(2.5)
+                    continue
+
+            # 2) Password field (only the visible one, not the phantom).
+            if not password_done:
+                p = await _visible_input(
+                    tab,
+                    [
+                        'input[name="password"]',
+                        'input[autocomplete="current-password"]',
+                        'input[type="password"]',
+                    ],
+                    timeout=2,
+                )
+                if p is not None:
+                    print("[*] Entering password...", file=sys.stderr)
+                    await p.click()
+                    await asyncio.sleep(0.3)
+                    await p.send_keys(password)
+                    await asyncio.sleep(0.6)
+                    await _click_advance(tab, "Log in", "Next", "Continue")
+                    password_done = True
+                    await asyncio.sleep(2.5)
+                    continue
+
+            # 3) TOTP 2FA challenge.
+            if not totp_done and totp_seed:
+                code_field = await _visible_input(
+                    tab,
+                    [
+                        'input[data-testid="ocfEnterTextTextInput"]',
+                        'input[inputmode="numeric"]',
+                    ],
+                    timeout=2,
+                )
+                if code_field is not None:
+                    print("[*] Entering 2FA code...", file=sys.stderr)
+                    try:
+                        code = pyotp.TOTP(totp_seed).now()
+                    except Exception as exc:
+                        raise Exception(
+                            f"could not generate a TOTP code: {exc}. Paste the "
+                            "base32 SECRET, not a 6-digit code."
+                        )
+                    await code_field.click()
+                    await asyncio.sleep(0.3)
+                    await code_field.send_keys(code)
+                    await asyncio.sleep(0.6)
+                    await _click_advance(tab, "Next", "Continue", "Log in", "Verify")
+                    totp_done = True
+                    await asyncio.sleep(2.5)
+                    continue
+
+            # Nothing we recognise is in front of us: a captcha, a "verify it's
+            # you" step, or X's app-download funnel. The window is visible -- the
+            # user can finish by hand; we keep polling for cookies.
+            if not nudged:
+                print("[*] Waiting for login to complete -- if the window shows a "
+                      "captcha or verification step, solve it there; cookies will "
+                      "be captured automatically.", file=sys.stderr)
+                nudged = True
             await asyncio.sleep(2)
-
-            if "Could not log you in" in await tab.get_content():
-                retry += 1
-                wait = retry * 10
-                print(f"[*] Username rejected; retrying in {wait}s...", file=sys.stderr)
-                await asyncio.sleep(wait)
-            else:
-                break
-
-        print("[*] Entering password...", file=sys.stderr)
-        pretry = 0
-        while pretry < 5:
-            password_input = await tab.select(
-                'input[autocomplete="current-password"]', timeout=15
-            )
-            if password_input is None:
-                raise Exception(
-                    "password field not found after the username step; X may have "
-                    "shown an unexpected challenge."
-                )
-            await password_input.click()
-            await asyncio.sleep(0.5)
-            await password_input.send_keys(password)
-            await asyncio.sleep(0.2)
-            await password_input.send_keys("\n")
-            await asyncio.sleep(2)
-
-            if "Could not log you in" in await tab.get_content():
-                pretry += 1
-                wait = pretry * 10
-                print(f"[*] Password step retrying in {wait}s...", file=sys.stderr)
-                await asyncio.sleep(wait)
-            else:
-                break
-
-        page_content = await tab.get_content()
-        if "verification code" in page_content or "Enter code" in page_content:
-            if not totp_seed:
-                raise Exception(
-                    "2FA required but no TOTP secret provided. Set TW_2FA_SECRET "
-                    "(the base32 secret, not a 6-digit code), or enter any "
-                    "emailed/SMS code in the browser window yourself."
-                )
-            print("[*] 2FA detected, entering TOTP code...", file=sys.stderr)
-            totp_code = pyotp.TOTP(totp_seed).now()
-            code_input = await tab.select('input[type="text"]', timeout=15)
-            if code_input is None:
-                raise Exception("2FA code field not found.")
-            await code_input.send_keys(totp_code + "\n")
-            await asyncio.sleep(3)
-
-        print("[*] Waiting for session cookies (solve any challenge in the "
-              "window if shown)...", file=sys.stderr)
-        for _ in range(60):  # up to ~60s, to allow manual captcha solving
-            cookies = await browser.cookies.get_all()
-            cookies_dict = {c.name: c.value for c in cookies}
-            if "auth_token" in cookies_dict and "ct0" in cookies_dict:
-                return {
-                    "username": username,
-                    "id": parse_user_id(cookies_dict.get("twid", "")),
-                    "auth_token": cookies_dict["auth_token"],
-                    "ct0": cookies_dict["ct0"],
-                }
-            await asyncio.sleep(1)
 
         raise Exception(
-            "Timed out waiting for auth_token/ct0 cookies. The login likely "
-            "didn't complete (captcha, wrong password, or new-device check)."
+            "Timed out without reaching a logged-in state. X likely served this "
+            "automated browser a hostile flow (captcha / app-download funnel). "
+            "Use ./add-session.sh to paste cookies from a normal manual login."
         )
     finally:
         browser.stop()
