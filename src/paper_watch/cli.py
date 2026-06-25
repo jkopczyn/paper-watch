@@ -30,6 +30,9 @@ handles: []      # Twitter usernames (seeded via `paper-watch seed-handles`)
 nitter_instances:
   - https://nitter.net
 
+slack:           # #papers channels; see README. Fill ids via `paper-watch slack-channels`.
+  workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
+
 scoring:
   overlap: 1.0
   velocity: 1.0
@@ -103,6 +106,49 @@ def sources(config_path: str) -> None:
     click.echo(f"arXiv authors: {len(cfg.authors)}")
     click.echo(f"RSS feeds:     {len(cfg.feeds)}")
     click.echo(f"Twitter handles: {len(cfg.handles)} (via {len(cfg.nitter_instances)} nitter instance(s))")
+    workspaces = cfg.slack.workspaces if cfg.slack else []
+    n_channels = sum(len(w.channels) for w in workspaces)
+    click.echo(f"Slack:         {len(workspaces)} workspace(s), {n_channels} channel(s)")
+
+
+@cli.command("slack-channels")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--workspace", required=True, help="Workspace `name` from config.slack.workspaces."
+)
+def slack_channels(config_path: str, workspace: str) -> None:
+    """List channel ids + names for a Slack workspace, to fill in config.
+
+    Uses the workspace's user token (from the env var named by `token_env`) and
+    `conversations.list`. Copy the relevant ids into `config.yaml`.
+    """
+    import os
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+    from paper_watch.config import Config
+    from paper_watch.sources.slack import list_channels
+
+    cfg = Config.load(config_path)
+    workspaces = cfg.slack.workspaces if cfg.slack else []
+    ws = next((w for w in workspaces if w.name == workspace), None)
+    if ws is None:
+        raise click.ClickException(
+            f"workspace {workspace!r} not in config.slack.workspaces"
+        )
+    token = os.environ.get(ws.token_env)
+    if not token:
+        raise click.ClickException(f"no token in env var {ws.token_env}")
+
+    channels = list_channels(token)
+    for ch in channels:
+        click.echo(f"{ch['id']}\t{ch['name']}")
+    click.echo(f"{len(channels)} channel(s)")
 
 
 @cli.group()
