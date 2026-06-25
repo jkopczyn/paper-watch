@@ -1,0 +1,53 @@
+{
+  "ok": true,
+  "has_more": false,
+  "messages": [
+    {
+      "type": "message",
+      "user": "U001",
+      "ts": "1781784000.000200",
+      "text": "Strong new result, worth a read: <https://arxiv.org/abs/2406.05678|Scalable Oversight: A Survey>",
+      "attachments": [
+        {
+          "title": "Scalable Oversight: A Survey",
+          "title_link": "https://arxiv.org/abs/2406.05678",
+          "text": "We survey scalable oversight techniques for aligning powerful models."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "user": "U002",
+      "ts": "1781773200.000100",
+      "text": "Nice writeup <https://www.lesswrong.com/posts/abc123/deceptive-alignment>",
+      "attachments": [
+        {
+          "title": "Deceptive Alignment, Revisited",
+          "title_link": "https://www.lesswrong.com/posts/abc123/deceptive-alignment",
+          "text": "A fresh look at deceptive alignment failure modes."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "user": "U003",
+      "ts": "1781690400.000300",
+      "text": "tangential but fun <https://randomblog.example/my-post|some blog post>"
+    },
+    {
+      "type": "message",
+      "user": "U004",
+      "ts": "1781690400.000400",
+      "text": "thanks for sharing everyone &amp; have a great <!here> weekend!"
+    },
+    {
+      "type": "message",
+      "user": "U005",
+      "ts": "1780300800.000100",
+      "text": "older paper <https://arxiv.org/abs/2401.00001|Earlier Work>"
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

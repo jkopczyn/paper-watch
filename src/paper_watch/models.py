@@ -25,3 +25,6 @@ class RawItem:
     doi: str | None = None
     published_at: str | None = None
     text: str | None = None
+    # Set by curated sources (e.g. a trusted Slack channel, or a Slack link to a
+    # known paper domain) to bypass the LLM relevance gate. Default False.
+    trusted: bool = False
