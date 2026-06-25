@@ -243,3 +243,38 @@ def test_build_sources_omits_slack_when_no_workspaces():
     assert not any(isinstance(s, SlackSource) for s in build_sources(Config()))
     cfg = Config(slack=SlackConfig(workspaces=[]))
     assert not any(isinstance(s, SlackSource) for s in build_sources(cfg))
+
+
+def test_slack_dedups_and_trust_propagates_across_sources(tmp_path):
+    # A blog posts a paper (flagged not-relevant by the LLM) AND someone drops
+    # the same arXiv link in a trusted Slack channel. They dedup to one entry,
+    # and the trusted Slack mention bypasses the gate.
+    store = Store(tmp_path / "pw.db")
+    rss = ListSource(
+        "rss",
+        [RawItem(source="rss:Blog", url="https://blog/x", title="Same Paper",
+                 text="see https://arxiv.org/abs/2406.09999")],
+    )
+    slack = ListSource(
+        "slack",
+        [RawItem(source="slack:mats:papers", url="https://arxiv.org/abs/2406.09999",
+                 text="cool https://arxiv.org/abs/2406.09999", trusted=True,
+                 published_at="2026-06-19T08:00:00Z")],
+    )
+    result = run_pipeline(
+        store,
+        sources=[rss, slack],
+        enricher=FakeEnricher(relevant=False),
+        sender=CapturingSender(),
+        weights=ScoringWeights(),
+        top_n=10,
+        since="2026-06-01T00:00:00Z",
+        resurface_window_days=21,
+        now=__import__("datetime").datetime(2026, 6, 19, 9, tzinfo=__import__("datetime").timezone.utc),
+        max_enrich=50,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+    assert len(result.chosen_ids) == 1  # one deduped entry, kept via trusted bypass
+    assert store.count_distinct_sources(result.chosen_ids[0]) == 2
+    store.close()
