@@ -1,0 +1,12 @@
+[Unit]
+Description=Run paper-watch twice daily (08:00 and 18:00 local time)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 18:00:00
+# If the machine was powered off (or asleep) when a run was due, fire it once
+# on the next boot to catch up the missed digest.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

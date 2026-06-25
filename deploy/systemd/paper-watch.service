@@ -1,0 +1,10 @@
+[Unit]
+Description=paper-watch digest run
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jkop/Code/paper-watch
+# uv lives in the user's ~/.local/bin, which is not on the PATH that systemd
+# uses, so call it by absolute path.
+ExecStart=/home/jkop/.local/bin/uv run paper-watch run
+# Output goes to the journal: journalctl --user -u paper-watch
