@@ -216,6 +216,12 @@ def build_sources(config: Config, fetch=None):
         sources.append(RssSource(config.feeds, fetch=fetch))
     if config.handles:
         sources.append(NitterSource(config.handles, config.nitter_instances, fetch=fetch))
+    if config.slack and config.slack.workspaces:
+        from paper_watch.sources.slack import SlackSource
+
+        sources.append(
+            SlackSource(config.slack.workspaces, config.slack.paper_link_domains)
+        )
     return sources
 
 

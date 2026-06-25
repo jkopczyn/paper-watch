@@ -1,7 +1,14 @@
-from paper_watch.config import ScoringWeights
+from paper_watch.config import (
+    Config,
+    ScoringWeights,
+    SlackChannel,
+    SlackConfig,
+    SlackWorkspace,
+)
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
-from paper_watch.runtime import ingest, run_pipeline
+from paper_watch.runtime import build_sources, ingest, run_pipeline
+from paper_watch.sources.slack import SlackSource
 from paper_watch.store import Store
 
 
@@ -214,3 +221,25 @@ def test_untrusted_slack_item_is_gated(tmp_path):
     result = _run_slack(store, item, tmp_path)
     assert result.chosen_ids == []
     store.close()
+
+
+def test_build_sources_includes_slack_when_configured():
+    cfg = Config(
+        slack=SlackConfig(
+            workspaces=[
+                SlackWorkspace(
+                    name="mats",
+                    token_env="SLACK_TOKEN_MATS",
+                    channels=[SlackChannel(id="C1", name="papers")],
+                )
+            ]
+        )
+    )
+    sources = build_sources(cfg)
+    assert any(isinstance(s, SlackSource) for s in sources)
+
+
+def test_build_sources_omits_slack_when_no_workspaces():
+    assert not any(isinstance(s, SlackSource) for s in build_sources(Config()))
+    cfg = Config(slack=SlackConfig(workspaces=[]))
+    assert not any(isinstance(s, SlackSource) for s in build_sources(cfg))
