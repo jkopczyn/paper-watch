@@ -44,6 +44,13 @@ user token with the `channels:history`, `groups:history`, and `channels:read` sc
 with a user token, installed to that workspace), and put it in `.env` under the env-var name you
 reference from `config.yaml`:
 
+> **Heads up — workspace approval.** A token (bot *or* user) requires creating a Slack app and
+> **installing it to the workspace**, which many community Slacks gate behind admin approval. This
+> is the real hurdle, not the token type: a user token avoids the per-channel bot-invite step but
+> still needs the app installed. Check each workspace's app-management policy — members can
+> self-install in some, while others require an admin. To try paper-watch out first, install the
+> app in a workspace you control and post a test message with a paper link.
+
 ```yaml
 slack:
   workspaces:
