@@ -87,6 +87,38 @@ nitter_instances:
   - https://nitter.net
   - https://nitter.poast.org
 
+# Slack #papers channels (MATS, FAR) and the alignment-Slack channel where
+# Aaron Scher collects papers. Each workspace needs a user token (xoxp-…) with
+# channels:history / groups:history / channels:read scopes, named here by the
+# env var that holds it (the token stays in .env, not in this file). Fill in the
+# channel IDs with `paper-watch slack-channels --workspace <name>`. Mark a
+# curated channel `trusted: true` to bypass the relevance gate for all its
+# items; otherwise only "obviously a paper" links (paper_link_domains below)
+# bypass and the rest go through the gate.
+slack:
+  paper_link_domains:
+    - arxiv.org
+    - lesswrong.com
+    - alignmentforum.org
+    - openreview.net
+    - anthropic.com
+    - openai.com
+    - deepmind.google
+    - transformer-circuits.pub
+  workspaces: []
+    # - name: mats
+    #   token_env: SLACK_TOKEN_MATS
+    #   channels:
+    #     - {id: C0000000, name: papers}
+    # - name: far
+    #   token_env: SLACK_TOKEN_FAR
+    #   channels:
+    #     - {id: C0000000, name: papers}
+    # - name: alignment
+    #   token_env: SLACK_TOKEN_ALIGNMENT
+    #   channels:
+    #     - {id: C0000000, name: aaron-papers, trusted: true}
+
 scoring:
   overlap: 1.0
   velocity: 1.0
