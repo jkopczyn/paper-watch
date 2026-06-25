@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 
@@ -46,3 +46,37 @@ def get_text(
         return resp.text
     # Unreachable: the final attempt either returns or raises above.
     raise RuntimeError("get_text: exhausted retries without returning")
+
+
+def get_json(
+    url: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    max_retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """GET `url` and return the parsed JSON body, retrying on 429.
+
+    Like `get_text` but for JSON APIs (the Slack Web API). Caller-supplied
+    `headers` (e.g. an Authorization bearer token) are merged over the default
+    User-Agent. Slack rate-limits with HTTP 429 + Retry-After, which this
+    handles via the same backoff as `get_text`.
+    """
+    merged_headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    for attempt in range(max_retries + 1):
+        resp = httpx.get(
+            url,
+            timeout=timeout,
+            headers=merged_headers,
+            params=params,
+            follow_redirects=True,
+        )
+        if resp.status_code == 429 and attempt < max_retries:
+            sleep(_retry_after(resp, attempt))
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    # Unreachable: the final attempt either returns or raises above.
+    raise RuntimeError("get_json: exhausted retries without returning")
