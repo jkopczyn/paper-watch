@@ -90,3 +90,24 @@ def test_add_mention_is_idempotent_and_counts_sources(tmp_path: Path):
     assert store.count_distinct_sources(eid) == 2
     assert len(store.get_mentions(eid)) == 2
     store.close()
+
+
+def test_entry_has_trusted_mention(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="T", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    # default mention is untrusted
+    store.add_mention(
+        entry_id=eid, source="rss:Blog", source_item_url="https://blog/p",
+        fetched_at="2026-06-19T00:00:00Z",
+    )
+    assert store.entry_has_trusted_mention(eid) is False
+
+    # a trusted slack mention flips it
+    store.add_mention(
+        entry_id=eid, source="slack:mats:papers", source_item_url="https://arxiv.org/abs/1",
+        fetched_at="2026-06-19T00:00:00Z", trusted=True,
+    )
+    assert store.entry_has_trusted_mention(eid) is True
+    store.close()

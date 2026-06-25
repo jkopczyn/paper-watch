@@ -169,3 +169,48 @@ def test_run_pipeline_arxiv_bypasses_gate_even_if_flagged_irrelevant(tmp_path):
     # arxiv author whitelist bypasses the gate
     assert len(result.chosen_ids) == 1
     store.close()
+
+
+def _slack_item(url, *, trusted, title="Slack Paper"):
+    return RawItem(
+        source="slack:mats:papers",
+        url=url,
+        title=title,
+        text=f"check this {url}",
+        published_at="2026-06-19T08:00:00Z",
+        trusted=trusted,
+    )
+
+
+def _run_slack(store, item, tmp_path):
+    return run_pipeline(
+        store,
+        sources=[ListSource("slack", [item])],
+        enricher=FakeEnricher(relevant=False),  # LLM says not relevant
+        sender=CapturingSender(),
+        weights=ScoringWeights(),
+        top_n=10,
+        since="2026-06-01T00:00:00Z",
+        resurface_window_days=21,
+        now=__import__("datetime").datetime(2026, 6, 19, 9, tzinfo=__import__("datetime").timezone.utc),
+        max_enrich=50,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+
+
+def test_trusted_slack_item_bypasses_gate(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _slack_item("https://some-blog.example/post", trusted=True)
+    result = _run_slack(store, item, tmp_path)
+    # trusted mention bypasses the gate even though enricher flagged irrelevant
+    assert len(result.chosen_ids) == 1
+    store.close()
+
+
+def test_untrusted_slack_item_is_gated(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _slack_item("https://some-blog.example/post", trusted=False)
+    result = _run_slack(store, item, tmp_path)
+    assert result.chosen_ids == []
+    store.close()
