@@ -101,7 +101,18 @@ SCHEMA: list[str] = [
         fetched_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """,
 ]
+
+# Key under which the ISO timestamp of the last completed (non-dry) run is stored
+# in the `meta` table, so a run can widen its fetch window to cover any gap left
+# by the machine being powered off. See runtime.effective_since.
+LAST_RUN_KEY = "last_run_at"
 
 
 class Store:
@@ -133,6 +144,29 @@ class Store:
 
     def close(self) -> None:
         self.conn.close()
+
+    # -- key/value meta ----------------------------------------------------
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO meta (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        self.conn.commit()
+
+    def get_last_run_at(self) -> str | None:
+        return self.get_meta(LAST_RUN_KEY)
+
+    def set_last_run_at(self, iso: str) -> None:
+        self.set_meta(LAST_RUN_KEY, iso)
 
     # -- source cursors ----------------------------------------------------
     def get_cursor(self, source: str) -> str | None:

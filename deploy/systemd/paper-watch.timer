@@ -4,8 +4,11 @@ Description=Run paper-watch twice daily (08:00 and 18:00 local time)
 [Timer]
 OnCalendar=*-*-* 08:00:00
 OnCalendar=*-*-* 18:00:00
-# If the machine was powered off (or asleep) when a run was due, fire it once
-# on the next boot to catch up the missed digest.
+# If the machine was powered off (or asleep) when a run was due, fire once on
+# the next boot to catch up. systemd only remembers a single missed elapse per
+# timer, but that is enough: `paper-watch run` widens its own fetch window back
+# to the last completed run, so one catch-up fire covers the whole gap even if
+# several scheduled runs were missed while powered off.
 Persistent=true
 
 [Install]

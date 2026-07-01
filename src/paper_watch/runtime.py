@@ -37,6 +37,24 @@ class RunResult:
     enriched_count: int = 0
 
 
+def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
+    """Fetch cutoff for this run, widened to cover any gap since the last run.
+
+    Normally this is the configured `lookback` window (e.g. 7d). But if the
+    machine was powered off across one or more scheduled runs, the last recorded
+    run can be further in the past than `lookback` — in that case we fetch from
+    the last run so the gap is fully covered and nothing is missed. An explicit
+    `--since` always wins and is passed through unchanged.
+    """
+    since_iso = since_to_iso(since or lookback, now=now)
+    if since is None:
+        last_run = store.get_last_run_at()
+        # ISO-8601 'Z' strings compare lexicographically == chronologically.
+        if last_run and last_run < since_iso:
+            since_iso = last_run
+    return since_iso
+
+
 # -- ingest ----------------------------------------------------------------
 def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) -> None:
     canonical = canonicalize_url(raw.url)
@@ -575,7 +593,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
     store = Store(config.db_path)
     try:
         now = datetime.now(timezone.utc)
-        since_iso = since_to_iso(since or config.lookback, now=now)
+        since_iso = effective_since(store, since, config.lookback, now)
         nitter_instances = config.nitter_instances
         if config.handles:
             from paper_watch.nitter_local import ensure_local_nitter
@@ -598,7 +616,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
         newsletter_extractor = _build_newsletter_extractor(config)
         openreview_resolver, pdf_resolver = _build_metadata_resolvers(config)
 
-        return run_pipeline(
+        result = run_pipeline(
             store,
             sources=sources,
             enricher=enricher,
@@ -620,5 +638,11 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             dry_run=dry_run,
             out_dir=Path("out"),
         )
+        # Record the watermark only for real runs, so the next run covers the
+        # gap from here even if the machine is off across scheduled elapses. A
+        # dry run must not advance it.
+        if not dry_run:
+            store.set_last_run_at(now.strftime(_ISO))
+        return result
     finally:
         store.close()

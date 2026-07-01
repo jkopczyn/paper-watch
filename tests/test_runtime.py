@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from paper_watch.config import (
     Config,
@@ -11,6 +12,7 @@ from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
 from paper_watch.runtime import (
     build_sources,
+    effective_since,
     ingest,
     resolve_paper_metadata,
     run_pipeline,
@@ -167,6 +169,41 @@ def test_resolve_paper_metadata_skips_entries_with_abstract(tmp_path):
         raise AssertionError("should not fetch")
 
     assert resolve_paper_metadata(store, new_ids, boom) == 0
+    store.close()
+
+
+_NOW = datetime(2026, 6, 19, 9, tzinfo=timezone.utc)
+
+
+def test_effective_since_uses_lookback_when_no_prior_run(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # No last run recorded -> plain lookback window.
+    assert effective_since(store, None, "7d", _NOW) == "2026-06-12T09:00:00Z"
+    store.close()
+
+
+def test_effective_since_widens_to_cover_gap_when_off(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # Last real run was 20 days ago -> further back than the 7d lookback, so the
+    # window widens to the last run to cover the gap left by being powered off.
+    store.set_last_run_at("2026-05-30T09:00:00Z")
+    assert effective_since(store, None, "7d", _NOW) == "2026-05-30T09:00:00Z"
+    store.close()
+
+
+def test_effective_since_keeps_lookback_when_recent_run(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A run 12h ago is more recent than the 7d lookback; don't shrink the window.
+    store.set_last_run_at("2026-06-18T21:00:00Z")
+    assert effective_since(store, None, "7d", _NOW) == "2026-06-12T09:00:00Z"
+    store.close()
+
+
+def test_effective_since_explicit_override_ignores_last_run(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    store.set_last_run_at("2026-05-30T09:00:00Z")
+    # An explicit --since wins over gap coverage.
+    assert effective_since(store, "2026-06-15T00:00:00Z", "7d", _NOW) == "2026-06-15T00:00:00Z"
     store.close()
 
 

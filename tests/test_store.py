@@ -10,6 +10,7 @@ EXPECTED_TABLES = {
     "feedback",
     "feedback_weights",
     "source_state",
+    "meta",
 }
 
 
@@ -45,6 +46,24 @@ def test_source_state_roundtrip(tmp_path: Path):
     # update overwrites
     store.set_cursor("arxiv", "2026-06-20T00:00:00Z")
     assert store.get_cursor("arxiv") == "2026-06-20T00:00:00Z"
+    store.close()
+
+
+def test_meta_roundtrip_and_upsert(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    assert store.get_meta("k") is None
+    store.set_meta("k", "v1")
+    assert store.get_meta("k") == "v1"
+    store.set_meta("k", "v2")  # upsert overwrites
+    assert store.get_meta("k") == "v2"
+    store.close()
+
+
+def test_last_run_at_roundtrip(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    assert store.get_last_run_at() is None
+    store.set_last_run_at("2026-06-19T09:00:00Z")
+    assert store.get_last_run_at() == "2026-06-19T09:00:00Z"
     store.close()
 
 
