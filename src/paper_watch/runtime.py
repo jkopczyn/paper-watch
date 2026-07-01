@@ -81,11 +81,13 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     return bool(row["safety_relevant"])
 
 
-def select_digest(store, weights: ScoringWeights, *, top_n, window_start) -> list[dict]:
+def select_digest(
+    store, weights: ScoringWeights, *, top_n, candidate_start, resurface_start
+) -> list[dict]:
     fb_weights = store.get_feedback_weights()
     chosen: list[dict] = []
 
-    for entry_id in store.active_entry_ids_since(window_start):
+    for entry_id in store.active_entry_ids_since(min(candidate_start, resurface_start)):
         row = store.get_entry(entry_id)
         sources = _entry_sources(store, entry_id)
         trusted = store.entry_has_trusted_mention(entry_id)
@@ -95,18 +97,26 @@ def select_digest(store, weights: ScoringWeights, *, top_n, window_start) -> lis
         metrics = store.latest_metrics(entry_id)
         citation_count = metrics["citation_count"] if metrics else None
         citation_prev = metrics["citation_count_prev"] if metrics else None
-        new_mentions = store.count_mentions_since(entry_id, window_start)
+        new_mentions = store.count_mentions_since(entry_id, candidate_start)
 
         authors = json.loads(row["authors_json"])
         tags = json.loads(row["tags_json"])
         keys = derive_feedback_keys(authors, tags, _primary_source(store, entry_id))
 
-        was_shown = store.was_shown(entry_id)
         growth = max(0, (citation_count or 0) - (citation_prev or 0))
         surge = new_mentions >= 2 or growth > 0
-        resurfaced = was_shown and surge
-        if was_shown and not resurfaced:
-            continue  # already seen, no attention surge -> don't repeat
+        if store.was_shown(entry_id):
+            # Already seen: only reappear if still within the resurface window
+            # AND freshly surging (surge measured over the candidate window).
+            in_resurface = store.count_mentions_since(entry_id, resurface_start) > 0
+            resurfaced = in_resurface and surge
+            if not resurfaced:
+                continue
+        else:
+            # Never shown: must be fresh (mentioned within the candidate window).
+            if new_mentions == 0:
+                continue
+            resurfaced = False
 
         features = ScoreFeatures(
             distinct_sources=len(sources),
@@ -157,6 +167,7 @@ def run_pipeline(
     weights: ScoringWeights,
     top_n: int,
     since: str | None,
+    candidate_window_days: int,
     resurface_window_days: int,
     now: datetime,
     max_enrich: int,
@@ -164,12 +175,19 @@ def run_pipeline(
     out_dir: Path,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
-    window_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
+    candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
+    resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
 
     new_ids = ingest(store, sources, since, now_iso)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
-    chosen = select_digest(store, weights, top_n=top_n, window_start=window_start)
+    chosen = select_digest(
+        store,
+        weights,
+        top_n=top_n,
+        candidate_start=candidate_start,
+        resurface_start=resurface_start,
+    )
     items = [_to_item(c) for c in chosen]
     html = render_html(items, generated_at=now_iso)
 
@@ -276,7 +294,8 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
 
         if not dry_run:
-            window_start = (now - timedelta(days=config.resurface_window_days)).strftime(_ISO)
+            pool_days = max(config.candidate_window_days, config.resurface_window_days)
+            window_start = (now - timedelta(days=pool_days)).strftime(_ISO)
             update_metrics(store, store.active_entry_ids_since(window_start), now.strftime(_ISO))
 
         return run_pipeline(
@@ -287,6 +306,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             weights=config.scoring,
             top_n=config.top_n,
             since=since_iso,
+            candidate_window_days=config.candidate_window_days,
             resurface_window_days=config.resurface_window_days,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,

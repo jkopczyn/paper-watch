@@ -95,6 +95,13 @@ class Config(BaseModel):
     # cron interval so nothing slips through the gaps; already-shown papers are
     # deduped downstream, so a generous window is cheap.
     lookback: str = "7d"
+    # How recently an entry must have been mentioned to enter the digest as a
+    # fresh (never-shown) paper; also the window over which recent mentions are
+    # counted for the velocity score term and the surge test.
+    candidate_window_days: int = 7
+    # How recently an already-shown paper must have been mentioned to be eligible
+    # to resurface (it still only reappears if it also surges within
+    # candidate_window_days).
     resurface_window_days: int = 21
     scoring: ScoringWeights = Field(default_factory=ScoringWeights)
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)

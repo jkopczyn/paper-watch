@@ -19,6 +19,9 @@ def test_load_empty_config_uses_defaults(tmp_path: Path):
     assert cfg.smtp.port == 587
     # resurface window is in the 14-28 day band per design
     assert 14 <= cfg.resurface_window_days <= 28
+    # candidate/velocity window is shorter than the resurface window
+    assert cfg.candidate_window_days == 7
+    assert cfg.candidate_window_days <= cfg.resurface_window_days
     # default ingest lookback is wider than a single cron interval
     assert cfg.lookback == "7d"
 

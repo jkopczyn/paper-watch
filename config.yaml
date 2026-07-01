@@ -1,5 +1,6 @@
 db_path: paper_watch.db
 top_n: 15
+candidate_window_days: 7
 resurface_window_days: 21
 schedule:
 - 08:00

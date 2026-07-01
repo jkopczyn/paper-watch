@@ -5,7 +5,8 @@
 db_path: paper_watch.db
 top_n: 15
 lookback: 7d                     # how far back to fetch when --since isn't given
-resurface_window_days: 21        # bring a paper back if attention surges within this window
+candidate_window_days: 7         # how recently a paper must be seen to first appear; also the velocity/surge window
+resurface_window_days: 21        # how far back an already-shown paper can be brought back on a surge
 
 schedule:                        # local run times the cron installer reads
   - "08:00"

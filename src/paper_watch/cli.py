@@ -17,6 +17,7 @@ EXAMPLE_CONFIG = """\
 db_path: paper_watch.db
 top_n: 15
 lookback: 7d
+candidate_window_days: 7
 resurface_window_days: 21
 
 schedule:        # local run times the cron installer reads
