@@ -17,6 +17,46 @@ class FeedConfig(BaseModel):
     url: str
 
 
+# "Obviously a paper" link allowlist for the Slack source: arXiv, the alignment
+# forums, and the major labs' safety/alignment/interpretability blogs. Items
+# linking these bypass the relevance gate; everything else is gated like Twitter.
+_DEFAULT_PAPER_LINK_DOMAINS = [
+    "arxiv.org",
+    "lesswrong.com",
+    "alignmentforum.org",
+    "openreview.net",
+    "anthropic.com",
+    "openai.com",
+    "deepmind.google",
+    "deepmind.com",
+    "transformer-circuits.pub",
+    "distill.pub",
+]
+
+
+class SlackChannel(BaseModel):
+    id: str
+    name: str
+    # A trusted channel's items bypass the relevance gate wholesale (e.g. a
+    # curated paper channel). Absent ⇒ not trusted.
+    trusted: bool = False
+
+
+class SlackWorkspace(BaseModel):
+    name: str
+    # Name of the env var holding this workspace's user token (xoxp-…); the
+    # token itself stays out of the committed config.
+    token_env: str
+    channels: list[SlackChannel] = Field(default_factory=list)
+
+
+class SlackConfig(BaseModel):
+    workspaces: list[SlackWorkspace] = Field(default_factory=list)
+    paper_link_domains: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_PAPER_LINK_DOMAINS)
+    )
+
+
 class ScoringWeights(BaseModel):
     overlap: float = 1.0
     velocity: float = 1.0
@@ -47,6 +87,7 @@ class Config(BaseModel):
     nitter_instances: list[str] = Field(
         default_factory=lambda: ["https://nitter.net"]
     )
+    slack: SlackConfig | None = None
     # Local run times the cron installer reads; "configurable" per design.
     schedule: list[str] = Field(default_factory=lambda: ["08:00", "16:00"])
     top_n: int = 15

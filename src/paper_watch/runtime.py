@@ -54,6 +54,7 @@ def ingest(store, sources, since: str | None, now_iso: str) -> list[int]:
                 mention_text=raw.text,
                 published_at=fields.get("published_at"),
                 fetched_at=now_iso,
+                trusted=raw.trusted,
             )
     return new_ids
 
@@ -68,9 +69,14 @@ def _primary_source(store, entry_id: int) -> str:
     return mentions[0]["source"] if mentions else "unknown"
 
 
-def _passes_gate(row, sources: set[str]) -> bool:
-    """arXiv author-feed items bypass the gate; others need safety_relevant."""
-    if "arxiv" in sources:
+def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
+    """Trusted items bypass the gate; others need safety_relevant.
+
+    arXiv author-feed items are a trusted whitelist (bypass), as is any mention
+    flagged trusted at ingest (a trusted Slack channel, or a Slack link to a
+    known paper domain). Everything else needs the LLM relevance flag.
+    """
+    if trusted or "arxiv" in sources:
         return True
     return bool(row["safety_relevant"])
 
@@ -82,7 +88,8 @@ def select_digest(store, weights: ScoringWeights, *, top_n, window_start) -> lis
     for entry_id in store.active_entry_ids_since(window_start):
         row = store.get_entry(entry_id)
         sources = _entry_sources(store, entry_id)
-        if not _passes_gate(row, sources):
+        trusted = store.entry_has_trusted_mention(entry_id)
+        if not _passes_gate(row, sources, trusted):
             continue
 
         metrics = store.latest_metrics(entry_id)
@@ -209,6 +216,12 @@ def build_sources(config: Config, fetch=None):
         sources.append(RssSource(config.feeds, fetch=fetch))
     if config.handles:
         sources.append(NitterSource(config.handles, config.nitter_instances, fetch=fetch))
+    if config.slack and config.slack.workspaces:
+        from paper_watch.sources.slack import SlackSource
+
+        sources.append(
+            SlackSource(config.slack.workspaces, config.slack.paper_link_domains)
+        )
     return sources
 
 

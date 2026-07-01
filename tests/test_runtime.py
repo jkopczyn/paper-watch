@@ -1,7 +1,14 @@
-from paper_watch.config import ScoringWeights
+from paper_watch.config import (
+    Config,
+    ScoringWeights,
+    SlackChannel,
+    SlackConfig,
+    SlackWorkspace,
+)
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
-from paper_watch.runtime import ingest, run_pipeline
+from paper_watch.runtime import build_sources, ingest, run_pipeline
+from paper_watch.sources.slack import SlackSource
 from paper_watch.store import Store
 
 
@@ -168,4 +175,106 @@ def test_run_pipeline_arxiv_bypasses_gate_even_if_flagged_irrelevant(tmp_path):
     )
     # arxiv author whitelist bypasses the gate
     assert len(result.chosen_ids) == 1
+    store.close()
+
+
+def _slack_item(url, *, trusted, title="Slack Paper"):
+    return RawItem(
+        source="slack:mats:papers",
+        url=url,
+        title=title,
+        text=f"check this {url}",
+        published_at="2026-06-19T08:00:00Z",
+        trusted=trusted,
+    )
+
+
+def _run_slack(store, item, tmp_path):
+    return run_pipeline(
+        store,
+        sources=[ListSource("slack", [item])],
+        enricher=FakeEnricher(relevant=False),  # LLM says not relevant
+        sender=CapturingSender(),
+        weights=ScoringWeights(),
+        top_n=10,
+        since="2026-06-01T00:00:00Z",
+        resurface_window_days=21,
+        now=__import__("datetime").datetime(2026, 6, 19, 9, tzinfo=__import__("datetime").timezone.utc),
+        max_enrich=50,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+
+
+def test_trusted_slack_item_bypasses_gate(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _slack_item("https://some-blog.example/post", trusted=True)
+    result = _run_slack(store, item, tmp_path)
+    # trusted mention bypasses the gate even though enricher flagged irrelevant
+    assert len(result.chosen_ids) == 1
+    store.close()
+
+
+def test_untrusted_slack_item_is_gated(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _slack_item("https://some-blog.example/post", trusted=False)
+    result = _run_slack(store, item, tmp_path)
+    assert result.chosen_ids == []
+    store.close()
+
+
+def test_build_sources_includes_slack_when_configured():
+    cfg = Config(
+        slack=SlackConfig(
+            workspaces=[
+                SlackWorkspace(
+                    name="mats",
+                    token_env="SLACK_TOKEN_MATS",
+                    channels=[SlackChannel(id="C1", name="papers")],
+                )
+            ]
+        )
+    )
+    sources = build_sources(cfg)
+    assert any(isinstance(s, SlackSource) for s in sources)
+
+
+def test_build_sources_omits_slack_when_no_workspaces():
+    assert not any(isinstance(s, SlackSource) for s in build_sources(Config()))
+    cfg = Config(slack=SlackConfig(workspaces=[]))
+    assert not any(isinstance(s, SlackSource) for s in build_sources(cfg))
+
+
+def test_slack_dedups_and_trust_propagates_across_sources(tmp_path):
+    # A blog posts a paper (flagged not-relevant by the LLM) AND someone drops
+    # the same arXiv link in a trusted Slack channel. They dedup to one entry,
+    # and the trusted Slack mention bypasses the gate.
+    store = Store(tmp_path / "pw.db")
+    rss = ListSource(
+        "rss",
+        [RawItem(source="rss:Blog", url="https://blog/x", title="Same Paper",
+                 text="see https://arxiv.org/abs/2406.09999")],
+    )
+    slack = ListSource(
+        "slack",
+        [RawItem(source="slack:mats:papers", url="https://arxiv.org/abs/2406.09999",
+                 text="cool https://arxiv.org/abs/2406.09999", trusted=True,
+                 published_at="2026-06-19T08:00:00Z")],
+    )
+    result = run_pipeline(
+        store,
+        sources=[rss, slack],
+        enricher=FakeEnricher(relevant=False),
+        sender=CapturingSender(),
+        weights=ScoringWeights(),
+        top_n=10,
+        since="2026-06-01T00:00:00Z",
+        resurface_window_days=21,
+        now=__import__("datetime").datetime(2026, 6, 19, 9, tzinfo=__import__("datetime").timezone.utc),
+        max_enrich=50,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+    assert len(result.chosen_ids) == 1  # one deduped entry, kept via trusted bypass
+    assert store.count_distinct_sources(result.chosen_ids[0]) == 2
     store.close()

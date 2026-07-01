@@ -2,15 +2,18 @@
 
 Scan AI-safety paper sources and email yourself a ranked digest a few times a day.
 
-Sources (v1): **arXiv author feeds** (replaces Google Scholar alerts), **RSS newsletters/blogs**,
-and **Twitter via Nitter** per-user RSS. Papers are deduplicated across sources and ranked by
+Sources: **arXiv author feeds** (replaces Google Scholar alerts), **RSS newsletters/blogs**,
+**Twitter via Nitter** per-user RSS, and **Slack** `#papers`-style channels (MATS, FAR, and the
+alignment Slack where Aaron Scher collects papers). Papers are deduplicated across sources and ranked by
 cross-source overlap, citation/social velocity, and learned reading-group feedback. Each item gets
 an LLM-generated TL;DR, topic tags, and links. Previously-shown papers can "resurface" if their
 attention surges within a rolling 2–4 week window.
 
 The LLM (Claude) is used **only for enrichment** — TL;DR, tags, and a safety-relevance gate that
 filters newsletter/Twitter noise — never as a ranking signal. arXiv author-feed items bypass the
-gate (the author list is a trusted whitelist) but still get tagged.
+gate (the author list is a trusted whitelist) but still get tagged. Slack items bypass the gate when
+their channel is marked `trusted` or the link is "obviously a paper" (arXiv / LessWrong / Alignment
+Forum / a major-lab safety blog); other Slack links go through the gate like Twitter.
 
 See `method-rec.md` for the source list this is built from.
 
@@ -32,6 +35,44 @@ Edit `config.yaml` to taste (e.g. set `smtp.to_addr`, tune `scoring` weights, `t
 - `SMTP_APP_PASSWORD` — a Gmail [app password](https://myaccount.google.com/apppasswords).
 - `ANTHROPIC_API_KEY` — used for enrichment. Without it, the digest still runs but papers have no
   TL;DR/tags and the relevance gate is skipped (everything passes).
+- `SLACK_TOKEN_*` — one Slack user token (`xoxp-…`) per workspace; see below.
+
+### Slack channels
+
+paper-watch reads `#papers`-style channels via the Slack Web API. For each workspace, create a
+user token with the `channels:history`, `groups:history`, and `channels:read` scopes (a Slack app
+with a user token, installed to that workspace), and put it in `.env` under the env-var name you
+reference from `config.yaml`:
+
+> **Heads up — workspace approval.** A token (bot *or* user) requires creating a Slack app and
+> **installing it to the workspace**, which many community Slacks gate behind admin approval. This
+> is the real hurdle, not the token type: a user token avoids the per-channel bot-invite step but
+> still needs the app installed. Check each workspace's app-management policy — members can
+> self-install in some, while others require an admin. To try paper-watch out first, install the
+> app in a workspace you control and post a test message with a paper link.
+
+```yaml
+slack:
+  workspaces:
+    - name: mats
+      token_env: SLACK_TOKEN_MATS
+      channels:
+        - {id: C0123ABCD, name: papers}
+    - name: alignment
+      token_env: SLACK_TOKEN_ALIGNMENT
+      channels:
+        - {id: C0789WXYZ, name: aaron-papers, trusted: true}   # bypasses the gate wholesale
+```
+
+Find channel ids with:
+
+```bash
+uv run paper-watch slack-channels --workspace mats   # prints "<id>\t<name>" for each channel
+```
+
+Mark a curated channel `trusted: true` to let all its items skip the relevance gate; otherwise only
+links on `slack.paper_link_domains` bypass and the rest are gated. The token only needs read scopes
+and is never written back to the config.
 
 ### Twitter handles (Nitter)
 
@@ -46,7 +87,7 @@ uv run paper-watch seed-handles --handle NeelNanda5 --handle EthanJPerez   # or 
 ## Usage
 
 ```bash
-uv run paper-watch sources           # show how many authors/feeds/handles are configured
+uv run paper-watch sources           # show how many authors/feeds/handles/slack channels are configured
 uv run paper-watch run --dry-run     # fetch + render to out/, don't send
 uv run paper-watch run               # fetch, score, email the digest
 uv run paper-watch run --since 7d    # override the lookback window
@@ -78,7 +119,7 @@ Source adapters are tested against recorded fixtures (no live network), and the 
 
 ### Layout
 
-- `sources/` — arXiv, RSS, Nitter adapters + Semantic Scholar client (each yields `RawItem`s)
+- `sources/` — arXiv, RSS, Nitter, Slack adapters + Semantic Scholar client (each yields `RawItem`s)
 - `normalize.py` / `identity.py` — `RawItem` → entry fields; arXiv-ID/DOI extraction and dedup
 - `enrich.py` — Claude TL;DR / tags / relevance gate (cached per entry)
 - `score.py` — overlap + velocity + feedback + resurface (pure functions)

@@ -104,7 +104,17 @@ class Store:
     def _migrate(self) -> None:
         for stmt in SCHEMA:
             self.conn.execute(stmt)
+        self._add_column_if_missing(
+            "mentions", "trusted", "INTEGER NOT NULL DEFAULT 0"
+        )
         self.conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, decl: str) -> None:
+        cols = {
+            r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in cols:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -193,22 +203,41 @@ class Store:
         source_item_url: str | None = None,
         mention_text: str | None = None,
         published_at: str | None = None,
+        trusted: bool = False,
     ) -> int | None:
         """Record one source appearance. Idempotent on (entry, source, url).
 
+        `trusted` marks a curated mention (e.g. a trusted Slack channel or a
+        Slack link to a known paper domain) that bypasses the relevance gate.
         Returns the new row id, or None if this mention already existed.
         """
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO mentions
                 (entry_id, source, source_item_url, mention_text,
-                 published_at, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 published_at, fetched_at, trusted)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (entry_id, source, source_item_url, mention_text, published_at, fetched_at),
+            (
+                entry_id,
+                source,
+                source_item_url,
+                mention_text,
+                published_at,
+                fetched_at,
+                1 if trusted else 0,
+            ),
         )
         self.conn.commit()
         return int(cur.lastrowid) if cur.rowcount else None
+
+    def entry_has_trusted_mention(self, entry_id: int) -> bool:
+        """True if any mention of this entry was recorded as trusted."""
+        row = self.conn.execute(
+            "SELECT 1 FROM mentions WHERE entry_id = ? AND trusted = 1 LIMIT 1",
+            (entry_id,),
+        ).fetchone()
+        return row is not None
 
     def get_mentions(self, entry_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
