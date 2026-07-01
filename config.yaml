@@ -124,3 +124,14 @@ smtp:
 llm:
   model: claude-haiku-4-5
   max_enrich_per_run: 50
+slack:
+  workspaces:
+    - name: far
+      token_env: SLACK_TOKEN_FAR
+      channels:
+        - {id: C05E1J60CD9, name: papers}
+    - name: alignment
+      token_env: SLACK_TOKEN_ALIGNMENT
+      channels:
+        - {id: C015PNRDTKP, name: paper-club}
+        - {id: C06276BMTK6, name: papers-running-list, trusted: true}

@@ -212,13 +212,20 @@ class SlackSource:
 
 
 def list_channels(token: str, *, fetch=get_json) -> list[dict]:
-    """Return [{id, name}] for channels the token can see (for the CLI helper)."""
+    """Return [{id, name}] for channels the token can see (for the CLI helper).
+
+    Listing private channels needs `groups:read`; a token scoped only for public
+    channels (`channels:read`) 400s with missing_scope if we ask for both. So we
+    ask for public+private, and on that specific missing-scope error fall back to
+    public-only rather than failing the whole helper.
+    """
+    types = "public_channel,private_channel"
     out: list[dict] = []
     cursor: str | None = None
     for _ in range(_MAX_PAGES):
         params: dict[str, object] = {
             "limit": 1000,
-            "types": "public_channel,private_channel",
+            "types": types,
             "exclude_archived": True,
         }
         if cursor:
@@ -229,6 +236,20 @@ def list_channels(token: str, *, fetch=get_json) -> list[dict]:
             params=params,
         )
         if not page.get("ok", False):
+            if (
+                page.get("error") == "missing_scope"
+                and "private_channel" in types
+            ):
+                log.warning(
+                    "slack conversations.list: %s (needed %s); "
+                    "retrying public channels only",
+                    page.get("error"),
+                    page.get("needed"),
+                )
+                types = "public_channel"
+                cursor = None
+                out.clear()
+                continue
             raise RuntimeError(page.get("error", "slack api error"))
         for ch in page.get("channels", []):
             out.append({"id": ch.get("id"), "name": ch.get("name")})
