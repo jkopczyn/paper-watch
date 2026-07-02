@@ -220,20 +220,21 @@ def run_pipeline(
 
 
 # -- real entrypoint (wired by the CLI) ------------------------------------
-def build_sources(config: Config, fetch=None):
+def build_sources(config: Config, fetch=None, *, nitter_instances: list[str] | None = None):
     from paper_watch.http import get_text
     from paper_watch.sources.arxiv import ArxivSource
     from paper_watch.sources.rss import RssSource
     from paper_watch.sources.twitter_nitter import NitterSource
 
     fetch = fetch or get_text
+    instances = config.nitter_instances if nitter_instances is None else nitter_instances
     sources = []
     if config.authors:
         sources.append(ArxivSource(config.authors, fetch=fetch))
     if config.feeds:
         sources.append(RssSource(config.feeds, fetch=fetch))
     if config.handles:
-        sources.append(NitterSource(config.handles, config.nitter_instances, fetch=fetch))
+        sources.append(NitterSource(config.handles, instances, fetch=fetch))
     if config.slack and config.slack.workspaces:
         from paper_watch.sources.slack import SlackSource
 
@@ -289,7 +290,14 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
     try:
         now = datetime.now(timezone.utc)
         since_iso = since_to_iso(since or config.lookback, now=now)
-        sources = build_sources(config)
+        nitter_instances = config.nitter_instances
+        if config.handles:
+            from paper_watch.nitter_local import ensure_local_nitter
+
+            nitter_instances = ensure_local_nitter(
+                config.nitter_instances, dry_run=dry_run
+            )
+        sources = build_sources(config, nitter_instances=nitter_instances)
         enricher = _build_enricher(config)
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
 
