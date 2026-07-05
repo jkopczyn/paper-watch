@@ -58,10 +58,28 @@ class SlackConfig(BaseModel):
 
 
 class ScoringWeights(BaseModel):
+    # Hand-set starting points; tune offline against the ground-truth eval
+    # before trusting relative values.
+    relevance: float = 2.0  # LLM 0-4 vs reader profile (cached at enrichment)
+    source: float = 1.0  # per-source base weight (see Config.source_priors)
     overlap: float = 1.0
-    velocity: float = 1.0
+    velocity: float = 0.5
     feedback: float = 1.0
-    resurface_boost: float = 2.0
+    author: float = 0.5  # any author on the config `authors` whitelist
+    resurface_boost: float = 0.5
+
+
+# Base weight per source label, longest-prefix matched ("slack:alignment:x"
+# beats "slack"). Curated human channels outrank raw feeds; corporate blogs
+# barely count. "default" covers unmatched sources.
+_DEFAULT_SOURCE_PRIORS: dict[str, float] = {
+    "default": 0.5,
+    "arxiv": 0.6,
+    "slack": 0.8,
+    "twitter": 0.5,
+    "rss": 0.4,
+    "rss:OpenAI Blog": 0.1,
+}
 
 
 class SmtpConfig(BaseModel):
@@ -108,6 +126,9 @@ class Config(BaseModel):
     # candidate_window_days).
     resurface_window_days: int = 21
     scoring: ScoringWeights = Field(default_factory=ScoringWeights)
+    source_priors: dict[str, float] = Field(
+        default_factory=lambda: dict(_DEFAULT_SOURCE_PRIORS)
+    )
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
 

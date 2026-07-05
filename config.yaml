@@ -113,10 +113,21 @@ nitter_instances:
 - https://nitter.net
 - https://nitter.poast.org
 scoring:
+  relevance: 2.0
+  source: 1.0
   overlap: 1.0
-  velocity: 1.0
+  velocity: 0.5
   feedback: 1.0
-  resurface_boost: 2.0
+  author: 0.5
+  resurface_boost: 0.5
+source_priors:
+  default: 0.5
+  arxiv: 0.6
+  slack: 0.8
+  'slack:alignment:papers-running-list': 1.0
+  twitter: 0.5
+  rss: 0.4
+  'rss:OpenAI Blog': 0.1
 smtp:
   host: smtp.gmail.com
   port: 587

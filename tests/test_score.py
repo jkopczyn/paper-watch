@@ -5,11 +5,16 @@ import pytest
 from paper_watch.config import ScoringWeights
 from paper_watch.score import (
     ScoreFeatures,
+    best_source_prior,
     citation_growth,
     compute_score,
     derive_feedback_keys,
     feedback_affinity,
+    has_tracked_author,
+    normalize_tracked_authors,
     overlap_norm,
+    relevance_norm,
+    source_prior,
     velocity_norm,
 )
 
@@ -99,3 +104,62 @@ def test_resurface_adds_boost():
     base = ScoreFeatures(1, 0, 0, 0, 0.0, resurfaced=False)
     boosted = ScoreFeatures(1, 0, 0, 0, 0.0, resurfaced=True)
     assert compute_score(boosted, w) - compute_score(base, w) == pytest.approx(5.0)
+
+
+# -- relevance / source prior / tracked author (score v2) -------------------
+def test_relevance_norm_scales_and_handles_none():
+    assert relevance_norm(None) == 0.0
+    assert relevance_norm(0) == 0.0
+    assert relevance_norm(2) == pytest.approx(0.5)
+    assert relevance_norm(4) == 1.0
+    assert relevance_norm(9) == 1.0  # clamped
+
+
+def test_relevance_separates_fresh_single_source_papers():
+    """The old 0.50 twelve-way tie: identical structural features must now
+    rank by cached LLM relevance."""
+    w = ScoringWeights()
+    must_see = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=4)
+    tangential = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=1)
+    assert compute_score(must_see, w) > compute_score(tangential, w)
+
+
+def test_source_prior_longest_prefix_wins():
+    priors = {
+        "default": 0.5,
+        "slack": 0.8,
+        "slack:alignment:papers-running-list": 1.0,
+        "rss": 0.4,
+        "rss:OpenAI Blog": 0.1,
+    }
+    assert source_prior("slack:alignment:papers-running-list", priors) == 1.0
+    assert source_prior("slack:far:papers", priors) == 0.8
+    assert source_prior("rss:OpenAI Blog", priors) == 0.1
+    assert source_prior("rss:Import AI", priors) == 0.4
+    assert source_prior("twitter:janleike", priors) == 0.5  # default
+
+
+def test_best_source_prior_takes_max():
+    priors = {"default": 0.5, "rss:OpenAI Blog": 0.1, "slack": 0.9}
+    assert best_source_prior({"rss:OpenAI Blog", "slack:far:papers"}, priors) == 0.9
+    assert best_source_prior(set(), priors) == 0.5
+
+
+def test_tracked_author_matching():
+    tracked = normalize_tracked_authors(["Neel Nanda", "Samuel R. Bowman"])
+    assert has_tracked_author(["neel nanda", "Someone Else"], tracked)
+    assert not has_tracked_author(["Someone Else"], tracked)
+    assert not has_tracked_author([], tracked)
+
+
+def test_compute_score_includes_v2_terms():
+    w = ScoringWeights(
+        relevance=2.0, source=1.0, overlap=0.0, velocity=0.0, feedback=0.0,
+        author=0.5, resurface_boost=0.0,
+    )
+    f = ScoreFeatures(
+        1, None, None, 0, 0.0, False,
+        relevance=4, source_prior=0.8, tracked_author=True,
+    )
+    # 2.0*1.0 + 1.0*0.8 + 0.5*1.0
+    assert compute_score(f, w) == pytest.approx(3.3)

@@ -16,10 +16,13 @@ from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
 from paper_watch.score import (
     ScoreFeatures,
+    best_source_prior,
     citation_growth,
     compute_score,
     derive_feedback_keys,
     feedback_affinity,
+    has_tracked_author,
+    normalize_tracked_authors,
 )
 
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
@@ -128,8 +131,17 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
 
 
 def select_digest(
-    store, weights: ScoringWeights, *, top_n, candidate_start, resurface_start
+    store,
+    weights: ScoringWeights,
+    *,
+    top_n,
+    candidate_start,
+    resurface_start,
+    source_priors: dict[str, float] | None = None,
+    tracked_authors: set[str] | None = None,
 ) -> list[dict]:
+    source_priors = source_priors or {}
+    tracked_authors = tracked_authors or set()
     fb_weights = store.get_feedback_weights()
     chosen: list[dict] = []
 
@@ -171,6 +183,9 @@ def select_digest(
             new_mentions_in_window=new_mentions,
             feedback_affinity=feedback_affinity(keys, fb_weights),
             resurfaced=resurfaced,
+            relevance=row["relevance"],
+            source_prior=best_source_prior(sources, source_priors),
+            tracked_author=has_tracked_author(authors, tracked_authors),
         )
         chosen.append(
             {
@@ -220,6 +235,8 @@ def run_pipeline(
     dry_run: bool,
     out_dir: Path,
     metadata_fetch=None,
+    source_priors: dict[str, float] | None = None,
+    tracked_authors: set[str] | None = None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -238,6 +255,8 @@ def run_pipeline(
         top_n=top_n,
         candidate_start=candidate_start,
         resurface_start=resurface_start,
+        source_priors=source_priors,
+        tracked_authors=tracked_authors,
     )
     items = [_to_item(c) for c in chosen]
     html = render_html(items, generated_at=now_iso)
@@ -369,6 +388,8 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             enricher=enricher,
             sender=sender,
             metadata_fetch=get_text,
+            source_priors=config.source_priors,
+            tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,
             top_n=config.top_n,
             since=since_iso,

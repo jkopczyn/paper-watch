@@ -34,11 +34,21 @@ nitter_instances:
 slack:           # #papers channels; see README. Fill ids via `paper-watch slack-channels`.
   workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
 
-scoring:
+scoring:           # tune against ground truth (see eval); hand-set defaults
+  relevance: 2.0   # LLM 0-4 vs profile.md, cached at enrichment
+  source: 1.0      # per-source base weight (source_priors below)
   overlap: 1.0
-  velocity: 1.0
+  velocity: 0.5
   feedback: 1.0
-  resurface_boost: 2.0
+  author: 0.5      # paper has an author from `authors`
+  resurface_boost: 0.5
+
+source_priors:     # longest-prefix match on source labels
+  default: 0.5
+  arxiv: 0.6
+  slack: 0.8       # curated channels deserve more, e.g. 'slack:ws:papers': 1.0
+  twitter: 0.5
+  rss: 0.4
 
 smtp:
   host: smtp.gmail.com

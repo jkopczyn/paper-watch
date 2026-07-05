@@ -1,10 +1,14 @@
-"""Ranking. Transparent, tunable, and NOT ML.
+"""Ranking. Deterministic arithmetic over cached features — zero LLM tokens
+per run.
 
-score = w_overlap·overlap + w_velocity·velocity + w_feedback·feedback_affinity
-        (+ resurface_boost if the paper is resurfacing)
+score = w_relevance·(relevance/4) + w_source·source_prior + w_feedback·affinity
+      + w_author·tracked_author + w_overlap·overlap + w_velocity·velocity
+      (+ resurface_boost if the paper is resurfacing)
 
-The LLM plays no part here by design — ranking is driven by cross-source overlap,
-citation/social velocity, and learned reading-group feedback weights.
+The only LLM-derived input is `relevance`, judged once per entry at enrichment
+time against the reader profile (abstract + metadata only) and cached. It is
+the discriminator between fresh papers, which otherwise all look identical to
+the structural signals. Every weight is tunable offline against ground truth.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from dataclasses import dataclass
 from paper_watch.config import ScoringWeights
 
 _VELOCITY_K = 5.0  # saturation constant: velocity_raw == K maps to 0.5
+_RELEVANCE_MAX = 4  # rubric top (see enrich.RELEVANCE_RUBRIC)
 
 
 @dataclass
@@ -25,6 +30,9 @@ class ScoreFeatures:
     new_mentions_in_window: int
     feedback_affinity: float
     resurfaced: bool
+    relevance: int | None = None  # 0-4, None until enriched under v2
+    source_prior: float = 0.0  # best per-source base weight among mentions
+    tracked_author: bool = False  # any author on the config whitelist
 
 
 def citation_growth(citation_count: int | None, citation_count_prev: int | None) -> int:
@@ -58,6 +66,37 @@ def velocity_norm(
     return raw / (raw + k)
 
 
+def relevance_norm(relevance: int | None) -> float:
+    """LLM relevance 0-4 mapped to [0, 1]; unenriched entries contribute 0."""
+    if relevance is None:
+        return 0.0
+    return max(0, min(_RELEVANCE_MAX, relevance)) / _RELEVANCE_MAX
+
+
+def source_prior(source: str, priors: dict[str, float]) -> float:
+    """Base weight for one source label via longest-prefix match.
+
+    Labels are hierarchical ("slack:alignment:papers-running-list"), so
+    "slack:alignment:papers-running-list" beats "slack"; the "default" key
+    (or 0.5) applies when nothing matches.
+    """
+    best_key = None
+    for key in priors:
+        if key != "default" and source.startswith(key):
+            if best_key is None or len(key) > len(best_key):
+                best_key = key
+    if best_key is not None:
+        return priors[best_key]
+    return priors.get("default", 0.5)
+
+
+def best_source_prior(sources: set[str], priors: dict[str, float]) -> float:
+    """The strongest endorsement wins: max prior over the entry's sources."""
+    if not sources:
+        return priors.get("default", 0.5)
+    return max(source_prior(s, priors) for s in sources)
+
+
 def derive_feedback_keys(
     authors: list[str], tags: list[str], source: str
 ) -> list[tuple[str, str]]:
@@ -76,12 +115,24 @@ def feedback_affinity(
     return math.tanh(total)
 
 
+def has_tracked_author(authors: list[str], tracked: set[str]) -> bool:
+    """Case-insensitive membership of any paper author in the config whitelist."""
+    return any(a.casefold().strip() in tracked for a in authors)
+
+
+def normalize_tracked_authors(authors: list[str]) -> set[str]:
+    return {a.casefold().strip() for a in authors}
+
+
 def compute_score(f: ScoreFeatures, w: ScoringWeights) -> float:
     score = (
-        w.overlap * overlap_norm(f.distinct_sources)
+        w.relevance * relevance_norm(f.relevance)
+        + w.source * f.source_prior
+        + w.overlap * overlap_norm(f.distinct_sources)
         + w.velocity
         * velocity_norm(f.citation_count, f.citation_count_prev, f.new_mentions_in_window)
         + w.feedback * f.feedback_affinity
+        + w.author * (1.0 if f.tracked_author else 0.0)
     )
     if f.resurfaced:
         score += w.resurface_boost
