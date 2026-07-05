@@ -1,7 +1,9 @@
 """RSS/Atom source: pull newsletter and blog feeds from `method-rec.md`.
 
-Newsletter items often link papers in the body, so the entry summary/content is
-kept as `text` for arXiv-ID / DOI recovery during normalization.
+Newsletter items often link papers in the body; that text is kept for
+enrichment context, but ids found in it are *citations*, not the item's own
+identity (`extract_ids_from_text=False`) — a newsletter must not adopt the
+arXiv id of the first paper it links.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ def parse_rss(xml: str, feed_name: str) -> list[RawItem]:
                 abstract=None,
                 text=_entry_text(e),
                 published_at=published,
+                extract_ids_from_text=False,
             )
         )
     return items

@@ -193,6 +193,37 @@ class Store:
             "SELECT * FROM entries WHERE title_norm = ?", (title_norm,)
         ).fetchone()
 
+    def update_paper_metadata(
+        self,
+        entry_id: int,
+        *,
+        title: str,
+        title_norm: str,
+        authors: list[str],
+        abstract: str | None,
+        links: dict[str, str],
+    ) -> None:
+        """Replace a post-shaped entry's identity fields with the real paper's.
+
+        `links` entries are merged over the existing ones (the post URL lives on
+        in mentions; the entry should link the paper).
+        """
+        row = self.get_entry(entry_id)
+        if row is None:
+            return
+        merged = json.loads(row["links_json"])
+        merged.update(links)
+        self.conn.execute(
+            """
+            UPDATE entries
+            SET title = ?, title_norm = ?, authors_json = ?, abstract = ?,
+                links_json = ?
+            WHERE id = ?
+            """,
+            (title, title_norm, json.dumps(authors), abstract, json.dumps(merged), entry_id),
+        )
+        self.conn.commit()
+
     # -- mentions ----------------------------------------------------------
     def add_mention(
         self,

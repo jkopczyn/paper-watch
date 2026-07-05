@@ -1,3 +1,5 @@
+import json
+
 from paper_watch.config import (
     Config,
     ScoringWeights,
@@ -7,7 +9,12 @@ from paper_watch.config import (
 )
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
-from paper_watch.runtime import build_sources, ingest, run_pipeline
+from paper_watch.runtime import (
+    build_sources,
+    ingest,
+    resolve_paper_metadata,
+    run_pipeline,
+)
 from paper_watch.sources.slack import SlackSource
 from paper_watch.store import Store
 
@@ -105,6 +112,61 @@ def test_ingest_multi_link_slack_message_is_one_mention(tmp_path):
     new_ids = ingest(store, [ListSource("slack", items)], since=None, now_iso="2026-07-01T06:45:22Z")
     assert len(new_ids) == 1
     assert len(store.get_mentions(new_ids[0])) == 1
+    store.close()
+
+
+_ARXIV_META_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2605.01642v1</id>
+    <link href="http://arxiv.org/abs/2605.01642v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2605.01642v1" rel="related" type="application/pdf"/>
+    <title>Adaptive Pluralistic Alignment</title>
+    <summary>We propose a pipeline for dynamic artificial democracy.</summary>
+    <author><name>Rachel Freedman</name></author>
+    <published>2026-06-28T00:00:00Z</published>
+  </entry>
+</feed>
+"""
+
+
+def test_resolve_paper_metadata_turns_post_into_paper(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    tweet = RawItem(
+        source="twitter:FreedmanRach",
+        url="https://nitter.net/FreedmanRach/status/207169#m",
+        text="My new research agenda: https://arxiv.org/abs/2605.01642",
+    )
+    new_ids = ingest(store, [ListSource("twitter", [tweet])], since=None, now_iso="2026-06-30T08:00:00Z")
+    assert len(new_ids) == 1
+    row = store.get_entry(new_ids[0])
+    assert row["title"].startswith("My new research agenda")  # post-shaped
+
+    updated = resolve_paper_metadata(store, new_ids, lambda url: _ARXIV_META_XML)
+    assert updated == 1
+    row = store.get_entry(new_ids[0])
+    assert row["title"] == "Adaptive Pluralistic Alignment"
+    assert row["abstract"].startswith("We propose")
+    assert json.loads(row["authors_json"]) == ["Rachel Freedman"]
+    assert json.loads(row["links_json"])["abstract"] == "http://arxiv.org/abs/2605.01642v1"
+    # the tweet survives as the mention
+    assert store.get_mentions(new_ids[0])[0]["source"] == "twitter:FreedmanRach"
+    store.close()
+
+
+def test_resolve_paper_metadata_skips_entries_with_abstract(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    new_ids = ingest(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2605.01642", "Already Complete")])],
+        since=None,
+        now_iso="2026-06-30T08:00:00Z",
+    )
+
+    def boom(url):
+        raise AssertionError("should not fetch")
+
+    assert resolve_paper_metadata(store, new_ids, boom) == 0
     store.close()
 
 

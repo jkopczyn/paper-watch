@@ -12,14 +12,16 @@ def to_entry_fields(raw: RawItem) -> dict:
     """Normalize a RawItem into entry fields.
 
     Recovers arXiv ID / DOI from explicit fields first, then from the item URL,
-    PDF URL, and mention text. When a source gives no title (e.g. a tweet), the
-    mention text is used as the title.
+    PDF URL, and — unless the source says text links are citations, not identity
+    (`extract_ids_from_text=False`) — the mention text. When a source gives no
+    title (e.g. a tweet), the mention text is used as the title.
     """
-    haystack = " ".join(
-        part for part in (raw.url, raw.pdf_url, raw.text) if part
-    )
+    parts = [raw.url, raw.pdf_url]
+    if raw.extract_ids_from_text:
+        parts.append(raw.text)
+    haystack = " ".join(part for part in parts if part)
     arxiv_id = raw.arxiv_id or extract_arxiv_id(haystack)
-    doi = raw.doi or extract_doi(raw.text or "")
+    doi = raw.doi or extract_doi(haystack)
 
     title = raw.title or _title_from_text(raw.text) or raw.url
 

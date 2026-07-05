@@ -15,10 +15,13 @@ def test_parse_rss(fixture_text):
     assert "arxiv.org/abs/2406.05678" in first.text
 
 
-def test_rss_item_arxiv_id_recoverable_by_normalize(fixture_text):
+def test_rss_item_does_not_adopt_cited_arxiv_id(fixture_text):
+    # a newsletter linking a paper in its body must not take that paper's
+    # identity — the id is a citation, not the item
     items = parse_rss(fixture_text("rss_feed.xml"), feed_name="ML Safety")
+    assert items[0].extract_ids_from_text is False
     fields = to_entry_fields(items[0])
-    assert fields["arxiv_id"] == "2406.05678"
+    assert fields["arxiv_id"] is None
 
 
 def test_source_queries_each_feed_and_filters_since(fixture_text):

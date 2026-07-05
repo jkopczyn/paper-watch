@@ -45,6 +45,44 @@ def author_query_url(author: str, max_results: int = 50) -> str:
     return authors_query_url([author], max_results)
 
 
+def id_list_url(arxiv_ids: list[str]) -> str:
+    params = urllib.parse.urlencode(
+        {"id_list": ",".join(arxiv_ids), "max_results": len(arxiv_ids)}
+    )
+    return f"{ARXIV_API}?{params}"
+
+
+def fetch_metadata(
+    arxiv_ids: list[str],
+    fetch: Fetcher = get_text,
+    *,
+    batch_size: int = 50,
+    min_interval: float = 3.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, RawItem]:
+    """Real paper metadata (title/authors/abstract/pdf) by arXiv id, best-effort.
+
+    Used to turn a post-shaped entry (tweet text as title, no abstract) into the
+    paper it links. A failing batch is logged and skipped, never fatal.
+    """
+    from paper_watch.identity import extract_arxiv_id
+
+    out: dict[str, RawItem] = {}
+    for i, batch in enumerate(batched(arxiv_ids, batch_size)):
+        if i > 0:
+            sleep(min_interval)
+        try:
+            xml = fetch(id_list_url(list(batch)))
+        except Exception as exc:
+            log.warning("arxiv id_list batch %s failed: %s", list(batch), exc)
+            continue
+        for item in parse_arxiv_atom(xml):
+            aid = extract_arxiv_id(item.url)
+            if aid:
+                out[aid] = item
+    return out
+
+
 def parse_arxiv_atom(xml: str) -> list[RawItem]:
     feed = feedparser.parse(xml)
     items: list[RawItem] = []

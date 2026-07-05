@@ -87,3 +87,31 @@ def test_source_skips_a_failing_batch(fixture_text):
     src = ArxivSource(authors=["A", "B"], fetch=flaky_fetch, sleep=lambda _s: None)
     # a failing batch must not abort the whole run
     assert list(src.fetch()) == []
+
+
+def test_id_list_url():
+    from paper_watch.sources.arxiv import id_list_url
+
+    url = id_list_url(["2406.01234", "2406.05678"])
+    assert "id_list=2406.01234%2C2406.05678" in url
+    assert "max_results=2" in url
+
+
+def test_fetch_metadata_maps_by_arxiv_id(fixture_text):
+    from paper_watch.sources.arxiv import fetch_metadata
+
+    meta = fetch_metadata(
+        ["2406.01234", "2406.05678"], fetch=lambda url: fixture_text("arxiv_response.xml")
+    )
+    assert set(meta) == {"2406.01234", "2406.05678"}
+    assert meta["2406.01234"].title == "Scalable Oversight: A Survey"
+    assert meta["2406.01234"].abstract
+
+
+def test_fetch_metadata_tolerates_failure():
+    from paper_watch.sources.arxiv import fetch_metadata
+
+    def boom(url):
+        raise RuntimeError("down")
+
+    assert fetch_metadata(["2406.01234"], fetch=boom) == {}

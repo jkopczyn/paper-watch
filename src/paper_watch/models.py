@@ -32,3 +32,8 @@ class RawItem:
     # message permalink shared by every link in that message, so one message is
     # one mention per paper. Falls back to `url` when unset.
     mention_url: str | None = None
+    # Whether an arXiv ID / DOI found in `text` identifies THIS item (a tweet
+    # about one paper: yes) or merely a paper the item cites (a newsletter
+    # linking many papers: no — adopting the first cited id would hijack that
+    # paper's identity).
+    extract_ids_from_text: bool = True

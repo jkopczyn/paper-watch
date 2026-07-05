@@ -63,6 +63,45 @@ def ingest(store, sources, since: str | None, now_iso: str) -> list[int]:
     return new_ids
 
 
+def resolve_paper_metadata(store, entry_ids: list[int], fetch) -> int:
+    """Give post-shaped entries their real paper metadata, best-effort.
+
+    A tweet/Slack entry that links an arXiv id is created with the post text as
+    its title and no abstract; the LLM gate and any content-based ranking need
+    the actual paper. Batch-fetches the arXiv API for entries that have an
+    arxiv_id but no abstract. Returns how many entries were updated.
+    """
+    from paper_watch.identity import normalize_title
+    from paper_watch.sources.arxiv import fetch_metadata
+
+    pending: dict[str, int] = {}
+    for entry_id in entry_ids:
+        row = store.get_entry(entry_id)
+        if row is not None and row["arxiv_id"] and not row["abstract"]:
+            pending[row["arxiv_id"]] = entry_id
+    if not pending:
+        return 0
+
+    updated = 0
+    for arxiv_id, item in fetch_metadata(list(pending), fetch).items():
+        entry_id = pending.get(arxiv_id)
+        if entry_id is None or not item.title:
+            continue
+        links = {"abstract": item.url or f"https://arxiv.org/abs/{arxiv_id}"}
+        if item.pdf_url:
+            links["pdf"] = item.pdf_url
+        store.update_paper_metadata(
+            entry_id,
+            title=item.title,
+            title_norm=normalize_title(item.title),
+            authors=item.authors,
+            abstract=item.abstract,
+            links=links,
+        )
+        updated += 1
+    return updated
+
+
 # -- scoring / selection ---------------------------------------------------
 def _entry_sources(store, entry_id: int) -> set[str]:
     return {m["source"] for m in store.get_mentions(entry_id)}
@@ -177,12 +216,17 @@ def run_pipeline(
     max_enrich: int,
     dry_run: bool,
     out_dir: Path,
+    metadata_fetch=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
 
     new_ids = ingest(store, sources, since, now_iso)
+    # Fill in real paper metadata BEFORE enrichment so the LLM judges the
+    # paper's abstract, not a tweet fragment. None (tests) skips the fetch.
+    if metadata_fetch is not None and new_ids:
+        resolve_paper_metadata(store, new_ids, metadata_fetch)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
     chosen = select_digest(
@@ -310,11 +354,14 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             window_start = (now - timedelta(days=pool_days)).strftime(_ISO)
             update_metrics(store, store.active_entry_ids_since(window_start), now.strftime(_ISO))
 
+        from paper_watch.http import get_text
+
         return run_pipeline(
             store,
             sources=sources,
             enricher=enricher,
             sender=sender,
+            metadata_fetch=get_text,
             weights=config.scoring,
             top_n=config.top_n,
             since=since_iso,
