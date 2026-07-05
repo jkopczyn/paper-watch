@@ -1,0 +1,40 @@
+# Controlled tag vocabulary for enrichment. The LLM may ONLY use these tags
+# (unknown tags are dropped), so feedback learned per-tag actually transfers
+# between papers. Keys are the tags; values describe intended use. Edit freely —
+# entries already enriched keep their old tags until re-enriched.
+tags:
+  interp: mechanistic interpretability - circuits, SAEs, probing, model internals
+  steering: activation/representation steering and editing
+  cot-faithfulness: chain-of-thought faithfulness, monitoring of reasoning traces
+  evals: capability or propensity evaluations, eval methodology
+  benchmarks: new benchmarks or benchmark critiques
+  dangerous-capabilities: bio/chem/cyber/persuasion capability measurement
+  deception: deception, scheming, sandbagging, alignment faking
+  situational-awareness: models reasoning about themselves or their training
+  reward-hacking: specification gaming, reward hacking, Goodharting
+  sycophancy: sycophancy and preference-pandering failure modes
+  oversight: scalable oversight, debate, weak-to-strong, recursive reward modeling
+  control: AI control protocols, untrusted-model monitoring
+  rlhf: RLHF/RLAIF/DPO-style alignment training methods
+  rl: reinforcement learning beyond alignment training
+  agents: LLM agents, tool use, autonomy, agentic evals
+  multi-agent: multi-agent interaction, collusion, societal simulation
+  jailbreaks: jailbreaks, adversarial prompts, guardrail bypass
+  prompt-injection: prompt injection and agent hijacking
+  red-teaming: red-teaming practice and automation
+  robustness: adversarial robustness, distribution shift
+  unlearning: machine unlearning, knowledge/capability removal
+  model-organisms: constructed demonstrations of misalignment phenomena
+  value-learning: value learning, preference elicitation, pluralistic alignment
+  theory: conceptual/theoretical alignment arguments and agendas
+  training-dynamics: how capabilities/behaviors emerge during training
+  generalization: OOD and weak-to-strong generalization studies
+  scaling: scaling laws, compute analysis, forecasting from trends
+  forecasting: AI progress/risk forecasting, timelines
+  capabilities: notable capability results without a direct safety angle
+  open-weights: open-weight model releases and their safety implications
+  governance: AI governance, standards, lab policy
+  policy: government policy, regulation
+  security: model/ML security beyond adversarial inputs (weights theft, supply chain)
+  tooling: research tooling, infrastructure, datasets
+  meta: surveys, retrospectives, research-methodology pieces

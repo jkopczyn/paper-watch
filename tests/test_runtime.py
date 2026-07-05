@@ -32,12 +32,12 @@ class FakeEnricher:
     def __init__(self, relevant=True):
         self.relevant = relevant
 
-    def enrich(self, *, title, abstract, source):
+    def enrich(self, *, title, abstract, source, mentions):
         return EnrichmentResult(
             tldr=f"tldr:{title}",
             why="why",
             tags=["interp"],
-            safety_relevant=self.relevant,
+            relevance=3 if self.relevant else 0,
         )
 
 

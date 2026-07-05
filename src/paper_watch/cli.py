@@ -50,6 +50,8 @@ smtp:
 llm:
   model: claude-haiku-4-5   # or claude-opus-4-8 for higher-quality enrichment
   max_enrich_per_run: 50
+  profile_path: profile.md  # reader profile the relevance score is judged against
+  tags_path: tags.yaml      # controlled tag vocabulary
 """
 
 

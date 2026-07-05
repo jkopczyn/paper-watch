@@ -77,6 +77,10 @@ class LlmConfig(BaseModel):
     # Bump to claude-opus-4-8 in config for higher-quality enrichment.
     model: str = "claude-haiku-4-5"
     max_enrich_per_run: int = 50
+    # Reader profile + controlled tag vocabulary included in the enrichment
+    # prompt (see profile.md / tags.yaml at the repo root).
+    profile_path: str = "profile.md"
+    tags_path: str = "tags.yaml"
 
 
 class Config(BaseModel):

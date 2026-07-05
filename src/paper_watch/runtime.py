@@ -113,14 +113,17 @@ def _primary_source(store, entry_id: int) -> str:
 
 
 def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
-    """Trusted items bypass the gate; others need safety_relevant.
+    """Trusted items bypass the gate; others need LLM relevance >= 2.
 
     arXiv author-feed items are a trusted whitelist (bypass), as is any mention
     flagged trusted at ingest (a trusted Slack channel, or a Slack link to a
-    known paper domain). Everything else needs the LLM relevance flag.
+    known paper domain). Entries not yet re-enriched under v2 fall back to the
+    old boolean safety_relevant flag.
     """
     if trusted or "arxiv" in sources:
         return True
+    if row["relevance"] is not None:
+        return row["relevance"] >= 2
     return bool(row["safety_relevant"])
 
 
@@ -294,18 +297,22 @@ def build_sources(config: Config, fetch=None, *, nitter_instances: list[str] | N
 
 class _PassthroughEnricher:
     """Used when no ANTHROPIC_API_KEY is set: marks entries enriched without an
-    LLM call (safety_relevant=True so arXiv still flows; no TL;DR/tags)."""
+    LLM call (relevance=2 so nothing is silently gated out; no TL;DR/tags)."""
 
-    def enrich(self, *, title, abstract, source) -> EnrichmentResult:
-        return EnrichmentResult(tldr="", why="", tags=[], safety_relevant=True)
+    def enrich(self, *, title, abstract, source, mentions) -> EnrichmentResult:
+        return EnrichmentResult(tldr="", why="", tags=[], relevance=2)
 
 
 def _build_enricher(config: Config):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return _PassthroughEnricher()
-    from paper_watch.enrich import ClaudeEnricher
+    from paper_watch.enrich import ClaudeEnricher, load_profile, load_tag_vocabulary
 
-    return ClaudeEnricher(config.llm.model)
+    return ClaudeEnricher(
+        config.llm.model,
+        profile=load_profile(config.llm.profile_path),
+        vocabulary=load_tag_vocabulary(config.llm.tags_path),
+    )
 
 
 def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:

@@ -12,7 +12,7 @@ def _seed_shown(store: Store, title, authors, tags, source, digest_at="2026-06-1
         first_seen_at="2026-06-17T00:00:00Z",
         authors=authors,
     )
-    store.set_enrichment(eid, tldr="t", why="w", tags=tags, safety_relevant=True)
+    store.set_enrichment(eid, tldr="t", why="w", tags=tags, relevance=3, version=2)
     store.add_mention(
         entry_id=eid, source=source, source_item_url=f"u/{eid}", fetched_at=digest_at
     )

@@ -107,6 +107,10 @@ class Store:
         self._add_column_if_missing(
             "mentions", "trusted", "INTEGER NOT NULL DEFAULT 0"
         )
+        # Enrichment v2: 0-4 relevance vs the reader profile, plus a schema
+        # version so old enrichments are redone lazily.
+        self._add_column_if_missing("entries", "relevance", "INTEGER")
+        self._add_column_if_missing("entries", "enrich_version", "INTEGER")
         self.conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, decl: str) -> None:
@@ -276,11 +280,13 @@ class Store:
         ).fetchall()
 
     # -- enrichment --------------------------------------------------------
-    def get_unenriched(self, limit: int) -> list[sqlite3.Row]:
-        """Entries that have not been LLM-enriched yet (tldr IS NULL)."""
+    def get_unenriched(self, limit: int, *, version: int = 1) -> list[sqlite3.Row]:
+        """Entries lacking enrichment at `version` (never enriched, or older)."""
         return self.conn.execute(
-            "SELECT * FROM entries WHERE tldr IS NULL ORDER BY id LIMIT ?",
-            (limit,),
+            "SELECT * FROM entries "
+            "WHERE enrich_version IS NULL OR enrich_version < ? "
+            "ORDER BY id LIMIT ?",
+            (version, limit),
         ).fetchall()
 
     def set_enrichment(
@@ -290,15 +296,16 @@ class Store:
         tldr: str,
         why: str,
         tags: list[str],
-        safety_relevant: bool,
+        relevance: int,
+        version: int,
     ) -> None:
         self.conn.execute(
             """
             UPDATE entries
-            SET tldr = ?, why = ?, tags_json = ?, safety_relevant = ?
+            SET tldr = ?, why = ?, tags_json = ?, relevance = ?, enrich_version = ?
             WHERE id = ?
             """,
-            (tldr, why, json.dumps(tags), 1 if safety_relevant else 0, entry_id),
+            (tldr, why, json.dumps(tags), relevance, version, entry_id),
         )
         self.conn.commit()
 
