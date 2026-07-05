@@ -3,30 +3,45 @@ import csv
 from paper_watch.groundtruth import export_groundtruth, parse_poll_message
 
 POLL_TEXT = (
-    "This week's papers — vote with :one:-:three:!\n"
-    ":one: <https://arxiv.org/abs/2605.01642|Adaptive Pluralistic Alignment>\n"
-    ":two: <https://www.lesswrong.com/posts/abc123/consistency-training>\n"
-    ":three: <https://arxiv.org/abs/2606.11502> role-playing beliefs\n"
+    "This week's papers — react to vote!\n"
+    ":performing_arts: <https://arxiv.org/abs/2605.01642|Adaptive Pluralistic Alignment>\n"
+    ":fish: <https://www.lesswrong.com/posts/abc123/consistency-training>\n"
+    ":smiling_imp: <https://arxiv.org/abs/2606.11502> role-playing beliefs\n"
 )
 
 POLL_MSG = {
     "ts": "1782864000.000100",  # 2026-06-30T22:40:00Z-ish
     "text": POLL_TEXT,
     "reactions": [
-        {"name": "one", "count": 4},
-        {"name": "three", "count": 2},
-        {"name": "tada", "count": 7},
+        {"name": "performing_arts", "count": 4},
+        {"name": "smiling_imp", "count": 2},
+        {"name": "tada", "count": 7},  # not a ballot emoji -> ignored
     ],
 }
 
 
-def test_parse_poll_message_maps_votes_by_option_order():
+def test_parse_poll_message_maps_votes_by_line_emoji():
     options = parse_poll_message(POLL_MSG)
     assert [o.option for o in options] == [1, 2, 3]
-    assert [o.votes for o in options] == [4, 0, 2]  # :two: unreacted; :tada: ignored
+    assert [o.emoji for o in options] == ["performing_arts", "fish", "smiling_imp"]
+    assert [o.votes for o in options] == [4, 0, 2]  # :fish: unreacted; :tada: ignored
     assert options[0].url == "https://arxiv.org/abs/2605.01642"
     assert "Adaptive Pluralistic" in options[0].context
     assert options[0].week == options[2].week != ""
+
+
+def test_parse_poll_message_number_emoji_list_format():
+    msg = {
+        "ts": "1.0",
+        "text": (
+            "backlog picks:\n"
+            "• :one:<https://a.example/x|First>\n"
+            "• :two:<https://b.example/y|Second>\n"
+        ),
+        "reactions": [{"name": "one", "count": 2}, {"name": "two", "count": 3}],
+    }
+    options = parse_poll_message(msg)
+    assert [(o.emoji, o.votes) for o in options] == [("one", 2), ("two", 3)]
 
 
 def test_parse_poll_message_ignores_non_polls():

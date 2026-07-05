@@ -12,6 +12,7 @@ the CSV is meant to be eyeballed and pruned by a human before use.
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,9 +21,9 @@ from paper_watch.sources.slack import extract_urls, slack_history, ts_to_iso
 
 _MAX_PAGES = 20
 
-# Slack number-emoji, in option order: votes for option i are reactions with
-# the i-th name. Extend if a poll ever has more than ten options.
-NUM_EMOJI = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "keycap_ten"]
+# An option's ballot emoji is the one prefixing its line
+# (":performing_arts: <link|Title>"); votes are reactions with that emoji.
+_EMOJI = re.compile(r":([a-z0-9_+'-]+):")
 
 
 @dataclass
@@ -55,12 +56,24 @@ def _line_for_url(text: str, url: str) -> str:
     return ""
 
 
+def _ballot_emoji(line: str, url: str) -> str:
+    """The emoji labelling this option: last one before the link, else first
+    in the line (handles both ':fish: <url>' and '• :one:<url|t>' formats)."""
+    head = line.split(url, 1)[0]
+    before = _EMOJI.findall(head)
+    if before:
+        return before[-1]
+    anywhere = _EMOJI.findall(line)
+    return anywhere[0] if anywhere else ""
+
+
 def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
     """One PollOption per link in a poll-shaped message; [] if not a poll.
 
-    Option order = link order; option i's votes are the reaction count of the
-    i-th number emoji (0 when the poll used something else — the human pass
-    over the CSV catches those).
+    Option order = link order. Each option's votes are the reaction count of
+    its ballot emoji — the emoji prefixing its line in the message (0 when the
+    line has no emoji or nobody reacted; the human pass over the CSV catches
+    oddballs).
     """
     text = msg.get("text") or ""
     urls = list(dict.fromkeys(extract_urls(text)))
@@ -71,7 +84,8 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
     week = _iso_week(ts) if ts else ""
     options: list[PollOption] = []
     for i, url in enumerate(urls, start=1):
-        emoji = NUM_EMOJI[i - 1] if i <= len(NUM_EMOJI) else ""
+        line = _line_for_url(text, url)
+        emoji = _ballot_emoji(line, url)
         options.append(
             PollOption(
                 week=week,
@@ -80,7 +94,7 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
                 emoji=emoji,
                 votes=reactions.get(emoji, 0),
                 url=url,
-                context=_line_for_url(text, url),
+                context=line,
             )
         )
     return options
