@@ -225,6 +225,117 @@ def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
     click.echo(f"Imported {n} feedback row(s) for {week}")
 
 
+@cli.command("groundtruth")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option("--workspace", required=True, help="Workspace `name` from config.slack.workspaces.")
+@click.option("--channel", "channel_id", required=True, help="Channel id holding the weekly polls.")
+@click.option("--since", default="180d", show_default=True, help="How far back to scan.")
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default="groundtruth.csv",
+    show_default=True,
+)
+def groundtruth_cmd(config_path: str, workspace: str, channel_id: str, since: str, out: Path) -> None:
+    """Export reading-group poll messages + emoji votes to a ground-truth CSV.
+
+    Detects poll-shaped messages (>= 2 links); votes come from number-emoji
+    reactions in link order. Eyeball and prune the CSV before `paper-watch eval`.
+    """
+    import os
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+    from paper_watch.config import Config
+    from paper_watch.dates import since_to_iso
+    from paper_watch.groundtruth import export_groundtruth
+    from paper_watch.sources.slack import iso_to_ts
+
+    cfg = Config.load(config_path)
+    workspaces = cfg.slack.workspaces if cfg.slack else []
+    ws = next((w for w in workspaces if w.name == workspace), None)
+    if ws is None:
+        raise click.ClickException(f"workspace {workspace!r} not in config.slack.workspaces")
+    token = os.environ.get(ws.token_env)
+    if not token:
+        raise click.ClickException(f"no token in env var {ws.token_env}")
+
+    n = export_groundtruth(
+        token, channel_id, oldest=iso_to_ts(since_to_iso(since)), path=out
+    )
+    click.echo(f"Wrote {n} poll option(s) to {out} — review/prune before eval.")
+
+
+@cli.command("eval")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--groundtruth",
+    "groundtruth_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default="groundtruth.csv",
+    show_default=True,
+)
+@click.option("--top-n", default=None, type=int, help="Digest size (default: config top_n).")
+@click.option("--window-days", default=None, type=int, help="Candidate window (default: config).")
+@click.option(
+    "--weights-json",
+    default=None,
+    help='Override scoring weights, e.g. \'{"relevance":0,"velocity":1}\' to score the old ranker.',
+)
+def eval_cmd(
+    config_path: str,
+    groundtruth_path: Path,
+    top_n: int | None,
+    window_days: int | None,
+    weights_json: str | None,
+) -> None:
+    """Score the ranker's top-N against reading-group poll ground truth."""
+    import json as _json
+
+    from paper_watch.config import Config, ScoringWeights
+    from paper_watch.eval import evaluate, load_groundtruth
+    from paper_watch.score import normalize_tracked_authors
+    from paper_watch.store import Store
+
+    cfg = Config.load(config_path)
+    weights = cfg.scoring
+    if weights_json:
+        weights = ScoringWeights.model_validate(
+            {**cfg.scoring.model_dump(), **_json.loads(weights_json)}
+        )
+
+    store = Store(cfg.db_path)
+    try:
+        report = evaluate(
+            store,
+            load_groundtruth(groundtruth_path),
+            weights=weights,
+            source_priors=cfg.source_priors,
+            tracked_authors=normalize_tracked_authors(cfg.authors),
+            top_n=top_n or cfg.top_n,
+            window_days=window_days or cfg.candidate_window_days,
+        )
+    finally:
+        store.close()
+
+    for w in report.weeks:
+        winner = f"winner@{w.winner_rank}" if w.winner_rank else "winner MISSED"
+        click.echo(
+            f"{w.week}  pool={w.pool_size:<3} matched={w.n_matched}/{w.n_groundtruth} "
+            f"voted-in-top={w.voted_in_top}/{w.voted_in_pool}  {winner}  nDCG={w.ndcg:.3f}"
+        )
+    click.echo(f"overall  recall@N={report.recall_at_n:.3f}  mean-nDCG={report.mean_ndcg:.3f}")
+    if report.ingest_misses:
+        click.echo(f"\n{len(report.ingest_misses)} ingest miss(es) — never entered the DB:")
+        for row in report.ingest_misses:
+            click.echo(f"  {row.week}  {row.url}  votes={row.votes}")
+
+
 @cli.command("seed-handles")
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
 @click.option(

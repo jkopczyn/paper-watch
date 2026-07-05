@@ -437,3 +437,27 @@ class Store:
             (since,),
         ).fetchall()
         return [int(r["entry_id"]) for r in rows]
+
+    # -- offline eval helpers (historical replay) ---------------------------
+    def entry_ids_mentioned_between(self, start: str, end: str) -> list[int]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT entry_id FROM mentions "
+            "WHERE fetched_at >= ? AND fetched_at <= ? ORDER BY entry_id",
+            (start, end),
+        ).fetchall()
+        return [int(r["entry_id"]) for r in rows]
+
+    def count_mentions_between(self, entry_id: int, start: str, end: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM mentions "
+            "WHERE entry_id = ? AND fetched_at >= ? AND fetched_at <= ?",
+            (entry_id, start, end),
+        ).fetchone()
+        return int(row["n"])
+
+    def get_entry_id_by_mention_url(self, url: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT entry_id FROM mentions WHERE source_item_url = ? LIMIT 1",
+            (url,),
+        ).fetchone()
+        return int(row["entry_id"]) if row else None
