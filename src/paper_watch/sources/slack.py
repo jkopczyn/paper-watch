@@ -198,6 +198,14 @@ class SlackSource:
             urls.append(url)
 
         clean = _clean_text(text)
+        # One Slack message is one mention (per paper): every link shares the
+        # message-scoped dedup key, and trust applies message-wide — a message
+        # containing any known-paper-domain link is a paper post, including its
+        # companion tweet/workshop links.
+        message_key = f"slack://{ws.name}/{channel.id}/{msg.get('ts')}"
+        trusted = channel.trusted or any(
+            is_paper_link(u, self.paper_link_domains) for u in urls
+        )
         for url in urls:
             title, abstract = att_by_url.get(url, (None, None))
             yield RawItem(
@@ -207,7 +215,8 @@ class SlackSource:
                 abstract=abstract,
                 text=clean,
                 published_at=published_at,
-                trusted=channel.trusted or is_paper_link(url, self.paper_link_domains),
+                trusted=trusted,
+                mention_url=message_key,
             )
 
 

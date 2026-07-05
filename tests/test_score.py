@@ -5,6 +5,7 @@ import pytest
 from paper_watch.config import ScoringWeights
 from paper_watch.score import (
     ScoreFeatures,
+    citation_growth,
     compute_score,
     derive_feedback_keys,
     feedback_affinity,
@@ -37,6 +38,16 @@ def test_velocity_uses_mention_rate_for_new_papers():
     # brand-new paper, no citations yet, but mentioned a lot this window
     v = velocity_norm(citation_count=0, citation_count_prev=0, new_mentions=4)
     assert v > 0
+
+
+def test_first_citation_observation_is_not_growth():
+    # an already-cited paper measured for the first time has no baseline;
+    # its whole count must not read as a surge
+    assert citation_growth(79, None) == 0
+    assert velocity_norm(citation_count=79, citation_count_prev=None, new_mentions=0) == 0.0
+    # with a baseline, growth counts
+    assert citation_growth(81, 79) == 2
+    assert citation_growth(70, 79) == 0  # S2 corrections never go negative
 
 
 # -- feedback affinity -----------------------------------------------------

@@ -69,6 +69,45 @@ def test_ingest_dedups_across_sources(tmp_path):
     store.close()
 
 
+def test_ingest_dedups_same_tweet_across_nitter_instances(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    tweet_text = "agenda https://arxiv.org/abs/2605.01642"
+    run1 = ListSource(
+        "twitter",
+        [RawItem(source="twitter:x", url="https://nitter.net/x/status/207169#m", text=tweet_text)],
+    )
+    run2 = ListSource(
+        "twitter",
+        [RawItem(source="twitter:x", url="http://localhost/x/status/207169#m", text=tweet_text)],
+    )
+
+    ids1 = ingest(store, [run1], since=None, now_iso="2026-06-30T08:00:00Z")
+    ids2 = ingest(store, [run2], since=None, now_iso="2026-06-30T19:00:00Z")
+    assert len(ids1) == 1 and ids2 == []
+    mentions = store.get_mentions(ids1[0])
+    assert len(mentions) == 1  # URL variants collapse to one canonical mention
+    assert mentions[0]["source_item_url"] == "https://twitter.com/x/status/207169"
+    store.close()
+
+
+def test_ingest_multi_link_slack_message_is_one_mention(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    key = "slack://far/C001/1719.9"
+    text = "paper + tweet + workshop links"
+    items = [
+        RawItem(source="slack:far:papers", url=u, text=f"{text} https://arxiv.org/abs/2605.01642", mention_url=key)
+        for u in (
+            "https://x.com/x/status/207169?s=20",
+            "https://arxiv.org/abs/2605.01642",
+            "https://pluralistic-alignment.github.io/#schedule",
+        )
+    ]
+    new_ids = ingest(store, [ListSource("slack", items)], since=None, now_iso="2026-07-01T06:45:22Z")
+    assert len(new_ids) == 1
+    assert len(store.get_mentions(new_ids[0])) == 1
+    store.close()
+
+
 def test_run_pipeline_dry_run_writes_digest(tmp_path):
     store = Store(tmp_path / "pw.db")
     arxiv = ListSource("arxiv", [_arxiv_item("2406.00001", "Oversight Paper")])

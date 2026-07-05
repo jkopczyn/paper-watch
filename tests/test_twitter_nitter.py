@@ -57,6 +57,30 @@ def test_source_skips_handle_when_all_instances_fail():
     assert list(src.fetch()) == []
 
 
+_PINNED_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>t</title>
+<item>
+  <title>Pinned: Adaptive Pluralistic Alignment https://arxiv.org/abs/2605.01642</title>
+  <link>https://nitter.net/FreedmanRach/status/100#m</link>
+  <pubDate>Mon, 29 Jun 2026 20:34:22 GMT</pubDate>
+  <description>Pinned tweet body https://arxiv.org/abs/2605.01642</description>
+</item>
+<item>
+  <title>Fresh tweet about https://arxiv.org/abs/2406.05678</title>
+  <link>https://nitter.net/FreedmanRach/status/200#m</link>
+  <pubDate>Tue, 30 Jun 2026 10:00:00 GMT</pubDate>
+  <description>body</description>
+</item>
+</channel></rss>
+"""
+
+
+def test_pinned_tweets_are_skipped():
+    items = parse_nitter(_PINNED_FEED, handle="FreedmanRach")
+    assert len(items) == 1
+    assert "Fresh tweet" in items[0].text
+
+
 def test_source_filters_by_since(fixture_text):
     src = NitterSource(
         handles=["NeelNanda5"],

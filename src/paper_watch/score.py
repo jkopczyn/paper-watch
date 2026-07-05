@@ -27,6 +27,13 @@ class ScoreFeatures:
     resurfaced: bool
 
 
+def citation_growth(citation_count: int | None, citation_count_prev: int | None) -> int:
+    """Cited-more-since-last-measurement, or 0 without two measurements."""
+    if citation_count is None or citation_count_prev is None:
+        return 0
+    return max(0, citation_count - citation_count_prev)
+
+
 def overlap_norm(distinct_sources: int, cap: int = 3) -> float:
     """Cross-source overlap, normalized to [0, 1] and capped at `cap` sources."""
     return min(distinct_sources, cap) / cap
@@ -41,9 +48,10 @@ def velocity_norm(
     """Citation growth + in-window mention rate, saturated into [0, 1).
 
     Citation growth captures older papers; the mention rate captures brand-new
-    papers that have no citations yet.
+    papers that have no citations yet. Growth needs two measurements — the first
+    observation of an already-cited paper is not a surge.
     """
-    growth = max(0, (citation_count or 0) - (citation_count_prev or 0))
+    growth = citation_growth(citation_count, citation_count_prev)
     raw = growth + new_mentions
     if raw <= 0:
         return 0.0

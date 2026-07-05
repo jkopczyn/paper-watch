@@ -7,17 +7,55 @@ single `entries` row by arXiv ID, then DOI, then normalized title.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from paper_watch.store import Store
 
 # New-style: 2406.01234 or 2406.01234v3  (4-digit YYMM + 4-5 digit number)
 _ARXIV_NEW = re.compile(r"\b(\d{4}\.\d{4,5})(?:v\d+)?\b")
-# Old-style: hep-th/9901001 or cs.AI/0701001
-_ARXIV_OLD = re.compile(r"\b([a-z][a-z-]+(?:\.[A-Z]{2})?/\d{7})\b")
+# Old-style: hep-th/9901001 or cs.AI/0701001. The archive prefix must be a real
+# arXiv archive name — a bare [a-z-]+ matches ordinary URL path segments like
+# "technology/5934266".
+_ARXIV_ARCHIVES = (
+    "astro-ph|cond-mat|gr-qc|hep-ex|hep-lat|hep-ph|hep-th|math-ph|nlin|nucl-ex|"
+    "nucl-th|physics|quant-ph|math|cs|q-bio|q-fin|stat|eess|econ|cmp-lg|chao-dyn|"
+    "q-alg|alg-geom|dg-ga|funct-an|solv-int|patt-sol|adap-org"
+)
+_ARXIV_OLD = re.compile(rf"\b((?:{_ARXIV_ARCHIVES})(?:\.[A-Z]{{2}})?/\d{{7}})\b")
 # DOI per Crossref's recommended pattern.
 _DOI = re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b")
 _TITLE_PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _WS = re.compile(r"\s+")
+# Trailing "— LessWrong" / "| OpenAI"-style site suffix (em/en dash or pipe with
+# surrounding spaces). Only stripped when a substantial title remains.
+_SITE_SUFFIX = re.compile(r"\s+[|–—]\s+[^|–—]{1,40}$")
+_SITE_SUFFIX_MIN_REMAINDER = 20
+
+# Tweet permalinks: /<user>/status/<id> on twitter/x or any Nitter mirror.
+_TWEET_PATH = re.compile(r"^/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)")
+_TWITTER_HOSTS = {"twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com"}
+
+
+def canonicalize_url(url: str | None) -> str | None:
+    """Normalize a mention URL so the same item dedups across fetch routes.
+
+    Tweets seen via any Nitter instance (or x.com share links with tracking
+    params) collapse to https://twitter.com/<user>/status/<id>; other URLs keep
+    their query but lose the fragment (#m, #section anchors).
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    host = (parts.hostname or "").lower()
+    m = _TWEET_PATH.match(parts.path or "")
+    if m and (
+        host in _TWITTER_HOSTS or "nitter" in host or host in ("localhost", "127.0.0.1")
+    ):
+        return f"https://twitter.com/{m.group(1)}/status/{m.group(2)}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
 
 
 def extract_arxiv_id(text: str | None) -> str | None:
@@ -44,9 +82,16 @@ def extract_doi(text: str | None) -> str | None:
 
 
 def normalize_title(title: str | None) -> str:
-    """Lowercase, drop punctuation, and collapse whitespace for fuzzy matching."""
+    """Lowercase, drop punctuation, and collapse whitespace for fuzzy matching.
+
+    A trailing site suffix ("Paper Title — LessWrong") is stripped first so the
+    same paper dedups against its bare title.
+    """
     if not title:
         return ""
+    m = _SITE_SUFFIX.search(title)
+    if m and m.start() >= _SITE_SUFFIX_MIN_REMAINDER:
+        title = title[: m.start()]
     stripped = _TITLE_PUNCT.sub(" ", title.lower())
     return _WS.sub(" ", stripped).strip()
 

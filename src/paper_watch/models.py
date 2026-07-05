@@ -28,3 +28,7 @@ class RawItem:
     # Set by curated sources (e.g. a trusted Slack channel, or a Slack link to a
     # known paper domain) to bypass the LLM relevance gate. Default False.
     trusted: bool = False
+    # Dedup key for the mention when it differs from `url` — e.g. a Slack
+    # message permalink shared by every link in that message, so one message is
+    # one mention per paper. Falls back to `url` when unset.
+    mention_url: str | None = None

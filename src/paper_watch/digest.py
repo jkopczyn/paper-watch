@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from jinja2 import Environment
 
-from paper_watch.score import ScoreFeatures
+from paper_watch.score import ScoreFeatures, citation_growth
 
 
 @dataclass
@@ -26,7 +26,7 @@ class DigestItem:
 def score_explanation(f: ScoreFeatures) -> str:
     """A short, human-readable reason a paper ranked where it did."""
     parts = [f"{f.distinct_sources} source{'s' if f.distinct_sources != 1 else ''}"]
-    growth = max(0, (f.citation_count or 0) - (f.citation_count_prev or 0))
+    growth = citation_growth(f.citation_count, f.citation_count_prev)
     if growth:
         parts.append(f"+{growth} citations")
     if f.new_mentions_in_window:

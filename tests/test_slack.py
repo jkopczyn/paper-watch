@@ -112,6 +112,35 @@ def test_source_label_and_metadata():
     assert item.published_at == "2026-06-18T12:00:00Z"
 
 
+def test_multi_link_message_is_one_mention_key():
+    """All links in one message share the message-scoped mention_url, and a
+    known-paper-domain link makes the whole message trusted (its companion
+    tweet/workshop links included)."""
+    page = {
+        "ok": True,
+        "has_more": False,
+        "messages": [
+            {
+                "type": "message",
+                "user": "U001",
+                "ts": "1781784000.000500",
+                "text": (
+                    "announcing my agenda "
+                    "Tweet: <https://x.com/FreedmanRach/status/207169?s=20> "
+                    "Paper: <https://arxiv.org/abs/2605.01642> "
+                    "Workshop: <https://pluralistic-alignment.github.io/#schedule>"
+                ),
+            }
+        ],
+        "response_metadata": {"next_cursor": ""},
+    }
+    items = list(_source([_workspace()], pages=[page]).fetch())
+    assert len(items) == 3
+    keys = {i.mention_url for i in items}
+    assert keys == {"slack://mats/C001/1781784000.000500"}
+    assert all(i.trusted for i in items)  # arxiv link marks the message paper-y
+
+
 def test_trust_via_paper_link_domain():
     items = {i.url: i for i in _source([_workspace()]).fetch()}
     assert items["https://arxiv.org/abs/2406.05678"].trusted is True

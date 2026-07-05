@@ -1,4 +1,5 @@
 from paper_watch.identity import (
+    canonicalize_url,
     extract_arxiv_id,
     extract_doi,
     normalize_title,
@@ -38,6 +39,49 @@ def test_extract_arxiv_id_absent():
     assert extract_arxiv_id(None) is None
 
 
+def test_old_style_ignores_ordinary_url_paths():
+    # news-site URL segments must not parse as old-style arXiv ids
+    assert extract_arxiv_id("https://example.com/technology/5934266") is None
+    assert extract_arxiv_id("https://jstor.org/stable/2946648") is None
+    assert extract_arxiv_id("https://site.com/articles/8241253") is None
+
+
+# -- URL canonicalization ----------------------------------------------------
+def test_canonicalize_nitter_hosts_to_twitter():
+    assert (
+        canonicalize_url("https://nitter.net/FreedmanRach/status/207169#m")
+        == "https://twitter.com/FreedmanRach/status/207169"
+    )
+    assert (
+        canonicalize_url("http://localhost/FreedmanRach/status/207169#m")
+        == "https://twitter.com/FreedmanRach/status/207169"
+    )
+
+
+def test_canonicalize_x_com_share_link():
+    assert (
+        canonicalize_url("https://x.com/FreedmanRach/status/207169?s=20")
+        == "https://twitter.com/FreedmanRach/status/207169"
+    )
+
+
+def test_canonicalize_non_tweet_url_keeps_query_drops_fragment():
+    assert (
+        canonicalize_url("https://pluralistic-alignment.github.io/page?a=1#schedule")
+        == "https://pluralistic-alignment.github.io/page?a=1"
+    )
+
+
+def test_canonicalize_passthrough():
+    assert canonicalize_url(None) is None
+    assert canonicalize_url("slack://far/C001/1719.9") == "slack://far/C001/1719.9"
+    # a status-shaped path on an unrelated host is left alone
+    assert (
+        canonicalize_url("https://myblog.example/foo/status/123")
+        == "https://myblog.example/foo/status/123"
+    )
+
+
 # -- DOI extraction --------------------------------------------------------
 def test_extract_doi_plain():
     assert extract_doi("10.1145/1234567.8901234") == "10.1145/1234567.8901234"
@@ -58,6 +102,17 @@ def test_normalize_title_lowercases_and_strips_punct():
 
 def test_normalize_title_collapses_whitespace():
     assert normalize_title("  Deep   Learning\nMatters ") == "deep learning matters"
+
+
+def test_normalize_title_strips_site_suffix():
+    bare = "Consistency Training while Mitigating Obfuscation via Rate Matching"
+    assert normalize_title(f"{bare} — LessWrong") == normalize_title(bare)
+    assert normalize_title(f"{bare} | OpenAI") == normalize_title(bare)
+
+
+def test_normalize_title_keeps_dash_in_short_titles():
+    # too little would remain — treat the dash as part of the title
+    assert normalize_title("Attention — Is All You Need") == "attention is all you need"
 
 
 # -- dedup / resolution ----------------------------------------------------

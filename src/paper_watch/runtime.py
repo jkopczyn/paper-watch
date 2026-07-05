@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,10 +12,11 @@ from paper_watch.config import Config, ScoringWeights
 from paper_watch.dates import since_to_iso
 from paper_watch.digest import DigestItem, render_html, score_explanation
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
-from paper_watch.identity import resolve_or_create
+from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
 from paper_watch.score import (
     ScoreFeatures,
+    citation_growth,
     compute_score,
     derive_feedback_keys,
     feedback_affinity,
@@ -42,6 +43,9 @@ def ingest(store, sources, since: str | None, now_iso: str) -> list[int]:
     new_ids: list[int] = []
     for source in sources:
         for raw in source.fetch(since):
+            canonical = canonicalize_url(raw.url)
+            if canonical != raw.url:
+                raw = replace(raw, url=canonical)
             fields = to_entry_fields(raw)
             fields["first_seen_at"] = now_iso
             entry_id, created = resolve_or_create(store, fields)
@@ -50,7 +54,7 @@ def ingest(store, sources, since: str | None, now_iso: str) -> list[int]:
             store.add_mention(
                 entry_id=entry_id,
                 source=raw.source,
-                source_item_url=raw.url,
+                source_item_url=canonicalize_url(raw.mention_url) or raw.url,
                 mention_text=raw.text,
                 published_at=fields.get("published_at"),
                 fetched_at=now_iso,
@@ -103,7 +107,7 @@ def select_digest(
         tags = json.loads(row["tags_json"])
         keys = derive_feedback_keys(authors, tags, _primary_source(store, entry_id))
 
-        growth = max(0, (citation_count or 0) - (citation_prev or 0))
+        growth = citation_growth(citation_count, citation_prev)
         surge = new_mentions >= 2 or growth > 0
         if store.was_shown(entry_id):
             # Already seen: only reappear if still within the resurface window

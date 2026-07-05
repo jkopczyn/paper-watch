@@ -32,6 +32,10 @@ def parse_nitter(xml: str, handle: str) -> list[RawItem]:
     items: list[RawItem] = []
     for e in feed.entries:
         title = " ".join(e.get("title", "").split())
+        if title.startswith("Pinned:"):
+            # Pinned tweets sit atop the feed on every fetch; the tweet already
+            # appeared organically when it was posted.
+            continue
         body = e.get("summary") or ""
         text = f"{title}\n{body}".strip()
         items.append(
