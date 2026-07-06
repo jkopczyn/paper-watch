@@ -107,6 +107,7 @@ handles:
 - timrudner
 - tshevl
 - vaelgates
+- ascherlis
 nitter_instances:
 - http://localhost:8080
 - https://nitter.net
