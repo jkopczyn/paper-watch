@@ -125,6 +125,10 @@ class Config(BaseModel):
     # to resurface (it still only reappears if it also surges within
     # candidate_window_days).
     resurface_window_days: int = 21
+    # Resolve bare tweet links (via local Nitter) and paper links inside
+    # newsletter bodies into real paper entries. Both zero-LLM, best-effort.
+    tweet_resolution: bool = True
+    newsletter_links: bool = True
     scoring: ScoringWeights = Field(default_factory=ScoringWeights)
     source_priors: dict[str, float] = Field(
         default_factory=lambda: dict(_DEFAULT_SOURCE_PRIORS)

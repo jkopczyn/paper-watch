@@ -90,6 +90,17 @@ SCHEMA: list[str] = [
         last_fetched_at TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS tweet_cache (
+        url        TEXT PRIMARY KEY,
+        text       TEXT,
+        links_json TEXT NOT NULL DEFAULT '[]',
+        quoted_url TEXT,
+        thread_url TEXT,
+        status     TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+    )
+    """,
 ]
 
 
@@ -140,6 +151,33 @@ class Store:
                 last_fetched_at = excluded.last_fetched_at
             """,
             (source, cursor),
+        )
+        self.conn.commit()
+
+    # -- tweet resolution cache --------------------------------------------
+    def get_tweet_cache(self, url: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM tweet_cache WHERE url = ?", (url,)
+        ).fetchone()
+
+    def set_tweet_cache(
+        self,
+        url: str,
+        *,
+        text: str | None,
+        links: list[str],
+        quoted_url: str | None,
+        thread_url: str | None,
+        status: str,
+        fetched_at: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO tweet_cache
+                (url, text, links_json, quoted_url, thread_url, status, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (url, text, json.dumps(links), quoted_url, thread_url, status, fetched_at),
         )
         self.conn.commit()
 

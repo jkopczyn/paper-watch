@@ -38,71 +38,160 @@ class RunResult:
 
 
 # -- ingest ----------------------------------------------------------------
-def ingest(store, sources, since: str | None, now_iso: str) -> list[int]:
+def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) -> None:
+    canonical = canonicalize_url(raw.url)
+    if canonical != raw.url:
+        raw = replace(raw, url=canonical)
+    if tweet_resolver is not None:
+        raw = tweet_resolver.augment(raw)
+    fields = to_entry_fields(raw)
+    fields["first_seen_at"] = now_iso
+    entry_id, created = resolve_or_create(store, fields)
+    if created:
+        new_ids.append(entry_id)
+    store.add_mention(
+        entry_id=entry_id,
+        source=raw.source,
+        source_item_url=canonicalize_url(raw.mention_url) or raw.url,
+        mention_text=raw.text,
+        published_at=fields.get("published_at"),
+        fetched_at=now_iso,
+        trusted=raw.trusted,
+    )
+
+
+def ingest(
+    store,
+    sources,
+    since: str | None,
+    now_iso: str,
+    *,
+    tweet_resolver=None,
+    newsletter_extractor=None,
+) -> list[int]:
     """Fetch every source, normalize, dedup into entries, and record mentions.
 
+    `tweet_resolver` (when set) recovers the paper a bare tweet link points at.
+    `newsletter_extractor` (when set) fans a newsletter item out into the papers
+    it links, each ingested as its own entry with the newsletter as provenance —
+    the newsletter itself still doesn't adopt any linked paper's identity.
     Returns the ids of entries newly created this run.
     """
     new_ids: list[int] = []
     for source in sources:
         for raw in source.fetch(since):
-            canonical = canonicalize_url(raw.url)
-            if canonical != raw.url:
-                raw = replace(raw, url=canonical)
-            fields = to_entry_fields(raw)
-            fields["first_seen_at"] = now_iso
-            entry_id, created = resolve_or_create(store, fields)
-            if created:
-                new_ids.append(entry_id)
-            store.add_mention(
-                entry_id=entry_id,
-                source=raw.source,
-                source_item_url=canonicalize_url(raw.mention_url) or raw.url,
-                mention_text=raw.text,
-                published_at=fields.get("published_at"),
-                fetched_at=now_iso,
-                trusted=raw.trusted,
-            )
+            _ingest_one(store, raw, now_iso, tweet_resolver, new_ids)
+            if newsletter_extractor is not None and raw.source.startswith("rss"):
+                for extra in newsletter_extractor(raw):
+                    _ingest_one(store, extra, now_iso, tweet_resolver, new_ids)
     return new_ids
 
 
-def resolve_paper_metadata(store, entry_ids: list[int], fetch) -> int:
+def _entry_pdf_url(row) -> str | None:
+    """The PDF link (or a `.pdf` abstract URL) of an entry, if any."""
+    links = json.loads(row["links_json"])
+    pdf = links.get("pdf")
+    if pdf:
+        return pdf
+    abstract_url = links.get("abstract") or ""
+    return abstract_url if abstract_url.lower().endswith(".pdf") else None
+
+
+def resolve_paper_metadata(
+    store,
+    entry_ids: list[int],
+    fetch,
+    *,
+    openreview_resolver=None,
+    pdf_resolver=None,
+) -> int:
     """Give post-shaped entries their real paper metadata, best-effort.
 
-    A tweet/Slack entry that links an arXiv id is created with the post text as
-    its title and no abstract; the LLM gate and any content-based ranking need
-    the actual paper. Batch-fetches the arXiv API for entries that have an
-    arxiv_id but no abstract. Returns how many entries were updated.
+    A tweet/Slack/newsletter entry that links a paper is created with the post
+    text (or bare URL) as its title and no abstract; the LLM gate and any
+    content-based ranking need the actual paper. Resolves entries with no
+    abstract by landing-page type: arXiv id → batched arXiv API (needs `fetch`);
+    an OpenReview forum link → `openreview_resolver`; a raw PDF link →
+    `pdf_resolver`. Each is best-effort; one failure never aborts the rest.
+    Returns how many entries were updated.
     """
     from paper_watch.identity import normalize_title
     from paper_watch.sources.arxiv import fetch_metadata
+    from paper_watch.sources.openreview import forum_id
 
-    pending: dict[str, int] = {}
+    arxiv_pending: dict[str, int] = {}
+    openreview_pending: list[tuple[int, str]] = []
+    pdf_pending: list[tuple[int, str]] = []
     for entry_id in entry_ids:
         row = store.get_entry(entry_id)
-        if row is not None and row["arxiv_id"] and not row["abstract"]:
-            pending[row["arxiv_id"]] = entry_id
-    if not pending:
-        return 0
+        if row is None or row["abstract"]:
+            continue
+        if row["arxiv_id"]:
+            arxiv_pending[row["arxiv_id"]] = entry_id
+            continue
+        abstract_url = json.loads(row["links_json"]).get("abstract") or ""
+        if openreview_resolver is not None and forum_id(abstract_url):
+            openreview_pending.append((entry_id, abstract_url))
+        elif pdf_resolver is not None and (pdf := _entry_pdf_url(row)):
+            pdf_pending.append((entry_id, pdf))
 
     updated = 0
-    for arxiv_id, item in fetch_metadata(list(pending), fetch).items():
-        entry_id = pending.get(arxiv_id)
-        if entry_id is None or not item.title:
-            continue
-        links = {"abstract": item.url or f"https://arxiv.org/abs/{arxiv_id}"}
-        if item.pdf_url:
-            links["pdf"] = item.pdf_url
-        store.update_paper_metadata(
-            entry_id,
-            title=item.title,
-            title_norm=normalize_title(item.title),
-            authors=item.authors,
-            abstract=item.abstract,
-            links=links,
-        )
-        updated += 1
+
+    if fetch is not None and arxiv_pending:
+        for arxiv_id, item in fetch_metadata(list(arxiv_pending), fetch).items():
+            entry_id = arxiv_pending.get(arxiv_id)
+            if entry_id is None or not item.title:
+                continue
+            links = {"abstract": item.url or f"https://arxiv.org/abs/{arxiv_id}"}
+            if item.pdf_url:
+                links["pdf"] = item.pdf_url
+            store.update_paper_metadata(
+                entry_id,
+                title=item.title,
+                title_norm=normalize_title(item.title),
+                authors=item.authors,
+                abstract=item.abstract,
+                links=links,
+            )
+            updated += 1
+
+    for entry_id, url in openreview_pending:
+        meta = _safe_resolve(openreview_resolver, url)
+        if meta and meta.get("title"):
+            store.update_paper_metadata(
+                entry_id,
+                title=meta["title"],
+                title_norm=normalize_title(meta["title"]),
+                authors=meta.get("authors") or [],
+                abstract=meta.get("abstract"),
+                links={},
+            )
+            updated += 1
+
+    for entry_id, url in pdf_pending:
+        meta = _safe_resolve(pdf_resolver, url)
+        if meta and meta.get("title"):
+            store.update_paper_metadata(
+                entry_id,
+                title=meta["title"],
+                title_norm=normalize_title(meta["title"]),
+                authors=meta.get("authors") or [],
+                abstract=meta.get("abstract"),
+                links={},
+            )
+            updated += 1
+
     return updated
+
+
+def _safe_resolve(resolver, url: str) -> dict | None:
+    try:
+        return resolver.resolve(url)
+    except Exception as exc:  # best-effort: a bad landing page is never fatal
+        import logging
+
+        logging.getLogger(__name__).warning("metadata resolve failed for %s: %s", url, exc)
+        return None
 
 
 # -- scoring / selection ---------------------------------------------------
@@ -237,16 +326,34 @@ def run_pipeline(
     metadata_fetch=None,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
+    tweet_resolver=None,
+    newsletter_extractor=None,
+    openreview_resolver=None,
+    pdf_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
 
-    new_ids = ingest(store, sources, since, now_iso)
+    new_ids = ingest(
+        store,
+        sources,
+        since,
+        now_iso,
+        tweet_resolver=tweet_resolver,
+        newsletter_extractor=newsletter_extractor,
+    )
     # Fill in real paper metadata BEFORE enrichment so the LLM judges the
-    # paper's abstract, not a tweet fragment. None (tests) skips the fetch.
-    if metadata_fetch is not None and new_ids:
-        resolve_paper_metadata(store, new_ids, metadata_fetch)
+    # paper's abstract, not a tweet fragment. None (tests) skips the arXiv fetch;
+    # the OpenReview/PDF resolvers are independent and also default off.
+    if new_ids and (metadata_fetch is not None or openreview_resolver or pdf_resolver):
+        resolve_paper_metadata(
+            store,
+            new_ids,
+            metadata_fetch,
+            openreview_resolver=openreview_resolver,
+            pdf_resolver=pdf_resolver,
+        )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
     chosen = select_digest(
@@ -334,6 +441,52 @@ def _build_enricher(config: Config):
     )
 
 
+def _build_tweet_resolver(config: Config, store, nitter_instances: list[str]):
+    """A TweetResolver bound to the surviving local Nitter instance, or None.
+
+    Never falls back to a public mirror for per-status fetches — no local
+    instance means no resolver.
+    """
+    if not config.tweet_resolution:
+        return None
+    from paper_watch.nitter_local import _is_local
+
+    local = next((u for u in nitter_instances if _is_local(u)), None)
+    if local is None:
+        return None
+    from paper_watch.sources.tweet_resolver import TweetResolver
+
+    return TweetResolver(store, local)
+
+
+def _build_newsletter_extractor(config: Config):
+    if not config.newsletter_links:
+        return None
+    from paper_watch.config import _DEFAULT_PAPER_LINK_DOMAINS
+    from paper_watch.sources.newsletter_links import extract_paper_links
+
+    domains = (
+        config.slack.paper_link_domains
+        if config.slack
+        else list(_DEFAULT_PAPER_LINK_DOMAINS)
+    )
+    return lambda raw: extract_paper_links(raw, domains)
+
+
+def _build_metadata_resolvers(config: Config):
+    """(openreview_resolver, pdf_resolver) for the metadata step; PDF OCR is only
+    wired when an Anthropic key is present (born-digital PDFs never need it)."""
+    from paper_watch.sources.openreview import OpenReviewResolver
+    from paper_watch.sources.pdf_meta import PdfMetaResolver
+
+    ocr = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from paper_watch.sources.pdf_meta import ClaudePdfOcr
+
+        ocr = ClaudePdfOcr(config.llm.model)
+    return OpenReviewResolver(), PdfMetaResolver(ocr=ocr)
+
+
 def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
     """Best-effort Semantic Scholar citation counts for entries with an arXiv id."""
     from paper_watch.sources.semantic_scholar import SemanticScholar
@@ -382,12 +535,20 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
 
         from paper_watch.http import get_text
 
+        tweet_resolver = _build_tweet_resolver(config, store, nitter_instances)
+        newsletter_extractor = _build_newsletter_extractor(config)
+        openreview_resolver, pdf_resolver = _build_metadata_resolvers(config)
+
         return run_pipeline(
             store,
             sources=sources,
             enricher=enricher,
             sender=sender,
             metadata_fetch=get_text,
+            tweet_resolver=tweet_resolver,
+            newsletter_extractor=newsletter_extractor,
+            openreview_resolver=openreview_resolver,
+            pdf_resolver=pdf_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,

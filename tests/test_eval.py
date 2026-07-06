@@ -55,6 +55,29 @@ def test_match_entry_by_arxiv_id_and_mention_url(tmp_path):
     store.close()
 
 
+class _StubResolver:
+    """resolve() returns a TweetResolution-like object exposing text/links."""
+
+    def __init__(self, links):
+        from paper_watch.sources.tweet_resolver import TweetResolution
+
+        self._res = TweetResolution(text="", links=links, quoted_url=None, reply_url=None)
+
+    def resolve(self, url):
+        return self._res
+
+
+def test_match_entry_resolves_tweet_link(tmp_path):
+    store, a, b = _make_store(tmp_path)
+    tweet_gt = _gt(4, "https://x.com/h/status/111", 2)  # option is a bare tweet link
+    # without a resolver, the paper id lives only inside the tweet → ingest miss
+    assert match_entry(store, tweet_gt) is None
+    # with a resolver that surfaces the arXiv link, it matches the winner entry
+    resolver = _StubResolver(["https://arxiv.org/abs/2605.01642"])
+    assert match_entry(store, tweet_gt, resolver) == a
+    store.close()
+
+
 def test_evaluate_scores_a_week(tmp_path):
     store, a, b = _make_store(tmp_path)
     groundtruth = [

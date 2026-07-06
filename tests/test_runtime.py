@@ -385,3 +385,87 @@ def test_slack_dedups_and_trust_propagates_across_sources(tmp_path):
     assert len(result.chosen_ids) == 1  # one deduped entry, kept via trusted bypass
     assert store.count_distinct_sources(result.chosen_ids[0]) == 2
     store.close()
+
+
+# -- link resolution (tweet augment, newsletter fan-out, metadata dispatch) --
+class _StubTweetResolver:
+    """augment() unconditionally injects an arXiv id, standing in for Nitter."""
+
+    def augment(self, raw):
+        from dataclasses import replace
+
+        return replace(raw, text=f"{raw.text or ''} https://arxiv.org/abs/2605.01642")
+
+
+class _StubMetaResolver:
+    def __init__(self, meta):
+        self.meta = meta
+        self.seen = []
+
+    def resolve(self, url):
+        self.seen.append(url)
+        return self.meta
+
+
+def test_ingest_augments_tweet_then_resolves_metadata(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    tweet = RawItem(source="slack:x", url="https://twitter.com/h/status/111", text="great thread")
+    new_ids = ingest(
+        store,
+        [ListSource("slack", [tweet])],
+        since=None,
+        now_iso="2026-06-30T08:00:00Z",
+        tweet_resolver=_StubTweetResolver(),
+    )
+    assert len(new_ids) == 1
+    assert store.get_entry(new_ids[0])["arxiv_id"] == "2605.01642"  # id recovered at ingest
+    resolve_paper_metadata(store, new_ids, lambda url: _ARXIV_META_XML)
+    assert store.get_entry(new_ids[0])["title"] == "Adaptive Pluralistic Alignment"
+    store.close()
+
+
+def test_ingest_newsletter_fans_out_without_identity_hijack(tmp_path, fixture_text):
+    from paper_watch.sources.newsletter_links import extract_paper_links
+
+    domains = ["arxiv.org", "openreview.net"]
+    newsletter = RawItem(
+        source="rss:Import AI",
+        url="https://newsletter.example/1",
+        title="Import AI #401",
+        text=fixture_text("newsletter_body.html"),
+        extract_ids_from_text=False,
+    )
+    new_ids = ingest(
+        store := Store(tmp_path / "pw.db"),
+        [ListSource("rss", [newsletter])],
+        since=None,
+        now_iso="2026-06-30T08:00:00Z",
+        newsletter_extractor=lambda raw: extract_paper_links(raw, domains),
+    )
+    entries = [store.get_entry(i) for i in new_ids]
+    # the newsletter itself + the papers it links; the newsletter did NOT adopt an id
+    newsletter_entry = next(e for e in entries if e["title"] == "Import AI #401")
+    assert newsletter_entry["arxiv_id"] is None
+    paper = store.get_entry_by_arxiv_id("2606.08243")
+    assert paper is not None
+    assert store.get_mentions(paper["id"])[0]["source"] == "rss:Import AI"  # provenance
+    store.close()
+
+
+def test_resolve_paper_metadata_dispatches_openreview_and_pdf(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    items = [
+        RawItem(source="slack:x", url="https://openreview.net/forum?id=dy2HwmOvFX", text="oversight"),
+        RawItem(source="slack:x", url="https://aibetrayal.com/paper.pdf", text=None),
+    ]
+    new_ids = ingest(store, [ListSource("slack", items)], since=None, now_iso="2026-06-30T08:00:00Z")
+    orv = _StubMetaResolver({"title": "OR Paper", "abstract": "or abstract", "authors": ["A"]})
+    pdf = _StubMetaResolver({"title": "PDF Paper", "abstract": "pdf abstract"})
+
+    updated = resolve_paper_metadata(store, new_ids, None, openreview_resolver=orv, pdf_resolver=pdf)
+    assert updated == 2
+    assert orv.seen == ["https://openreview.net/forum?id=dy2HwmOvFX"]
+    assert pdf.seen == ["https://aibetrayal.com/paper.pdf"]
+    titles = {store.get_entry(i)["title"] for i in new_ids}
+    assert {"OR Paper", "PDF Paper"} <= titles
+    store.close()

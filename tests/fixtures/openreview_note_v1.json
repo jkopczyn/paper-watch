@@ -1,0 +1,12 @@
+{
+  "notes": [
+    {
+      "id": "OldVenue123",
+      "content": {
+        "title": "An Older Venue Paper",
+        "abstract": "A v1-style paper with a flat abstract string.",
+        "authors": ["Carol Reyes"]
+      }
+    }
+  ]
+}

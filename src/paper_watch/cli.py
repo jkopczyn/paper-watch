@@ -31,6 +31,9 @@ handles: []      # Twitter usernames (seeded via `paper-watch seed-handles`)
 nitter_instances:
   - https://nitter.net
 
+tweet_resolution: true   # resolve bare tweet links via local Nitter (0 LLM)
+newsletter_links: true   # ingest papers linked inside newsletter bodies
+
 slack:           # #papers channels; see README. Fill ids via `paper-watch slack-channels`.
   workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
 
@@ -287,12 +290,18 @@ def groundtruth_cmd(config_path: str, workspace: str, channel_id: str, since: st
     default=None,
     help='Override scoring weights, e.g. \'{"relevance":0,"velocity":1}\' to score the old ranker.',
 )
+@click.option(
+    "--resolve-tweets",
+    is_flag=True,
+    help="Resolve tweet-link ground-truth options via local Nitter (needs it up); default offline.",
+)
 def eval_cmd(
     config_path: str,
     groundtruth_path: Path,
     top_n: int | None,
     window_days: int | None,
     weights_json: str | None,
+    resolve_tweets: bool,
 ) -> None:
     """Score the ranker's top-N against reading-group poll ground truth."""
     import json as _json
@@ -311,6 +320,17 @@ def eval_cmd(
 
     store = Store(cfg.db_path)
     try:
+        resolver = None
+        if resolve_tweets:
+            from paper_watch.nitter_local import _is_local
+            from paper_watch.sources.tweet_resolver import TweetResolver
+
+            local = next((u for u in cfg.nitter_instances if _is_local(u)), None)
+            if local is None:
+                raise click.ClickException(
+                    "--resolve-tweets needs a local nitter_instances entry."
+                )
+            resolver = TweetResolver(store, local)
         report = evaluate(
             store,
             load_groundtruth(groundtruth_path),
@@ -319,6 +339,7 @@ def eval_cmd(
             tracked_authors=normalize_tracked_authors(cfg.authors),
             top_n=top_n or cfg.top_n,
             window_days=window_days or cfg.candidate_window_days,
+            resolver=resolver,
         )
     finally:
         store.close()

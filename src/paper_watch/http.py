@@ -48,6 +48,29 @@ def get_text(
     raise RuntimeError("get_text: exhausted retries without returning")
 
 
+def get_bytes(
+    url: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    *,
+    max_retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bytes:
+    """GET `url` and return the raw response bytes (e.g. a PDF), retrying on 429."""
+    for attempt in range(max_retries + 1):
+        resp = httpx.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+        )
+        if resp.status_code == 429 and attempt < max_retries:
+            sleep(_retry_after(resp, attempt))
+            continue
+        resp.raise_for_status()
+        return resp.content
+    raise RuntimeError("get_bytes: exhausted retries without returning")
+
+
 def get_json(
     url: str,
     timeout: float = DEFAULT_TIMEOUT,

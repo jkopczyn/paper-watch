@@ -99,14 +99,35 @@ def load_groundtruth(path: str | Path) -> list[GroundTruthRow]:
     return rows
 
 
-def match_entry(store: Store, row: GroundTruthRow) -> int | None:
-    """Find the DB entry a ground-truth option refers to, or None (ingest miss)."""
+def match_entry(store: Store, row: GroundTruthRow, resolver=None) -> int | None:
+    """Find the DB entry a ground-truth option refers to, or None (ingest miss).
+
+    With a tweet `resolver`, a bare tweet-link option is resolved (text + links)
+    and re-checked for an arXiv id, mirroring what ingest would have recovered —
+    so a poll option that is a tweet doesn't count as an ingest miss just because
+    its paper id lived in the tweet body.
+    """
     arxiv_id = extract_arxiv_id(f"{row.url} {row.context}")
     if arxiv_id:
         entry = store.get_entry_by_arxiv_id(arxiv_id)
         if entry is not None:
             return int(entry["id"])
-    return store.get_entry_id_by_mention_url(canonicalize_url(row.url))
+    hit = store.get_entry_id_by_mention_url(canonicalize_url(row.url))
+    if hit is not None:
+        return hit
+    if resolver is not None:
+        from paper_watch.sources.tweet_resolver import is_tweet_url
+
+        canonical = canonicalize_url(row.url)
+        if is_tweet_url(canonical):
+            res = resolver.resolve(canonical)
+            if res is not None:
+                rid = extract_arxiv_id(f"{res.text or ''} {' '.join(res.links)}")
+                if rid:
+                    entry = store.get_entry_by_arxiv_id(rid)
+                    if entry is not None:
+                        return int(entry["id"])
+    return None
 
 
 def _poll_iso(message_ts: str) -> str:
@@ -182,10 +203,11 @@ def evaluate(
     tracked_authors: set[str],
     top_n: int = 15,
     window_days: int = 7,
+    resolver=None,
 ) -> EvalReport:
     report = EvalReport()
     for row in groundtruth:
-        row.entry_id = match_entry(store, row)
+        row.entry_id = match_entry(store, row, resolver)
         if row.entry_id is None:
             report.ingest_misses.append(row)
 
