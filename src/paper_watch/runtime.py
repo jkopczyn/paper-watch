@@ -167,6 +167,12 @@ def resolve_paper_metadata(
                 links={},
             )
             updated += 1
+        else:
+            # OpenReview's API sits behind a login/challenge gate we can't pass
+            # (no bot account allowed), so the abstract is unreadable. Per Jacob:
+            # flag these medium-high by default and keep the link's own metadata.
+            _flag_openreview_fallback(store, entry_id)
+            updated += 1
 
     for entry_id, url in pdf_pending:
         meta = _safe_resolve(pdf_resolver, url)
@@ -182,6 +188,52 @@ def resolve_paper_metadata(
             updated += 1
 
     return updated
+
+
+# Unreadable OpenReview submissions (API is login/challenge-gated) get this
+# relevance prior so they surface as likely medium-high rather than being gated
+# out on an empty abstract. 3 = "plausible reading-group pick" (see enrich rubric).
+_OPENREVIEW_PRIOR_RELEVANCE = 3
+
+
+def _flag_openreview_fallback(store, entry_id: int) -> None:
+    """Give an unresolvable OpenReview entry a medium-high prior + its link metadata.
+
+    Promotes the link's own blurb (mention/anchor text) to the title when all we
+    had was the bare URL, and pins relevance so the LLM (which would judge an
+    abstract-less title low) doesn't override it — `enrich_unenriched` skips
+    entries already at the current version.
+    """
+    from paper_watch.enrich import ENRICH_VERSION
+    from paper_watch.identity import normalize_title
+
+    row = store.get_entry(entry_id)
+    if row is None:
+        return
+    blurb = max(
+        (m["mention_text"] or "" for m in store.get_mentions(entry_id)),
+        key=len,
+        default="",
+    ).strip()
+    links = json.loads(row["links_json"])
+    if row["title"] == (links.get("abstract") or "") and blurb:
+        title = blurb[:200]
+        store.update_paper_metadata(
+            entry_id,
+            title=title,
+            title_norm=normalize_title(title),
+            authors=[],
+            abstract=None,
+            links={},
+        )
+    store.set_enrichment(
+        entry_id,
+        tldr=blurb[:280],
+        why="OpenReview submission — abstract behind a login gate; flagged medium-high by default.",
+        tags=[],
+        relevance=_OPENREVIEW_PRIOR_RELEVANCE,
+        version=ENRICH_VERSION,
+    )
 
 
 def _safe_resolve(resolver, url: str) -> dict | None:

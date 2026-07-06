@@ -469,3 +469,28 @@ def test_resolve_paper_metadata_dispatches_openreview_and_pdf(tmp_path):
     titles = {store.get_entry(i)["title"] for i in new_ids}
     assert {"OR Paper", "PDF Paper"} <= titles
     store.close()
+
+
+class _NullResolver:
+    def resolve(self, url):
+        return None  # API gated / unreachable
+
+
+def test_openreview_fallback_flags_medium_high(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(
+        source="rss:Import AI",
+        url="https://openreview.net/forum?id=dy2HwmOvFX",
+        text="A Structured Study of Oversight",  # the link's blurb
+        extract_ids_from_text=True,
+    )
+    new_ids = ingest(store, [ListSource("rss", [item])], since=None, now_iso="2026-06-30T08:00:00Z")
+    resolve_paper_metadata(store, new_ids, None, openreview_resolver=_NullResolver())
+    row = store.get_entry(new_ids[0])
+    assert row["relevance"] == 3  # medium-high prior, survives (won't be re-enriched down)
+    assert row["title"] == "A Structured Study of Oversight"  # link metadata promoted
+    # and it now passes the gate on relevance alone
+    from paper_watch.runtime import _passes_gate
+
+    assert _passes_gate(row, {"rss:Import AI"}, trusted=False)
+    store.close()
