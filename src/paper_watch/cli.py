@@ -121,6 +121,7 @@ def sources(config_path: str) -> None:
     cfg = Config.load(config_path)
     click.echo(f"arXiv authors: {len(cfg.authors)}")
     click.echo(f"RSS feeds:     {len(cfg.feeds)}")
+    click.echo(f"Watched pages: {len(cfg.pages)}")
     click.echo(f"Twitter handles: {len(cfg.handles)} (via {len(cfg.nitter_instances)} nitter instance(s))")
     workspaces = cfg.slack.workspaces if cfg.slack else []
     n_channels = sum(len(w.channels) for w in workspaces)

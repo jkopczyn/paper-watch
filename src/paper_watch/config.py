@@ -17,6 +17,16 @@ class FeedConfig(BaseModel):
     url: str
 
 
+class PageConfig(BaseModel):
+    """A blog index page with no RSS feed, watched by diffing its links."""
+
+    name: str
+    url: str
+    # A trusted page's items bypass the relevance gate (e.g. a major lab's
+    # safety blog, where every post is on-topic). Absent ⇒ gated like RSS.
+    trusted: bool = False
+
+
 # "Obviously a paper" link allowlist for the Slack source: arXiv, the alignment
 # forums, and the major labs' safety/alignment/interpretability blogs. Items
 # linking these bypass the relevance gate; everything else is gated like Twitter.
@@ -79,6 +89,8 @@ _DEFAULT_SOURCE_PRIORS: dict[str, float] = {
     "twitter": 0.5,
     "rss": 0.4,
     "rss:OpenAI Blog": 0.1,
+    # Watched pages are hand-picked primary blogs; weight like curated feeds.
+    "page": 0.6,
 }
 
 
@@ -105,6 +117,9 @@ class Config(BaseModel):
     db_path: str = "paper_watch.db"
     authors: list[str] = Field(default_factory=list)
     feeds: list[FeedConfig] = Field(default_factory=list)
+    # Blog index pages without an RSS feed, watched by diffing their link sets
+    # (new link on the page ⇒ new post).
+    pages: list[PageConfig] = Field(default_factory=list)
     handles: list[str] = Field(default_factory=list)
     nitter_instances: list[str] = Field(
         default_factory=lambda: ["https://nitter.net"]

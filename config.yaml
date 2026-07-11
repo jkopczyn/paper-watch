@@ -100,6 +100,12 @@ feeds:
   url: https://www.alignment.org/blog/feed
 - name: EleutherAI
   url: https://blog.eleuther.ai/index.xml
+# Blogs with no RSS feed: new posts detected by diffing the index page's links.
+# Both are major-lab safety blogs (already gate-bypass domains), hence trusted.
+pages:
+- name: Anthropic Alignment Science
+  url: https://alignment.anthropic.com/
+  trusted: true
 handles:
 - ARGleave
 - AmandaAskell

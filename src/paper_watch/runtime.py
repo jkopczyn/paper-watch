@@ -467,7 +467,13 @@ def run_pipeline(
 
 
 # -- real entrypoint (wired by the CLI) ------------------------------------
-def build_sources(config: Config, fetch=None, *, nitter_instances: list[str] | None = None):
+def build_sources(
+    config: Config,
+    fetch=None,
+    *,
+    nitter_instances: list[str] | None = None,
+    store=None,
+):
     from paper_watch.http import get_text
     from paper_watch.sources.arxiv import ArxivSource
     from paper_watch.sources.rss import RssSource
@@ -480,6 +486,12 @@ def build_sources(config: Config, fetch=None, *, nitter_instances: list[str] | N
         sources.append(ArxivSource(config.authors, fetch=fetch))
     if config.feeds:
         sources.append(RssSource(config.feeds, fetch=fetch))
+    # Watched pages diff against a seen-link set persisted in the store, so
+    # they only exist when a store is wired in (the real `run` entrypoint).
+    if config.pages and store is not None:
+        from paper_watch.sources.page_watch import PageWatchSource
+
+        sources.append(PageWatchSource(config.pages, store, fetch=fetch))
     if config.handles:
         sources.append(
             NitterSource(
@@ -601,7 +613,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             nitter_instances = ensure_local_nitter(
                 config.nitter_instances, dry_run=dry_run
             )
-        sources = build_sources(config, nitter_instances=nitter_instances)
+        sources = build_sources(config, nitter_instances=nitter_instances, store=store)
         enricher = _build_enricher(config)
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
 

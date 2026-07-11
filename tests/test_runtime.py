@@ -388,6 +388,20 @@ def test_build_sources_omits_slack_when_no_workspaces():
     assert not any(isinstance(s, SlackSource) for s in build_sources(cfg))
 
 
+def test_build_sources_includes_pages_only_with_a_store(tmp_path):
+    from paper_watch.config import PageConfig
+    from paper_watch.sources.page_watch import PageWatchSource
+
+    cfg = Config(pages=[PageConfig(name="TC", url="https://tc.example/")])
+    # no store (unit-test wiring): the diff has nowhere to keep its state
+    assert not any(isinstance(s, PageWatchSource) for s in build_sources(cfg))
+
+    store = Store(tmp_path / "pw.db")
+    sources = build_sources(cfg, store=store)
+    assert any(isinstance(s, PageWatchSource) for s in sources)
+    store.close()
+
+
 def test_slack_dedups_and_trust_propagates_across_sources(tmp_path):
     # A blog posts a paper (flagged not-relevant by the LLM) AND someone drops
     # the same arXiv link in a trusted Slack channel. They dedup to one entry,

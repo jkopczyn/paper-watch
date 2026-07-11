@@ -79,6 +79,12 @@ feeds:
   # - {name: Epoch Gradient Updates, url: https://epoch.ai/gradient-updates/rss.xml}
   # - {name: OpenAI Blog, url: https://openai.com/blog/rss.xml}
 
+# Blogs with no RSS feed, watched by diffing the index page's link set (new
+# link => new post; the first run seeds a baseline and yields nothing).
+# `trusted: true` skips the LLM relevance gate, for blogs that are all signal.
+pages:
+  - {name: Anthropic Alignment Science, url: https://alignment.anthropic.com/, trusted: true}
+
 # Twitter handles (AGI Safety Core list). Seed these with:
 #   paper-watch seed-handles --from-file handles.txt
 # (the list members page needs a logged-in browser; see README).

@@ -8,6 +8,7 @@ The specific choices of where to draw are in `config.yaml`.
 
 - arXiv author notices, via RSS feeds
 - newsletters and blogs (Substack, etc.), via RSS feeds
+- blogs without RSS (alignment.anthropic.com, www.apolloresearch.ai/science/), by diffing the index page's links between runs
 - Twitter accounts (largely from JJBalisan's [AGI Safety](https://x.com/i/lists/1185207859728076800) list), via local Nitter feeds
 - Slack channels for sharing papers, via app integration (WIP)
 
@@ -23,6 +24,7 @@ Sources:
 
 - `authors`: names to follow on arXiv
 - `feeds`: name/url pairs for blog/Substack RSS feeds
+- `pages`: name/url pairs for RSS-less blog index pages, diffed between runs (first run seeds a baseline and reports nothing; add `trusted: true` to skip the relevance gate)
 - `handles`: Twitter accounts to track
 - `slack.workspaces`: `name`/`token_env` pairs to specify workspace, channels -> {id, name, (trusted: true)} dicts for channels to watch
 

@@ -3,7 +3,9 @@
 Scan AI-safety paper sources and email yourself a ranked digest a few times a day.
 
 Sources: **arXiv author feeds** (replaces Google Scholar alerts), **RSS newsletters/blogs**,
-**Twitter via Nitter** per-user RSS, and **Slack** `#papers`-style channels (MATS, FAR, and the
+**RSS-less blogs** watched by diffing their index page's links (alignment.anthropic.com,
+www.apolloresearch.ai/science/), **Twitter via Nitter** per-user RSS, and **Slack** `#papers`-style
+ channels (MATS, FAR, and the
 alignment Slack where Aaron Scher collects papers). Papers are deduplicated across sources and ranked by
 cross-source overlap, citation/social velocity, and learned reading-group feedback. Each item gets
 an LLM-generated TL;DR, topic tags, and links. Previously-shown papers can "resurface" if their
@@ -119,7 +121,7 @@ Source adapters are tested against recorded fixtures (no live network), and the 
 
 ### Layout
 
-- `sources/` — arXiv, RSS, Nitter, Slack adapters + Semantic Scholar client (each yields `RawItem`s)
+- `sources/` — arXiv, RSS, page-diff, Nitter, Slack adapters + Semantic Scholar client (each yields `RawItem`s)
 - `normalize.py` / `identity.py` — `RawItem` → entry fields; arXiv-ID/DOI extraction and dedup
 - `enrich.py` — Claude TL;DR / tags / relevance gate (cached per entry)
 - `score.py` — overlap + velocity + feedback + resurface (pure functions)
