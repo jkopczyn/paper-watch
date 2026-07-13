@@ -19,6 +19,7 @@ top_n: 15
 lookback: 7d
 candidate_window_days: 7
 resurface_window_days: 21
+resurface_min_mentions: 2
 
 schedule:        # local run times the cron installer reads
   - "08:00"

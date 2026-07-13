@@ -7,6 +7,7 @@ top_n: 15
 lookback: 7d                     # how far back to fetch when --since isn't given
 candidate_window_days: 7         # how recently a paper must be seen to first appear; also the velocity/surge window
 resurface_window_days: 21        # how far back an already-shown paper can be brought back on a surge
+resurface_min_mentions: 2        # mentions within candidate_window_days that count as that surge; raise to resurface less
 
 schedule:                        # local run times the cron installer reads
   - "08:00"
@@ -131,7 +132,7 @@ scoring:
   overlap: 1.0
   velocity: 1.0
   feedback: 1.0
-  resurface_boost: 2.0
+  resurface_boost: 0.5
 
 smtp:
   host: smtp.gmail.com

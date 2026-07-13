@@ -2,6 +2,7 @@ db_path: paper_watch.db
 top_n: 15
 candidate_window_days: 7
 resurface_window_days: 21
+resurface_min_mentions: 2
 schedule:
 - 08:00
 - '18:00'
@@ -168,6 +169,10 @@ source_priors:
   'slack:alignment:papers-running-list': 1.0
   twitter: 0.5
   rss: 0.4
+  # This block replaces the code defaults wholesale rather than merging, so any
+  # prior the code ships must be repeated here or it silently reverts to `default`.
+  'rss:OpenAI Blog': 0.1
+  page: 0.6
 smtp:
   host: smtp.gmail.com
   port: 587

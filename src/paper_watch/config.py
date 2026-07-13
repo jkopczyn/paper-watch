@@ -144,6 +144,10 @@ class Config(BaseModel):
     # to resurface (it still only reappears if it also surges within
     # candidate_window_days).
     resurface_window_days: int = 21
+    # How many mentions inside candidate_window_days count as a surge, i.e. as
+    # renewed attention strong enough to bring an already-shown paper back.
+    # Raise it to resurface less; 1 resurfaces on any new mention.
+    resurface_min_mentions: int = 2
     # Resolve bare tweet links (via local Nitter) and paper links inside
     # newsletter bodies into real paper entries. Both zero-LLM, best-effort.
     tweet_resolution: bool = True

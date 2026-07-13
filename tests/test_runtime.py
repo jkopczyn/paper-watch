@@ -16,6 +16,7 @@ from paper_watch.runtime import (
     ingest,
     resolve_paper_metadata,
     run_pipeline,
+    select_digest,
 )
 from paper_watch.sources.slack import SlackSource
 from paper_watch.store import Store
@@ -347,6 +348,74 @@ def _run_slack(store, item, tmp_path):
         dry_run=True,
         out_dir=tmp_path / "out",
     )
+
+
+def _shown_entry_with_mentions(store, n_mentions, *, citations=None):
+    """An already-shown arxiv paper with `n_mentions` mentions in the candidate
+    window, plus an optional pair of citation measurements (prev, latest)."""
+    entry_id = store.insert_entry(
+        title="Language Models are Few-Shot Learners",
+        title_norm="language models are few shot learners",
+        first_seen_at="2026-06-01T00:00:00Z",
+        arxiv_id="2005.14165",
+    )
+    for i in range(n_mentions):
+        store.add_mention(
+            entry_id=entry_id,
+            source="arxiv",
+            fetched_at="2026-07-10T00:00:00Z",
+            source_item_url=f"https://arxiv.org/abs/2005.14165#{i}",
+            published_at="2026-07-10T00:00:00Z",
+        )
+    if citations:
+        prev, latest = citations
+        store.record_metrics(entry_id, prev, "2026-07-08T00:00:00Z")
+        store.record_metrics(entry_id, latest, "2026-07-12T00:00:00Z")
+    store.record_shown(
+        entry_id=entry_id, digest_at="2026-07-09T00:00:00Z", rank=1, score=3.0,
+        resurfaced=False,
+    )
+    return entry_id
+
+
+def _select(store, **kw):
+    return select_digest(
+        store,
+        ScoringWeights(),
+        top_n=10,
+        candidate_start="2026-07-06T00:00:00Z",
+        resurface_start="2026-06-22T00:00:00Z",
+        **kw,
+    )
+
+
+def test_citation_drift_alone_does_not_resurface_a_shown_paper(tmp_path):
+    # A famous paper's citation count ticks up on nearly every measurement.
+    # That is not fresh attention, so it must not drag the paper back into the
+    # digest run after run.
+    store = Store(tmp_path / "pw.db")
+    _shown_entry_with_mentions(store, 1, citations=(19000, 19040))
+    assert _select(store) == []
+    store.close()
+
+
+def test_two_new_mentions_do_resurface_a_shown_paper(tmp_path):
+    # Genuinely renewed attention still brings a paper back.
+    store = Store(tmp_path / "pw.db")
+    entry_id = _shown_entry_with_mentions(store, 2)
+    chosen = _select(store)
+    assert [c["entry_id"] for c in chosen] == [entry_id]
+    assert chosen[0]["resurfaced"] is True
+    store.close()
+
+
+def test_resurface_min_mentions_raises_the_surge_bar(tmp_path):
+    # Two mentions resurface at the default bar of 2, but not at 3.
+    store = Store(tmp_path / "pw.db")
+    _shown_entry_with_mentions(store, 2)
+    assert len(_select(store, resurface_min_mentions=2)) == 1
+    assert _select(store, resurface_min_mentions=3) == []
+    store.close()
 
 
 def test_trusted_slack_item_bypasses_gate(tmp_path):

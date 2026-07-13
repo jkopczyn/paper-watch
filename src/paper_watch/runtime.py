@@ -17,7 +17,6 @@ from paper_watch.normalize import to_entry_fields
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
-    citation_growth,
     compute_score,
     derive_feedback_keys,
     feedback_affinity,
@@ -296,6 +295,7 @@ def select_digest(
     top_n,
     candidate_start,
     resurface_start,
+    resurface_min_mentions: int = 2,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
 ) -> list[dict]:
@@ -320,8 +320,11 @@ def select_digest(
         tags = json.loads(row["tags_json"])
         keys = derive_feedback_keys(authors, tags, _primary_source(store, entry_id))
 
-        growth = citation_growth(citation_count, citation_prev)
-        surge = new_mentions >= 2 or growth > 0
+        # A surge is fresh *attention*, not citation drift: a well-known paper's
+        # citation count ticks up on nearly every measurement, so counting growth
+        # here re-admitted the same classics (GPT-3, Scaling Laws) every run for
+        # as long as they stayed inside the resurface window.
+        surge = new_mentions >= resurface_min_mentions
         if store.was_shown(entry_id):
             # Already seen: only reappear if still within the resurface window
             # AND freshly surging (surge measured over the candidate window).
@@ -389,6 +392,7 @@ def run_pipeline(
     since: str | None,
     candidate_window_days: int,
     resurface_window_days: int,
+    resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
     dry_run: bool,
@@ -432,6 +436,7 @@ def run_pipeline(
         top_n=top_n,
         candidate_start=candidate_start,
         resurface_start=resurface_start,
+        resurface_min_mentions=resurface_min_mentions,
         source_priors=source_priors,
         tracked_authors=tracked_authors,
     )
@@ -645,6 +650,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             since=since_iso,
             candidate_window_days=config.candidate_window_days,
             resurface_window_days=config.resurface_window_days,
+            resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,
             dry_run=dry_run,
