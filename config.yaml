@@ -55,6 +55,14 @@ authors:
 - Nina Rimsky
 - Tri Dao
 - Samuel R. Bowman
+- Bowen Baker
+- Dan Mossing
+- Miles Wang
+- Aleksander Madry
+- Johannes Heidecke
+- Tejal Patwadhan
+- Wojciech Zaremba
+- Saachi Jain
 feeds:
 - name: ML Safety
   url: https://newsletter.mlsafety.org/feed
