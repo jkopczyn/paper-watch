@@ -94,3 +94,67 @@ def test_resolver_fetch_error_is_none():
         raise RuntimeError("down")
 
     assert PdfMetaResolver(fetch=boom).resolve("https://x/p.pdf") is None
+
+
+# -- title selection on real page-1 layouts ---------------------------------
+# Verbatim page-1 extractions from the PDFs that put junk titles in the digest.
+
+SPRINGER = """Vol.:(0123456789)
+Minds and Machines (2020) 30:411-437
+https://doi.org/10.1007/s11023-020-09539-2
+1 3
+GENERAL ARTICLE
+Artificial Intelligence, Values, and Alignment
+Iason Gabriel1
+Received: 22 February 2020 / Accepted: 26 August 2020
+(c) The Author(s) 2020
+Abstract
+This paper looks at philosophical questions that arise in the context of AI design.
+"""
+
+COGNITION = """Cognition. 40 (1991) l-19
+Newborns' preferential tracking of face-like
+stimuli and its subsequent decline*
+Mark H. Johnson
+MRC Cognitive Development Unit, 17 Cordott Street. London. WClH OAH. U.K.
+Received August 2, 1989. final revision accepted October 22. 1990
+Abstract
+Johnson. M.H., Dziurawiec. S., Ellis, H., and Morton. J.. 1990.
+"""
+
+REFERENCES_ONLY = """48. H.S.Mayberg etal.,Ann.Neurol. 28,57(1990).
+49. R. M. Cohenet al.,Neuropsychopharmacology 2,
+241(1989).
+50. J.E.LeDoux, Sci.Am. 6,50(June1994);M.Davis,
+Annu.Rev.Neurosci. 15,353(1992).
+"""
+
+
+def test_springer_running_head_is_not_taken_as_the_title():
+    # line 0 is Springer's running head, then the journal ref, the DOI and a
+    # section marker. The title is the sixth line down.
+    parsed = parse_first_page_text(SPRINGER)
+    assert parsed["title"] == "Artificial Intelligence, Values, and Alignment"
+
+
+def test_journal_header_is_not_taken_as_the_title():
+    # line 0 is the journal/volume header; the title runs across the next two.
+    parsed = parse_first_page_text(COGNITION)
+    assert parsed["title"] == (
+        "Newborns' preferential tracking of face-like stimuli and its subsequent decline*"
+    )
+
+
+def test_a_page_of_references_yields_no_title():
+    # This PDF's extractable page 1 is a reference column -- there is no title on
+    # it. Returning None lets the caller fall back to OCR or leave the entry be;
+    # returning the first reference line is how "48. H.S.Mayberg..." became a
+    # paper in the digest.
+    assert parse_first_page_text(REFERENCES_ONLY) is None
+
+
+def test_a_plain_title_on_line_one_still_wins():
+    parsed = parse_first_page_text(
+        "Scalable Oversight of Language Models\nJane Roe\nAbstract\nWe study it.\n"
+    )
+    assert parsed["title"] == "Scalable Oversight of Language Models"

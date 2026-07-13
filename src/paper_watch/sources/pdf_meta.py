@@ -26,6 +26,105 @@ _ABSTRACT_END = re.compile(
 _MIN_TEXT_CHARS = 40  # below this, page 1 is effectively image-only → OCR
 _MAX_ABSTRACT_CHARS = 2500
 
+# The title is rarely the first line of page 1. Ahead of it sit running heads
+# ("Vol.:(0123456789)" on every Springer PDF), journal/volume rules, DOIs,
+# section markers and copyright stamps — and on a reprint whose extractable
+# first page is really a reference column, there is no title at all. Taking
+# line 0 regardless is how "Vol.:(0123456789)" and "48. H.S.Mayberg etal.,
+# Ann.Neurol." ended up in the digest as papers.
+_FURNITURE = re.compile(
+    r"""^(?:
+        vol\.?\s*:?\s*\(?[\d\s]+\)?          # Springer running head
+      | (?:https?://|doi:|10\.\d{4,9}/)      # DOI / URL line
+      | arxiv:\s*\d                          # arXiv stamp
+      | \d+\s*\.\s*[A-Z]\s*\.                # numbered reference: "48. H.S.Mayberg"
+      | (?:received|accepted|published|submitted|revised)\b
+      | (?:\(c\)|©|copyright|downloaded\s+from)\b
+      | [\W\d\s]+$                           # digits/punctuation only ("1 3")
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+# "Cognition. 40 (1991) l-19", "Minds and Machines (2020) 30:411-437"
+_JOURNAL_RULE = re.compile(r"^[A-Z][\w.&\s]{2,40}[.,]?\s*\(?\d{4}\)?\s*[\d:;,()\s\-–—lI]+$")
+_CITATION_YEAR = re.compile(r"\(\s*\d{4}\s*\)")
+_ET_AL = re.compile(r"\bet\s*al\b", re.IGNORECASE)
+# A reprint's extractable "page 1" is sometimes the article's reference column.
+# There is no title on such a page, and picking the least citation-shaped line
+# out of it just yields a different citation. Judged over content lines only —
+# a title page's furniture (DOI, volume rule, "1 3") is numeral-heavy too — and
+# only when there are enough of them to mean anything: above the title of a real
+# paper sit two or three content lines, above a reference column sit dozens.
+_REFERENCE_PAGE_RATIO = 0.6
+_MIN_REFERENCE_LINES = 4
+_MIN_TITLE_CHARS = 15
+_MAX_TITLE_CHARS = 300
+_TITLE_SEARCH_LINES = 25
+
+
+def _is_furniture(line: str) -> bool:
+    """Page decoration rather than content: running heads, DOIs, rules, stamps."""
+    if _FURNITURE.match(line) or _JOURNAL_RULE.match(line):
+        return True
+    words = line.split()
+    # Short all-caps banners: "GENERAL ARTICLE", "RESEARCH ARTICLE".
+    return line.isupper() and len(words) <= 4
+
+
+def _looks_like_reference(line: str) -> bool:
+    """A bibliography entry: dated in parens, "et al.", or numeral-heavy.
+
+    Only the first line of a wrapped reference is numbered, so the numbering is
+    not enough on its own — the year and the "et al." survive the wrap.
+    """
+    if _CITATION_YEAR.search(line) or _ET_AL.search(line):
+        return True
+    words = line.split()
+    if not words:
+        return False
+    return sum(any(c.isdigit() for c in w) for w in words) * 2 >= len(words)
+
+
+def _is_title_like(line: str) -> bool:
+    if len(line) < _MIN_TITLE_CHARS or _is_furniture(line):
+        return False
+    return len(line.split()) >= 2 and not _looks_like_reference(line)
+
+
+def _select_title(lines: list[str]) -> str | None:
+    """The paper's title, read off the lines above the abstract.
+
+    Skips furniture to the first title-like line, then absorbs the continuation
+    lines a wrapped title leaves behind. Only a lowercase line continues a title:
+    the author block that follows it does not ("Iason Gabriel1", "Mark H.
+    Johnson"), and that is what stops the run.
+
+    The cost is that a title wrapping onto a capitalised line is truncated —
+    "ImageNet Classification with Deep Convolutional" loses "Neural Networks",
+    because nothing in the extracted text distinguishes that line from an author's
+    name. Truncation is the safe failure: a correct prefix still reads as the
+    paper and still ranks, whereas guessing wrong swallows the author list into
+    the title. Font sizes would settle it, but page-1 text extraction drops them.
+    """
+    head = lines[:_TITLE_SEARCH_LINES]
+    content = [ln for ln in head if not _is_furniture(ln)]
+    if len(content) >= _MIN_REFERENCE_LINES:
+        refs = sum(map(_looks_like_reference, content))
+        if refs >= len(content) * _REFERENCE_PAGE_RATIO:
+            return None
+
+    for i, line in enumerate(head):
+        if not _is_title_like(line):
+            continue
+        title = line
+        for cont in lines[i + 1 :]:
+            if not cont or cont[0].isupper() or _is_furniture(cont):
+                break
+            if len(title) + len(cont) + 1 > _MAX_TITLE_CHARS:
+                break
+            title = f"{title} {cont}"
+        return _WS.sub(" ", title).strip()
+    return None
+
 
 def pdf_first_page_text(data: bytes) -> str:
     """Extracted text of the PDF's first page ('' if none / unreadable)."""
@@ -54,11 +153,19 @@ def pdf_first_page_pdf(data: bytes) -> bytes:
 
 
 def parse_first_page_text(text: str) -> dict | None:
-    """{title, abstract} guessed from page-1 text (title = first line)."""
+    """{title, abstract} read off page-1 text, or None if it carries no title."""
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         return None
-    title = lines[0]
+    # The title sits above the abstract; nothing below it is a candidate.
+    head = lines
+    for i, line in enumerate(lines):
+        if _ABSTRACT.match(line):
+            head = lines[:i]
+            break
+    title = _select_title(head)
+    if title is None:
+        return None
     abstract: str | None = None
     m = _ABSTRACT.search(text)
     if m:
