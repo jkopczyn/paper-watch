@@ -364,11 +364,14 @@ def select_digest(
         tags = json.loads(row["tags_json"])
         keys = derive_feedback_keys(authors, tags, _primary_source(store, entry_id))
 
-        # A surge is fresh *attention*, not citation drift: a well-known paper's
-        # citation count ticks up on nearly every measurement, so counting growth
-        # here re-admitted the same classics (GPT-3, Scaling Laws) every run for
-        # as long as they stayed inside the resurface window.
-        surge = new_mentions >= resurface_min_mentions
+        # A surge is fresh *attention*, and it is counted in occasions rather than
+        # raw mentions. Not citation drift: a well-known paper's citation count
+        # ticks up on nearly every measurement, which re-admitted the same classics
+        # (GPT-3, Scaling Laws) every run for as long as they stayed in the window.
+        # And not link count: one post linking a paper as the post, the arXiv abs
+        # and the PDF is one act of attention, not three.
+        occasions = store.count_mention_occasions_since(entry_id, candidate_start)
+        surge = occasions >= resurface_min_mentions
         if store.was_shown(entry_id):
             # Already seen: only reappear if still within the resurface window
             # AND freshly surging (surge measured over the candidate window).

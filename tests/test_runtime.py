@@ -471,22 +471,22 @@ def test_two_pdfs_resolving_to_a_generic_title_are_not_merged(tmp_path):
     store.close()
 
 
-def _shown_entry_with_mentions(store, n_mentions, *, citations=None):
-    """An already-shown arxiv paper with `n_mentions` mentions in the candidate
-    window, plus an optional pair of citation measurements (prev, latest)."""
+def _shown_entry_with_mentions(store, n_occasions, *, citations=None):
+    """An already-shown arxiv paper mentioned on `n_occasions` separate days,
+    plus an optional pair of citation measurements (prev, latest)."""
     entry_id = store.insert_entry(
         title="Language Models are Few-Shot Learners",
         title_norm="language models are few shot learners",
         first_seen_at="2026-06-01T00:00:00Z",
         arxiv_id="2005.14165",
     )
-    for i in range(n_mentions):
+    for i in range(n_occasions):
         store.add_mention(
             entry_id=entry_id,
             source="arxiv",
-            fetched_at="2026-07-10T00:00:00Z",
+            fetched_at=f"2026-07-{10 + i:02d}T00:00:00Z",
             source_item_url=f"https://arxiv.org/abs/2005.14165#{i}",
-            published_at="2026-07-10T00:00:00Z",
+            published_at=f"2026-07-{10 + i:02d}T00:00:00Z",
         )
     if citations:
         prev, latest = citations
@@ -527,6 +527,63 @@ def test_two_new_mentions_do_resurface_a_shown_paper(tmp_path):
     chosen = _select(store)
     assert [c["entry_id"] for c in chosen] == [entry_id]
     assert chosen[0]["resurfaced"] is True
+    store.close()
+
+
+def _shown_entry(store, mentions):
+    """`mentions` is a list of (source, fetched_at, url) making up the window."""
+    entry_id = store.insert_entry(
+        title="Modular Pretraining Enables Access Control",
+        title_norm="modular pretraining enables access control",
+        first_seen_at="2026-07-01T00:00:00Z",
+    )
+    for source, fetched_at, url in mentions:
+        store.add_mention(
+            entry_id=entry_id, source=source, fetched_at=fetched_at,
+            source_item_url=url, published_at=fetched_at,
+        )
+    # clear the relevance gate, so these tests turn on the surge rule alone
+    store.set_enrichment(
+        entry_id, tldr="t", why="w", tags=[], relevance=3, version=2
+    )
+    store.record_shown(
+        entry_id=entry_id, digest_at="2026-07-09T00:00:00Z", rank=1, score=3.0,
+        resurfaced=False,
+    )
+    return entry_id
+
+
+def test_one_post_linking_a_paper_three_ways_is_not_a_surge(tmp_path):
+    # An AF post that links the paper as the post, the arXiv abs and the PDF
+    # produces three mention rows -- but it is one source, on one day, saying one
+    # thing. That is not renewed attention and must not resurface the paper.
+    store = Store(tmp_path / "pw.db")
+    _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://alignmentforum.org/posts/xyz"),
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://arxiv.org/abs/2607.08077"),
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://ae.studio/modular.pdf"),
+    ])
+    assert _select(store) == []
+    store.close()
+
+
+def test_two_sources_on_one_day_is_a_surge(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://alignmentforum.org/posts/xyz"),
+        ("slack:far:papers", "2026-07-10T02:00:00Z", "slack://far/C1/1.2"),
+    ])
+    assert len(_select(store)) == 1
+    store.close()
+
+
+def test_one_source_on_two_days_is_a_surge(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://alignmentforum.org/posts/xyz"),
+        ("rss:AF", "2026-07-12T01:00:00Z", "https://alignmentforum.org/posts/abc"),
+    ])
+    assert len(_select(store)) == 1
     store.close()
 
 

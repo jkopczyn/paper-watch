@@ -605,6 +605,21 @@ class Store:
             (entry_id,),
         ).fetchone()
 
+    def count_mention_occasions_since(self, entry_id: int, since: str) -> int:
+        """Distinct (source, day) pairs mentioning `entry_id` since `since`.
+
+        One source flagging a paper on one day is one occasion however many links
+        it used — an Alignment Forum post that links the post, the arXiv abs and
+        the PDF is one act of attention, not three. Raw mention rows would count
+        it three times and read as a surge.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT source || '|' || substr(fetched_at, 1, 10)) AS n "
+            "FROM mentions WHERE entry_id = ? AND fetched_at >= ?",
+            (entry_id, since),
+        ).fetchone()
+        return int(row["n"])
+
     def count_mentions_since(self, entry_id: int, since: str) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM mentions WHERE entry_id = ? AND fetched_at >= ?",
