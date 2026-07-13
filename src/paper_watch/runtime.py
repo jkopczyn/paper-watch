@@ -130,12 +130,13 @@ def rewrite_paper_metadata(
     and only collide once the real title arrives. Merge rather than leave a twin.
     The older id wins, so existing references stay valid. Returns the survivor.
     """
-    from paper_watch.identity import normalize_title
+    from paper_watch.identity import is_distinctive_title, normalize_title
 
+    title_norm = normalize_title(title)
     store.update_paper_metadata(
         entry_id,
         title=title,
-        title_norm=normalize_title(title),
+        title_norm=title_norm,
         authors=authors,
         abstract=abstract,
         links=links,
@@ -147,7 +148,9 @@ def rewrite_paper_metadata(
         entry_id,
         arxiv_id=row["arxiv_id"],
         doi=row["doi"],
-        title_norm=row["title_norm"],
+        # Only a distinctive title is identity: two unrelated PDFs can both
+        # resolve to "System Card", and merging those loses a paper outright.
+        title_norm=title_norm if is_distinctive_title(title_norm) else None,
     )
     if twin is None:
         return entry_id

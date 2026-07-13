@@ -2,6 +2,7 @@ from paper_watch.identity import (
     canonicalize_url,
     extract_arxiv_id,
     extract_doi,
+    is_distinctive_title,
     normalize_title,
     resolve_or_create,
 )
@@ -165,3 +166,21 @@ def test_resolve_distinct_papers_are_separate():
     assert created is True
     assert eid2 != eid1
     store.close()
+
+
+def test_generic_titles_are_not_distinctive_enough_to_identify_a_paper():
+    # Two different Anthropic system-card PDFs both extract the title "System
+    # Card". Identity must not be inferred from a title that generic, or the two
+    # documents get merged into one.
+    assert not is_distinctive_title(normalize_title("System Card"))
+    assert not is_distinctive_title(normalize_title("Technical Report"))
+    assert not is_distinctive_title(normalize_title(""))
+    # A real paper title carries enough signal.
+    assert is_distinctive_title(normalize_title("Modular Pretraining Enables Access Control"))
+    assert is_distinctive_title(normalize_title("Attention Is All You Need"))
+
+
+def test_springer_running_head_is_not_a_title():
+    # "Vol.:(0123456789)" is boilerplate on every Springer PDF, so it must never
+    # act as identity -- it would fuse every Springer paper into one entry.
+    assert not is_distinctive_title(normalize_title("Vol.:(0123456789)"))

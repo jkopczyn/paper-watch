@@ -96,6 +96,42 @@ def normalize_title(title: str | None) -> str:
     return _WS.sub(" ", stripped).strip()
 
 
+# A title is only evidence of identity if it names one specific paper. PDF text
+# extraction routinely returns the cover page's boilerplate instead of the title —
+# two unrelated Anthropic system cards both come back as "System Card", and
+# Springer's PDFs all carry the running head "Vol.:(0123456789)". Matching on
+# those fuses unrelated documents into one entry, which loses a paper outright;
+# refusing to match merely leaves a duplicate. URLs, arXiv ids and DOIs cannot
+# collide this way and are always trusted.
+_MIN_TITLE_CHARS = 12
+_GENERIC_TITLES = frozenset(
+    {
+        "system card",
+        "model card",
+        "technical report",
+        "white paper",
+        "whitepaper",
+        "preprint",
+        "working paper",
+        "abstract",
+        "introduction",
+        "appendix",
+        "supplementary material",
+    }
+)
+
+
+def is_distinctive_title(title_norm: str | None) -> bool:
+    """Whether `title_norm` is specific enough to identify a paper by itself."""
+    if not title_norm or len(title_norm) < _MIN_TITLE_CHARS:
+        return False
+    if title_norm in _GENERIC_TITLES:
+        return False
+    # Mostly-numeric strings are page furniture ("vol 0123456789"), not titles.
+    words = title_norm.split()
+    return sum(w.isdigit() for w in words) * 2 < len(words)
+
+
 def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
     """Find the existing entry for `fields`, or create it.
 
@@ -120,7 +156,7 @@ def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
         existing = store.get_entry_by_arxiv_id(arxiv_id)
     if existing is None and doi:
         existing = store.get_entry_by_doi(doi)
-    if existing is None and title_norm:
+    if existing is None and is_distinctive_title(title_norm):
         existing = store.get_entry_by_title_norm(title_norm)
     if existing is not None:
         entry_id = int(existing["id"])

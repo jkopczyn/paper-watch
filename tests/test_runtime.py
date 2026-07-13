@@ -444,6 +444,33 @@ def test_a_merged_away_url_still_resolves_to_the_survivor(tmp_path):
     store.close()
 
 
+def test_two_pdfs_resolving_to_a_generic_title_are_not_merged(tmp_path):
+    # Two different Anthropic system cards, two different CDN URLs, and the PDF
+    # resolver extracts "System Card" from both. They are not the same paper and
+    # must not be merged away into one.
+    store = Store(tmp_path / "pw.db")
+    ids = []
+    for slug in ("0f0c97ad", "2f9323ab"):
+        ingest(
+            store,
+            [ListSource("rss:AF", [_pdf_item(f"https://www-cdn.anthropic.com/{slug}.pdf")])],
+            None,
+            "2026-07-10T00:00:00Z",
+        )
+    for row in store.conn.execute("SELECT id FROM entries ORDER BY id"):
+        ids.append(row["id"])
+    assert len(ids) == 2
+
+    for entry_id in ids:
+        rewrite_paper_metadata(
+            store, entry_id, title="System Card", authors=[], abstract="abs", links={}
+        )
+
+    survivors = [r["id"] for r in store.conn.execute("SELECT id FROM entries ORDER BY id")]
+    assert survivors == ids, f"the two system cards were fused: {survivors}"
+    store.close()
+
+
 def _shown_entry_with_mentions(store, n_mentions, *, citations=None):
     """An already-shown arxiv paper with `n_mentions` mentions in the candidate
     window, plus an optional pair of citation measurements (prev, latest)."""
