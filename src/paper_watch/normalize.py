@@ -34,6 +34,7 @@ def to_entry_fields(raw: RawItem) -> dict:
     return {
         "title": title,
         "title_norm": normalize_title(title),
+        "source_url": raw.url,
         "arxiv_id": arxiv_id,
         "doi": doi,
         "authors": list(raw.authors),

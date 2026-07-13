@@ -15,6 +15,7 @@ from paper_watch.runtime import (
     effective_since,
     ingest,
     resolve_paper_metadata,
+    rewrite_paper_metadata,
     run_pipeline,
     select_digest,
 )
@@ -348,6 +349,99 @@ def _run_slack(store, item, tmp_path):
         dry_run=True,
         out_dir=tmp_path / "out",
     )
+
+
+def _pdf_item(url, title=None):
+    """A post that links a bare PDF: no title of its own, so the entry is born
+    titled with its own URL until a resolver fills the real title in."""
+    return RawItem(source="rss:AF", url=url, title=title, authors=[], abstract=None,
+                   published_at="2026-07-10T00:00:00Z")
+
+
+def test_reingesting_a_url_after_its_title_was_rewritten_does_not_duplicate(tmp_path):
+    # The regression that put 100 duplicate rows in the live DB: an entry is
+    # created titled with its URL, a resolver rewrites title_norm to the real
+    # title, and the next run's title_norm lookup then misses -- so the same URL
+    # spawns a brand-new entry every single run.
+    store = Store(tmp_path / "pw.db")
+    url = "https://ae.studio/research/modular-pretraining.pdf"
+
+    ingest(store, [ListSource("rss:AF", [_pdf_item(url)])], None, "2026-07-10T00:00:00Z")
+    (entry_id,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    # the PDF resolver lands the real title, clobbering the URL-derived title_norm
+    store.update_paper_metadata(
+        entry_id, title="Modular Pretraining Enables Access Control",
+        title_norm="modular pretraining enables access control",
+        authors=[], abstract="abs", links={},
+    )
+
+    # next run sees the very same item again
+    ingest(store, [ListSource("rss:AF", [_pdf_item(url)])], None, "2026-07-10T12:00:00Z")
+
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert ids == [entry_id], f"re-ingest spawned a duplicate: {ids}"
+    store.close()
+
+
+def test_metadata_rewrite_merges_into_an_existing_twin(tmp_path):
+    # Same paper reached by two different URLs in one run (the AF post and the
+    # arXiv link). They only become recognisably the same once metadata resolution
+    # lands the real title on the second -- at which point it must merge, not twin.
+    store = Store(tmp_path / "pw.db")
+    post = store.insert_entry(
+        title="Modular Pretraining Enables Access Control",
+        title_norm="modular pretraining enables access control",
+        first_seen_at="2026-07-11T00:00:00Z",
+    )
+    twin = store.insert_entry(
+        title="https://arxiv.org/abs/2607.08077",
+        title_norm="https arxiv org abs 2607 08077",
+        first_seen_at="2026-07-11T00:00:00Z",
+        arxiv_id="2607.08077",
+    )
+    store.add_mention(
+        entry_id=twin, source="rss:AF", fetched_at="2026-07-11T00:00:00Z",
+        source_item_url="https://arxiv.org/abs/2607.08077",
+    )
+
+    rewrite_paper_metadata(
+        store, twin,
+        title="Modular Pretraining Enables Access Control",
+        authors=[], abstract="abs", links={},
+    )
+
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM entries ORDER BY id")]
+    assert ids == [post], f"expected a merge into {post}, got {ids}"
+    # the merged-away entry's provenance and identity survive on the winner
+    assert store.get_entry(post)["arxiv_id"] == "2607.08077"
+    assert len(store.get_mentions(post)) == 1
+    store.close()
+
+
+def test_a_merged_away_url_still_resolves_to_the_survivor(tmp_path):
+    # After a merge the loser is gone, but its URL is still out there in the feed.
+    # If the survivor didn't inherit it, the next run would re-create the entry,
+    # re-resolve it and merge it away again -- burning a PDF fetch and an LLM
+    # enrichment every run, forever.
+    store = Store(tmp_path / "pw.db")
+    pdf = "https://ae.studio/research/modular-pretraining.pdf"
+
+    ingest(store, [ListSource("rss:AF", [_pdf_item(pdf)])], None, "2026-07-10T00:00:00Z")
+    (loser,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    winner = store.insert_entry(
+        title="Modular Pretraining Enables Access Control",
+        title_norm="modular pretraining enables access control",
+        first_seen_at="2026-07-09T00:00:00Z",
+        source_url="https://alignmentforum.org/posts/xyz",
+    )
+    store.merge_entries(winner_id=winner, loser_id=loser)
+
+    ingest(store, [ListSource("rss:AF", [_pdf_item(pdf)])], None, "2026-07-11T00:00:00Z")
+
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert ids == [winner], f"the loser's URL re-created an entry: {ids}"
+    store.close()
 
 
 def _shown_entry_with_mentions(store, n_mentions, *, citations=None):

@@ -99,22 +99,38 @@ def normalize_title(title: str | None) -> str:
 def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
     """Find the existing entry for `fields`, or create it.
 
-    Match order: arXiv ID, then DOI, then normalized title. Returns
+    Match order: source URL, arXiv ID, DOI, then normalized title. Returns
     (entry_id, created).
+
+    Source URL comes first because it is the only one of the four that a metadata
+    resolver never rewrites. An entry linked as a bare PDF is born titled with its
+    own URL; the resolver then replaces title_norm with the real title, and a
+    title-only match would miss on the next run and create the entry again —
+    once per run, forever.
     """
+    source_url = fields.get("source_url")
     arxiv_id = fields.get("arxiv_id")
     doi = fields.get("doi")
     title_norm = fields.get("title_norm") or normalize_title(fields.get("title"))
 
     existing = None
-    if arxiv_id:
+    if source_url:
+        existing = store.get_entry_by_source_url(source_url)
+    if existing is None and arxiv_id:
         existing = store.get_entry_by_arxiv_id(arxiv_id)
     if existing is None and doi:
         existing = store.get_entry_by_doi(doi)
     if existing is None and title_norm:
         existing = store.get_entry_by_title_norm(title_norm)
     if existing is not None:
-        return int(existing["id"]), False
+        entry_id = int(existing["id"])
+        # Teach the entry this URL too, so a match found the slow way (arXiv id,
+        # DOI, title) is found by URL next run — even if a resolver later rewrites
+        # the title out from under us. This is how one paper accumulates its
+        # aliases: the arXiv link, the AF post, the PDF.
+        if source_url:
+            store.add_entry_url(entry_id, source_url)
+        return entry_id, False
 
     entry_id = store.insert_entry(
         title=fields["title"],
@@ -125,5 +141,6 @@ def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
         authors=fields.get("authors") or [],
         abstract=fields.get("abstract"),
         links=fields.get("links") or {},
+        source_url=source_url,
     )
     return entry_id, True

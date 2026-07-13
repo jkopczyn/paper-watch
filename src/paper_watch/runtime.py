@@ -114,6 +114,48 @@ def _entry_pdf_url(row) -> str | None:
     return abstract_url if abstract_url.lower().endswith(".pdf") else None
 
 
+def rewrite_paper_metadata(
+    store,
+    entry_id: int,
+    *,
+    title: str,
+    authors: list[str],
+    abstract: str | None,
+    links: dict[str, str],
+) -> int:
+    """Land resolved metadata on an entry, merging it away if it now has a twin.
+
+    Resolution is the moment two entries can be revealed as the same paper: the
+    AF post and the arXiv link it cites are both born titled with their own URL
+    and only collide once the real title arrives. Merge rather than leave a twin.
+    The older id wins, so existing references stay valid. Returns the survivor.
+    """
+    from paper_watch.identity import normalize_title
+
+    store.update_paper_metadata(
+        entry_id,
+        title=title,
+        title_norm=normalize_title(title),
+        authors=authors,
+        abstract=abstract,
+        links=links,
+    )
+    row = store.get_entry(entry_id)
+    if row is None:
+        return entry_id
+    twin = store.find_twin_entry_id(
+        entry_id,
+        arxiv_id=row["arxiv_id"],
+        doi=row["doi"],
+        title_norm=row["title_norm"],
+    )
+    if twin is None:
+        return entry_id
+    winner, loser = min(entry_id, twin), max(entry_id, twin)
+    store.merge_entries(winner_id=winner, loser_id=loser)
+    return winner
+
+
 def resolve_paper_metadata(
     store,
     entry_ids: list[int],
@@ -132,7 +174,6 @@ def resolve_paper_metadata(
     `pdf_resolver`. Each is best-effort; one failure never aborts the rest.
     Returns how many entries were updated.
     """
-    from paper_watch.identity import normalize_title
     from paper_watch.sources.arxiv import fetch_metadata
     from paper_watch.sources.openreview import forum_id
 
@@ -162,10 +203,10 @@ def resolve_paper_metadata(
             links = {"abstract": item.url or f"https://arxiv.org/abs/{arxiv_id}"}
             if item.pdf_url:
                 links["pdf"] = item.pdf_url
-            store.update_paper_metadata(
+            rewrite_paper_metadata(
+                store,
                 entry_id,
                 title=item.title,
-                title_norm=normalize_title(item.title),
                 authors=item.authors,
                 abstract=item.abstract,
                 links=links,
@@ -175,10 +216,10 @@ def resolve_paper_metadata(
     for entry_id, url in openreview_pending:
         meta = _safe_resolve(openreview_resolver, url)
         if meta and meta.get("title"):
-            store.update_paper_metadata(
+            rewrite_paper_metadata(
+                store,
                 entry_id,
                 title=meta["title"],
-                title_norm=normalize_title(meta["title"]),
                 authors=meta.get("authors") or [],
                 abstract=meta.get("abstract"),
                 links={},
@@ -194,10 +235,10 @@ def resolve_paper_metadata(
     for entry_id, url in pdf_pending:
         meta = _safe_resolve(pdf_resolver, url)
         if meta and meta.get("title"):
-            store.update_paper_metadata(
+            rewrite_paper_metadata(
+                store,
                 entry_id,
                 title=meta["title"],
-                title_norm=normalize_title(meta["title"]),
                 authors=meta.get("authors") or [],
                 abstract=meta.get("abstract"),
                 links={},
@@ -222,7 +263,6 @@ def _flag_openreview_fallback(store, entry_id: int) -> None:
     entries already at the current version.
     """
     from paper_watch.enrich import ENRICH_VERSION
-    from paper_watch.identity import normalize_title
 
     row = store.get_entry(entry_id)
     if row is None:
@@ -234,11 +274,12 @@ def _flag_openreview_fallback(store, entry_id: int) -> None:
     ).strip()
     links = json.loads(row["links_json"])
     if row["title"] == (links.get("abstract") or "") and blurb:
-        title = blurb[:200]
-        store.update_paper_metadata(
+        # Promoting the blurb to the title can reveal a twin, and the merge that
+        # follows may delete `entry_id` — enrich whichever entry survives.
+        entry_id = rewrite_paper_metadata(
+            store,
             entry_id,
-            title=title,
-            title_norm=normalize_title(title),
+            title=blurb[:200],
             authors=[],
             abstract=None,
             links={},

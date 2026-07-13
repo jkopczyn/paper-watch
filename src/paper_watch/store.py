@@ -31,6 +31,21 @@ SCHEMA: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_entries_title_norm ON entries(title_norm)",
+    # Every URL an entry has ever been reached by. This is the identity anchor no
+    # resolver rewrites: title/title_norm/links all get clobbered when a bare-PDF
+    # entry finally learns its real title, and a title-only match then misses on
+    # the next run and creates the entry again -- once per run, forever. A merge
+    # repoints the loser's URLs here, so the survivor keeps answering to them.
+    # (mentions.source_item_url cannot serve: one Slack message linking three
+    # papers writes the same permalink onto all three entries.)
+    """
+    CREATE TABLE IF NOT EXISTS entry_urls (
+        id       INTEGER PRIMARY KEY,
+        entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        url      TEXT NOT NULL UNIQUE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_entry_urls_entry ON entry_urls(entry_id)",
     """
     CREATE TABLE IF NOT EXISTS mentions (
         id              INTEGER PRIMARY KEY,
@@ -227,6 +242,7 @@ class Store:
         authors: list[str] | None = None,
         abstract: str | None = None,
         links: dict[str, str] | None = None,
+        source_url: str | None = None,
     ) -> int:
         cur = self.conn.execute(
             """
@@ -246,8 +262,27 @@ class Store:
                 first_seen_at,
             ),
         )
+        entry_id = int(cur.lastrowid)
+        if source_url:
+            self.add_entry_url(entry_id, source_url, commit=False)
         self.conn.commit()
-        return int(cur.lastrowid)
+        return entry_id
+
+    def add_entry_url(self, entry_id: int, url: str, *, commit: bool = True) -> None:
+        """Record a URL this entry answers to. Ignored if another entry owns it."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO entry_urls (entry_id, url) VALUES (?, ?)",
+            (entry_id, url),
+        )
+        if commit:
+            self.conn.commit()
+
+    def get_entry_by_source_url(self, url: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT e.* FROM entries e JOIN entry_urls u ON u.entry_id = e.id "
+            "WHERE u.url = ?",
+            (url,),
+        ).fetchone()
 
     def get_entry(self, entry_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -268,6 +303,81 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM entries WHERE title_norm = ?", (title_norm,)
         ).fetchone()
+
+    def find_twin_entry_id(
+        self,
+        entry_id: int,
+        *,
+        arxiv_id: str | None,
+        doi: str | None,
+        title_norm: str | None,
+    ) -> int | None:
+        """The oldest *other* entry that is the same paper as `entry_id`, if any."""
+        clauses, params = [], []
+        if arxiv_id:
+            clauses.append("arxiv_id = ?")
+            params.append(arxiv_id)
+        if doi:
+            clauses.append("doi = ?")
+            params.append(doi)
+        if title_norm:
+            clauses.append("title_norm = ?")
+            params.append(title_norm)
+        if not clauses:
+            return None
+        params.append(entry_id)
+        row = self.conn.execute(
+            f"SELECT id FROM entries WHERE ({' OR '.join(clauses)}) AND id != ? "
+            "ORDER BY id LIMIT 1",
+            params,
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def merge_entries(self, *, winner_id: int, loser_id: int) -> None:
+        """Fold `loser_id` into `winner_id` and delete it.
+
+        Mentions, metrics, shown and feedback rows are repointed at the winner;
+        `OR IGNORE` drops the ones that would collide with a row the winner
+        already has (both entries seen in the same source, or shown in the same
+        digest). Identity fields the winner is missing are adopted from the loser,
+        so merging never loses an arXiv ID or an abstract.
+        """
+        if winner_id == loser_id:
+            return
+        winner = self.get_entry(winner_id)
+        loser = self.get_entry(loser_id)
+        if winner is None or loser is None:
+            return
+
+        # entry_urls included: the survivor must keep answering to the loser's
+        # URLs, or the next run re-creates it from one of them and merges it away
+        # again, every run.
+        for table in ("mentions", "metrics", "shown", "feedback", "entry_urls"):
+            self.conn.execute(
+                f"UPDATE OR IGNORE {table} SET entry_id = ? WHERE entry_id = ?",
+                (winner_id, loser_id),
+            )
+
+        adopted = {
+            col: loser[col]
+            for col in ("arxiv_id", "doi", "abstract", "relevance")
+            if winner[col] is None and loser[col] is not None
+        }
+        merged_links = json.loads(winner["links_json"])
+        for key, value in json.loads(loser["links_json"]).items():
+            merged_links.setdefault(key, value)
+        adopted["links_json"] = json.dumps(merged_links)
+
+        # Drop the loser before the winner adopts its identity: arxiv_id is
+        # UNIQUE, so the two cannot both hold it even for one statement.
+        # ON DELETE CASCADE takes the child rows that OR IGNORE left behind.
+        self.conn.execute("DELETE FROM entries WHERE id = ?", (loser_id,))
+        assignments = ", ".join(f"{col} = ?" for col in adopted)
+        self.conn.execute(
+            f"UPDATE entries SET {assignments} WHERE id = ?",
+            (*adopted.values(), winner_id),
+        )
+        self.conn.commit()
 
     def update_paper_metadata(
         self,

@@ -4,6 +4,7 @@ from paper_watch.store import Store
 
 EXPECTED_TABLES = {
     "entries",
+    "entry_urls",
     "mentions",
     "metrics",
     "shown",
@@ -129,4 +130,54 @@ def test_entry_has_trusted_mention(tmp_path: Path):
         fetched_at="2026-06-19T00:00:00Z", trusted=True,
     )
     assert store.entry_has_trusted_mention(eid) is True
+    store.close()
+
+
+def test_merge_entries_repoints_mentions_metrics_and_shown(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    winner = store.insert_entry(
+        title="Real Paper", title_norm="real paper", first_seen_at="2026-07-01T00:00:00Z"
+    )
+    loser = store.insert_entry(
+        title="Real Paper", title_norm="real paper", first_seen_at="2026-07-02T00:00:00Z"
+    )
+    store.add_mention(
+        entry_id=loser, source="rss", fetched_at="2026-07-02T00:00:00Z",
+        source_item_url="https://example.org/a",
+    )
+    store.record_metrics(loser, 12, "2026-07-02T00:00:00Z")
+    store.record_shown(
+        entry_id=loser, digest_at="2026-07-02T00:00:00Z", rank=1, score=1.0,
+        resurfaced=False,
+    )
+
+    store.merge_entries(winner_id=winner, loser_id=loser)
+
+    assert store.get_entry(loser) is None
+    assert [m["source_item_url"] for m in store.get_mentions(winner)] == [
+        "https://example.org/a"
+    ]
+    assert store.latest_metrics(winner)["citation_count"] == 12
+    assert store.was_shown(winner)
+    store.close()
+
+
+def test_merge_entries_tolerates_a_mention_both_entries_share(tmp_path: Path):
+    # The UNIQUE(entry_id, source, source_item_url) constraint must not blow up
+    # when the loser carries a mention the winner already has.
+    store = Store(tmp_path / "pw.db")
+    winner = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-01T00:00:00Z"
+    )
+    loser = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-02T00:00:00Z"
+    )
+    for eid in (winner, loser):
+        store.add_mention(
+            entry_id=eid, source="rss", fetched_at="2026-07-02T00:00:00Z",
+            source_item_url="https://example.org/same",
+        )
+    store.merge_entries(winner_id=winner, loser_id=loser)
+    assert store.get_entry(loser) is None
+    assert len(store.get_mentions(winner)) == 1
     store.close()
