@@ -86,6 +86,19 @@ def extract_doi(text: str | None) -> str | None:
     return _DOI_FILE_EXT.sub("", m.group(1).rstrip(".,;)"))
 
 
+def strip_site_suffix(title: str) -> str:
+    """Drop a trailing "— LessWrong" / "| OpenAI" site suffix, preserving case.
+
+    Left as-is when little would remain (the suffix regex would otherwise eat a
+    genuinely short title). Case-preserving, so it suits a display title as well
+    as the lowercased dedup key `normalize_title` builds on top of it.
+    """
+    m = _SITE_SUFFIX.search(title)
+    if m and m.start() >= _SITE_SUFFIX_MIN_REMAINDER:
+        return title[: m.start()]
+    return title
+
+
 def normalize_title(title: str | None) -> str:
     """Lowercase, drop punctuation, and collapse whitespace for fuzzy matching.
 
@@ -94,10 +107,7 @@ def normalize_title(title: str | None) -> str:
     """
     if not title:
         return ""
-    m = _SITE_SUFFIX.search(title)
-    if m and m.start() >= _SITE_SUFFIX_MIN_REMAINDER:
-        title = title[: m.start()]
-    stripped = _TITLE_PUNCT.sub(" ", title.lower())
+    stripped = _TITLE_PUNCT.sub(" ", strip_site_suffix(title).lower())
     return _WS.sub(" ", stripped).strip()
 
 

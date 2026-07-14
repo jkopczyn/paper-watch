@@ -159,6 +159,11 @@ def rewrite_paper_metadata(
     return winner
 
 
+def _is_html_page_url(url: str) -> bool:
+    """An http(s) page to scrape for metadata — not a PDF (that's the PDF path)."""
+    return url.startswith(("http://", "https://")) and not url.lower().endswith(".pdf")
+
+
 def resolve_paper_metadata(
     store,
     entry_ids: list[int],
@@ -166,6 +171,8 @@ def resolve_paper_metadata(
     *,
     openreview_resolver=None,
     pdf_resolver=None,
+    html_resolver=None,
+    reresolve=False,
 ) -> int:
     """Give post-shaped entries their real paper metadata, best-effort.
 
@@ -174,8 +181,13 @@ def resolve_paper_metadata(
     content-based ranking need the actual paper. Resolves entries with no
     abstract by landing-page type: arXiv id → batched arXiv API (needs `fetch`);
     an OpenReview forum link → `openreview_resolver`; a raw PDF link →
-    `pdf_resolver`. Each is best-effort; one failure never aborts the rest.
-    Returns how many entries were updated.
+    `pdf_resolver`; any other HTML page → `html_resolver` (its Open Graph / title
+    metadata). Each is best-effort; one failure never aborts the rest. Returns
+    how many entries were updated.
+
+    `reresolve` reprocesses entries that already have an abstract — off in the
+    live pipeline (an abstract means already resolved), on for the backfill that
+    re-runs a curated set of junk-titled entries through the fixed resolvers.
     """
     from paper_watch.sources.arxiv import fetch_metadata
     from paper_watch.sources.openreview import forum_id
@@ -183,9 +195,10 @@ def resolve_paper_metadata(
     arxiv_pending: dict[str, int] = {}
     openreview_pending: list[tuple[int, str]] = []
     pdf_pending: list[tuple[int, str]] = []
+    html_pending: list[tuple[int, str]] = []
     for entry_id in entry_ids:
         row = store.get_entry(entry_id)
-        if row is None or row["abstract"]:
+        if row is None or (row["abstract"] and not reresolve):
             continue
         if row["arxiv_id"]:
             arxiv_pending[row["arxiv_id"]] = entry_id
@@ -195,6 +208,8 @@ def resolve_paper_metadata(
             openreview_pending.append((entry_id, abstract_url))
         elif pdf_resolver is not None and (pdf := _entry_pdf_url(row)):
             pdf_pending.append((entry_id, pdf))
+        elif html_resolver is not None and _is_html_page_url(abstract_url):
+            html_pending.append((entry_id, abstract_url))
 
     updated = 0
 
@@ -235,18 +250,19 @@ def resolve_paper_metadata(
             _flag_openreview_fallback(store, entry_id)
             updated += 1
 
-    for entry_id, url in pdf_pending:
-        meta = _safe_resolve(pdf_resolver, url)
-        if meta and meta.get("title"):
-            rewrite_paper_metadata(
-                store,
-                entry_id,
-                title=meta["title"],
-                authors=meta.get("authors") or [],
-                abstract=meta.get("abstract"),
-                links={},
-            )
-            updated += 1
+    for pending, resolver in ((pdf_pending, pdf_resolver), (html_pending, html_resolver)):
+        for entry_id, url in pending:
+            meta = _safe_resolve(resolver, url)
+            if meta and meta.get("title"):
+                rewrite_paper_metadata(
+                    store,
+                    entry_id,
+                    title=meta["title"],
+                    authors=meta.get("authors") or [],
+                    abstract=meta.get("abstract"),
+                    links={},
+                )
+                updated += 1
 
     return updated
 
@@ -451,6 +467,7 @@ def run_pipeline(
     newsletter_extractor=None,
     openreview_resolver=None,
     pdf_resolver=None,
+    html_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -467,13 +484,16 @@ def run_pipeline(
     # Fill in real paper metadata BEFORE enrichment so the LLM judges the
     # paper's abstract, not a tweet fragment. None (tests) skips the arXiv fetch;
     # the OpenReview/PDF resolvers are independent and also default off.
-    if new_ids and (metadata_fetch is not None or openreview_resolver or pdf_resolver):
+    if new_ids and (
+        metadata_fetch is not None or openreview_resolver or pdf_resolver or html_resolver
+    ):
         resolve_paper_metadata(
             store,
             new_ids,
             metadata_fetch,
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
+            html_resolver=html_resolver,
         )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
@@ -615,8 +635,9 @@ def _build_newsletter_extractor(config: Config):
 
 
 def _build_metadata_resolvers(config: Config):
-    """(openreview_resolver, pdf_resolver) for the metadata step; PDF OCR is only
+    """(openreview, pdf, html) resolvers for the metadata step; PDF OCR is only
     wired when an Anthropic key is present (born-digital PDFs never need it)."""
+    from paper_watch.sources.html_meta import HtmlMetaResolver
     from paper_watch.sources.openreview import OpenReviewResolver
     from paper_watch.sources.pdf_meta import PdfMetaResolver
 
@@ -625,7 +646,7 @@ def _build_metadata_resolvers(config: Config):
         from paper_watch.sources.pdf_meta import ClaudePdfOcr
 
         ocr = ClaudePdfOcr(config.llm.model)
-    return OpenReviewResolver(), PdfMetaResolver(ocr=ocr)
+    return OpenReviewResolver(), PdfMetaResolver(ocr=ocr), HtmlMetaResolver()
 
 
 def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
@@ -678,7 +699,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
 
         tweet_resolver = _build_tweet_resolver(config, store, nitter_instances)
         newsletter_extractor = _build_newsletter_extractor(config)
-        openreview_resolver, pdf_resolver = _build_metadata_resolvers(config)
+        openreview_resolver, pdf_resolver, html_resolver = _build_metadata_resolvers(config)
 
         result = run_pipeline(
             store,
@@ -690,6 +711,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             newsletter_extractor=newsletter_extractor,
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
+            html_resolver=html_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,

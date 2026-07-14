@@ -769,6 +769,51 @@ def test_resolve_paper_metadata_dispatches_openreview_and_pdf(tmp_path):
     store.close()
 
 
+def test_resolve_paper_metadata_dispatches_html_pages(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    items = [
+        # an HTML landing page, titled with its own URL at ingest
+        RawItem(source="rss:AF", url="https://www.anthropic.com/research/off-switch", text=None),
+        # a PDF and an arXiv link must NOT be routed to the HTML resolver
+        RawItem(source="rss:AF", url="https://x.example/paper.pdf", text=None),
+        RawItem(source="rss:AF", url="https://arxiv.org/abs/2406.01234", text=None),
+    ]
+    new_ids = ingest(store, [ListSource("rss:AF", items)], since=None, now_iso="2026-07-01T00:00:00Z")
+    html = _StubMetaResolver({"title": "Off-Switch for Dual-Use Knowledge", "abstract": "a"})
+    pdf = _StubMetaResolver({"title": "PDF Paper", "abstract": "p"})
+
+    resolve_paper_metadata(store, new_ids, None, pdf_resolver=pdf, html_resolver=html)
+
+    assert html.seen == ["https://www.anthropic.com/research/off-switch"]
+    assert pdf.seen == ["https://x.example/paper.pdf"]  # pdf still to pdf
+    titles = {store.get_entry(i)["title"] for i in new_ids}
+    assert "Off-Switch for Dual-Use Knowledge" in titles
+    store.close()
+
+
+def test_reresolve_reprocesses_entries_that_already_have_an_abstract(tmp_path):
+    # The 8 PDF-furniture entries have a correct abstract but a junk title (the
+    # old parser got the body right, the title wrong). The normal skip-if-abstract
+    # short-circuit would leave them; reresolve=True forces them back through.
+    store = Store(tmp_path / "pw.db")
+    items = [RawItem(source="rss:AF", url="https://x.example/paper.pdf", text=None)]
+    (entry_id,) = ingest(store, [ListSource("rss:AF", items)], None, "2026-07-01T00:00:00Z")
+    store.update_paper_metadata(
+        entry_id, title="Vol.:(0123456789)", title_norm="vol 0123456789",
+        authors=[], abstract="a real abstract from the old run", links={},
+    )
+    pdf = _StubMetaResolver({"title": "The Real Title of the Paper", "abstract": "abs"})
+
+    # default: skipped because it already has an abstract
+    assert resolve_paper_metadata(store, [entry_id], None, pdf_resolver=pdf) == 0
+    assert pdf.seen == []
+
+    # reresolve: forced through
+    assert resolve_paper_metadata(store, [entry_id], None, pdf_resolver=pdf, reresolve=True) == 1
+    assert store.get_entry(entry_id)["title"] == "The Real Title of the Paper"
+    store.close()
+
+
 class _NullResolver:
     def resolve(self, url):
         return None  # API gated / unreachable
