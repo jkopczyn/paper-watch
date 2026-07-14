@@ -184,3 +184,35 @@ def test_springer_running_head_is_not_a_title():
     # "Vol.:(0123456789)" is boilerplate on every Springer PDF, so it must never
     # act as identity -- it would fuse every Springer paper into one entry.
     assert not is_distinctive_title(normalize_title("Vol.:(0123456789)"))
+
+
+def test_doi_from_a_url_drops_the_file_extension():
+    # A DOI lifted out of a publisher URL swallowed the path's extension, so the
+    # stored id was "10.1007/s11023-020-09539-2.pdf" -- which matches nothing.
+    assert (
+        extract_doi("https://link.springer.com/content/pdf/10.1007/s11023-020-09539-2.pdf")
+        == "10.1007/s11023-020-09539-2"
+    )
+    assert extract_doi("https://x.org/10.1145/1234567.8901234.html") == "10.1145/1234567.8901234"
+    # a dot inside the DOI itself is not an extension and must survive
+    assert extract_doi("10.1145/1234567.8901234") == "10.1145/1234567.8901234"
+
+
+def test_two_links_sharing_generic_anchor_text_stay_separate(tmp_path):
+    # An AF post links several PDFs, each anchored "paper". Both entries were
+    # born titled "paper", and title dedup fused two unrelated papers into one.
+    from paper_watch.models import RawItem
+    from paper_watch.normalize import to_entry_fields
+
+    store = Store(":memory:")
+    ids = set()
+    for url in (
+        "https://ae.studio/research/modular-pretraining.pdf",
+        "https://link.springer.com/content/pdf/10.1007/s11023-020-09539-2.pdf",
+    ):
+        fields = to_entry_fields(RawItem(source="rss:AF", text="paper", url=url))
+        fields["first_seen_at"] = "2026-07-13T00:00:00Z"
+        entry_id, _ = resolve_or_create(store, fields)
+        ids.add(entry_id)
+    assert len(ids) == 2, "two unrelated papers were fused by their anchor text"
+    store.close()

@@ -24,6 +24,11 @@ _ARXIV_ARCHIVES = (
 _ARXIV_OLD = re.compile(rf"\b((?:{_ARXIV_ARCHIVES})(?:\.[A-Z]{{2}})?/\d{{7}})\b")
 # DOI per Crossref's recommended pattern.
 _DOI = re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b")
+# A DOI lifted out of a publisher URL runs to the end of the path, taking the
+# file extension with it ("10.1007/s11023-020-09539-2.pdf"), which then matches
+# no other source's DOI for the same paper. Only these known extensions are
+# stripped — a bare dot is legal inside a DOI ("10.1145/1234567.8901234").
+_DOI_FILE_EXT = re.compile(r"\.(?:pdf|html?|xml|epub|txt|json|full|abstract)$", re.IGNORECASE)
 _TITLE_PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _WS = re.compile(r"\s+")
 # Trailing "— LessWrong" / "| OpenAI"-style site suffix (em/en dash or pipe with
@@ -78,7 +83,7 @@ def extract_doi(text: str | None) -> str | None:
     m = _DOI.search(text)
     if not m:
         return None
-    return m.group(1).rstrip(".,;)")
+    return _DOI_FILE_EXT.sub("", m.group(1).rstrip(".,;)"))
 
 
 def normalize_title(title: str | None) -> str:
