@@ -40,6 +40,9 @@ _FURNITURE = re.compile(
       | \d+\s*\.\s*[A-Z]\s*\.                # numbered reference: "48. H.S.Mayberg"
       | (?:received|accepted|published|submitted|revised)\b
       | (?:\(c\)|©|copyright|downloaded\s+from)\b
+      | version\b                            # "Version 3.4.3" doc-version stamp
+      | effective\b.*\d{4}                   # "Effective May 26, 2026" date stamp
+      | for\s+more\s+information\b           # "For more information, see ..." pointer
       | [\W\d\s]+$                           # digits/punctuation only ("1 3")
     )""",
     re.IGNORECASE | re.VERBOSE,

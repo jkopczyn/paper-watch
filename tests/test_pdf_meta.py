@@ -158,3 +158,19 @@ def test_a_plain_title_on_line_one_still_wins():
         "Scalable Oversight of Language Models\nJane Roe\nAbstract\nWe study it.\n"
     )
     assert parsed["title"] == "Scalable Oversight of Language Models"
+
+
+POLICY_COVER = """Responsible
+Scaling Policy
+Version 3. 4 3
+Effective  July 8  May 26  , 2026
+For more information, see www.anthropic.com/responsible-scaling
+"""
+
+
+def test_effective_date_and_version_stamps_are_not_titles():
+    # A policy-doc cover page: the real title is split across two short lines that
+    # neither trigger on their own, so the parser must not fall through to the
+    # "Effective <date>" stamp or the "Version N" line. Better to return None and
+    # let the entry keep the title it had than to stamp it with a date.
+    assert parse_first_page_text(POLICY_COVER) is None
