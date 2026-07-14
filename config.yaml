@@ -61,9 +61,48 @@ authors:
 - Miles Wang
 - Aleksander Madry
 - Johannes Heidecke
-- Tejal Patwadhan
+- Tejal Patwardhan
 - Wojciech Zaremba
 - Saachi Jain
+handles:
+- ARGleave
+- AmandaAskell
+  # - AsyaBergal
+- CRSegerie
+- EthanJPerez
+- FreedmanRach
+- GoogleDeepMind
+- GretchenMarina
+- IasonGabriel
+- Jsevillamol
+- LeverhulmeCFI
+- LongResilience
+- MariusHobbhahn
+- MichaelTrazzi
+- MrinankSharma
+- NPCollapse
+- NinaPanickssery
+- StephenLCasper
+- causalclaudia
+- dropbella
+- janleike
+- rohinmshah
+- shostekofsky
+- silviupitis
+- sjgadler
+- timrudner
+- tshevl
+  # - vaelgates
+- ascherlis
+- ch402
+- AnthropicAI
+- Jack_W_Lindsey
+- NeelNanda5
+- bshlgrs
+nitter_instances:
+- http://localhost:8080
+- https://nitter.net
+- https://nitter.poast.org
 feeds:
 - name: ML Safety
   url: https://newsletter.mlsafety.org/feed
@@ -115,45 +154,6 @@ pages:
 - name: Anthropic Alignment Science
   url: https://alignment.anthropic.com/
   trusted: true
-handles:
-- ARGleave
-- AmandaAskell
-- AsyaBergal
-- CRSegerie
-- EthanJPerez
-- FreedmanRach
-- GoogleDeepMind
-- GretchenMarina
-- IasonGabriel
-- Jsevillamol
-- LeverhulmeCFI
-- LongResilience
-- MariusHobbhahn
-- MichaelTrazzi
-- MrinankSharma
-- NPCollapse
-- NinaPanickssery
-- StephenLCasper
-- causalclaudia
-- dropbella
-- janleike
-- rohinmshah
-- shostekofsky
-- silviupitis
-- sjgadler
-- timrudner
-- tshevl
-- vaelgates
-- ascherlis
-- ch402
-- AnthropicAI
-- Jack_W_Lindsey
-- NeelNanda5
-- bshlgrs
-nitter_instances:
-- http://localhost:8080
-- https://nitter.net
-- https://nitter.poast.org
 scoring:
   relevance: 2.0
   source: 1.0
