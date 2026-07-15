@@ -171,6 +171,32 @@ pages:
 - name: Anthropic Alignment Science
   url: https://alignment.anthropic.com/
   trusted: true
+- name: UK AISI
+  url: https://www.aisi.gov.uk/blog
+- name: Apollo Research Governance
+  url: https://www.apolloresearch.ai/governance
+  trusted: false
+- name: Apollo Research Science
+  url: https://www.apolloresearch.ai/science
+  trusted: true
+- name: Apollo Research Monitoring
+  url: https://www.apolloresearch.ai/monitoring
+  trusted: true
+- name: EleutherAI Papers
+  url: https://www.eleuther.ai/papers
+  trusted: true
+- name: FAR.AI Publications
+  url: https://www.far.ai/publications
+  trusted: true
+- name: Goodfire Research
+  url: https://www.goodfire.ai/research
+  trusted:  true
+- name: Timaeus
+  url: https://timaeus.co/research
+  trusted: true
+- name: Transluce Research
+  url: https://transluce.org/research
+  trusted: true
 scoring:
   relevance: 2.0
   source: 1.0
