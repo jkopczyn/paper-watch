@@ -166,6 +166,13 @@ def _is_html_page_url(url: str) -> bool:
     return url.startswith(("http://", "https://")) and not url.lower().endswith(".pdf")
 
 
+def _has_http_link(row) -> bool:
+    return any(
+        isinstance(v, str) and v.startswith("http")
+        for v in json.loads(row["links_json"]).values()
+    )
+
+
 def resolve_paper_metadata(
     store,
     entry_ids: list[int],
@@ -174,6 +181,7 @@ def resolve_paper_metadata(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    search_resolver=None,
     reresolve=False,
 ) -> int:
     """Give post-shaped entries their real paper metadata, best-effort.
@@ -198,6 +206,7 @@ def resolve_paper_metadata(
     openreview_pending: list[tuple[int, str]] = []
     pdf_pending: list[tuple[int, str]] = []
     html_pending: list[tuple[int, str]] = []
+    search_pending: list[tuple[int, str]] = []
     for entry_id in entry_ids:
         row = store.get_entry(entry_id)
         if row is None or (row["abstract"] and not reresolve):
@@ -212,6 +221,9 @@ def resolve_paper_metadata(
             pdf_pending.append((entry_id, pdf))
         elif html_resolver is not None and _is_html_page_url(abstract_url):
             html_pending.append((entry_id, abstract_url))
+        elif search_resolver is not None and not _has_http_link(row):
+            # No link to resolve from at all: search for the title instead.
+            search_pending.append((entry_id, row["title"]))
 
     updated = 0
 
@@ -266,6 +278,20 @@ def resolve_paper_metadata(
                     links={},
                 )
                 updated += 1
+
+    for entry_id, title in search_pending:
+        meta = _safe_search(search_resolver, title)
+        if meta and meta.get("url"):
+            rewrite_paper_metadata(
+                store,
+                entry_id,
+                title=meta.get("title") or title,
+                authors=meta.get("authors") or [],
+                abstract=meta.get("abstract"),
+                links={"abstract": meta["url"]},
+                published_at=meta.get("published_at"),
+            )
+            updated += 1
 
     return updated
 
@@ -323,6 +349,16 @@ def _safe_resolve(resolver, url: str) -> dict | None:
         import logging
 
         logging.getLogger(__name__).warning("metadata resolve failed for %s: %s", url, exc)
+        return None
+
+
+def _safe_search(resolver, title: str) -> dict | None:
+    try:
+        return resolver.search(title)
+    except Exception as exc:  # best-effort: a failed search is never fatal
+        import logging
+
+        logging.getLogger(__name__).warning("title search failed for %r: %s", title, exc)
         return None
 
 
@@ -530,6 +566,7 @@ def run_pipeline(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    search_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -549,7 +586,11 @@ def run_pipeline(
     # paper's abstract, not a tweet fragment. None (tests) skips the arXiv fetch;
     # the OpenReview/PDF resolvers are independent and also default off.
     if new_ids and (
-        metadata_fetch is not None or openreview_resolver or pdf_resolver or html_resolver
+        metadata_fetch is not None
+        or openreview_resolver
+        or pdf_resolver
+        or html_resolver
+        or search_resolver
     ):
         resolve_paper_metadata(
             store,
@@ -558,6 +599,7 @@ def run_pipeline(
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            search_resolver=search_resolver,
         )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
@@ -719,6 +761,15 @@ def _build_metadata_resolvers(config: Config):
     return OpenReviewResolver(), PdfMetaResolver(ocr=ocr), HtmlMetaResolver()
 
 
+def _build_search_resolver(config: Config):
+    """A title-search resolver to fill entries left with no link, or None."""
+    if not config.url_search:
+        return None
+    from paper_watch.sources.paper_search import PaperSearchResolver
+
+    return PaperSearchResolver()
+
+
 def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
     """Best-effort Semantic Scholar citation counts for entries with an arXiv id."""
     from paper_watch.sources.semantic_scholar import SemanticScholar
@@ -770,6 +821,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
         tweet_resolver = _build_tweet_resolver(config, store, nitter_instances)
         newsletter_extractor = _build_newsletter_extractor(config)
         openreview_resolver, pdf_resolver, html_resolver = _build_metadata_resolvers(config)
+        search_resolver = _build_search_resolver(config)
 
         result = run_pipeline(
             store,
@@ -782,6 +834,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            search_resolver=search_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,

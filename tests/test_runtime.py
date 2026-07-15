@@ -691,6 +691,51 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     store.close()
 
 
+class _StubSearch:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def search(self, title):
+        self.calls.append(title)
+        return self.result
+
+
+def test_resolve_fills_blank_url_via_title_search(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # an entry with no http link at all (links_json empty)
+    eid = store.insert_entry(
+        title="Impossibility Results for Fairness", title_norm="impossibility results for fairness",
+        first_seen_at="2026-07-10T00:00:00Z", links={},
+    )
+    resolver = _StubSearch({
+        "url": "https://arxiv.org/abs/1810.08810", "arxiv_id": "1810.08810",
+        "doi": None, "published_at": "2018-10-19T00:00:00Z",
+        "title": "Impossibility Results for Fairness", "authors": ["A"], "abstract": "We show",
+    })
+    updated = resolve_paper_metadata(store, [eid], None, search_resolver=resolver)
+    assert updated == 1
+    row = store.get_entry(eid)
+    assert json.loads(row["links_json"])["abstract"] == "https://arxiv.org/abs/1810.08810"
+    assert row["published_at"] == "2018-10-19T00:00:00Z"
+    assert resolver.calls == ["Impossibility Results for Fairness"]
+    store.close()
+
+
+def test_resolve_does_not_search_when_entry_already_has_a_link(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="Some Blog Post", title_norm="some blog post",
+        first_seen_at="2026-07-10T00:00:00Z",
+        links={"abstract": "https://blog.example/post"},
+    )
+    resolver = _StubSearch({"url": "https://wrong.example"})
+    resolve_paper_metadata(store, [eid], None, search_resolver=resolver)
+    assert resolver.calls == []  # a real link is never overwritten by a search
+    assert json.loads(store.get_entry(eid)["links_json"])["abstract"] == "https://blog.example/post"
+    store.close()
+
+
 def _item_for(store, entry_id):
     chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
     c = next(c for c in chosen if c["entry_id"] == entry_id)
