@@ -355,14 +355,27 @@ def select_digest(
     top_n,
     candidate_start,
     resurface_start,
+    new_start: str | None = None,
+    max_new: int | None = None,
     resurface_min_mentions: int = 2,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
 ) -> list[dict]:
+    """Assemble the digest: lead with fresh papers, pad with resurfacing ones.
+
+    A never-shown paper is "new" if it was mentioned within `new_start` (the last
+    24h by default). The digest takes up to `max_new` of them by score; the
+    remaining slots up to `top_n` are filled with resurfacing papers that outscore
+    the new picks' average — so a stale classic only reappears when it genuinely
+    beats this run's fresh crop. `new_start` defaults to `candidate_start` and
+    `max_new` to unbounded, which reproduces a single ranked pool.
+    """
     source_priors = source_priors or {}
     tracked_authors = tracked_authors or set()
+    new_start = new_start or candidate_start
     fb_weights = store.get_feedback_weights()
-    chosen: list[dict] = []
+    new_items: list[dict] = []
+    resurfaced_items: list[dict] = []
 
     for entry_id in store.active_entry_ids_since(min(candidate_start, resurface_start)):
         row = store.get_entry(entry_id)
@@ -392,12 +405,12 @@ def select_digest(
             # Already seen: only reappear if still within the resurface window
             # AND freshly surging (surge measured over the candidate window).
             in_resurface = store.count_mentions_since(entry_id, resurface_start) > 0
-            resurfaced = in_resurface and surge
-            if not resurfaced:
+            if not (in_resurface and surge):
                 continue
+            resurfaced = True
         else:
-            # Never shown: must be fresh (mentioned within the candidate window).
-            if new_mentions == 0:
+            # Never shown: must be fresh (mentioned within the new window).
+            if store.count_mentions_since(entry_id, new_start) == 0:
                 continue
             resurfaced = False
 
@@ -412,7 +425,7 @@ def select_digest(
             source_prior=best_source_prior(sources, source_priors),
             tracked_author=has_tracked_author(authors, tracked_authors),
         )
-        chosen.append(
+        (resurfaced_items if resurfaced else new_items).append(
             {
                 "entry_id": entry_id,
                 "row": row,
@@ -424,8 +437,18 @@ def select_digest(
             }
         )
 
-    chosen.sort(key=lambda c: c["score"], reverse=True)
-    return chosen[:top_n]
+    new_items.sort(key=lambda c: c["score"], reverse=True)
+    selected_new = new_items if max_new is None else new_items[:max_new]
+
+    avg_new = (
+        sum(c["score"] for c in selected_new) / len(selected_new)
+        if selected_new
+        else 0.0
+    )
+    resurfaced_items.sort(key=lambda c: c["score"], reverse=True)
+    padding = [c for c in resurfaced_items if c["score"] > avg_new]
+
+    return (selected_new + padding)[:top_n]
 
 
 def _to_item(c: dict) -> DigestItem:
@@ -455,6 +478,8 @@ def run_pipeline(
     since: str | None,
     candidate_window_days: int,
     resurface_window_days: int,
+    new_window: str = "24h",
+    max_new: int = 10,
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
@@ -472,6 +497,7 @@ def run_pipeline(
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
+    new_start = since_to_iso(new_window, now=now)
 
     new_ids = ingest(
         store,
@@ -503,6 +529,8 @@ def run_pipeline(
         top_n=top_n,
         candidate_start=candidate_start,
         resurface_start=resurface_start,
+        new_start=new_start,
+        max_new=max_new,
         resurface_min_mentions=resurface_min_mentions,
         source_priors=source_priors,
         tracked_authors=tracked_authors,
@@ -723,6 +751,8 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             since=since_iso,
             candidate_window_days=config.candidate_window_days,
             resurface_window_days=config.resurface_window_days,
+            new_window=config.new_window,
+            max_new=config.max_new,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,

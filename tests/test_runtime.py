@@ -500,10 +500,10 @@ def _shown_entry_with_mentions(store, n_occasions, *, citations=None):
 
 
 def _select(store, **kw):
+    kw.setdefault("top_n", 10)
     return select_digest(
         store,
         ScoringWeights(),
-        top_n=10,
         candidate_start="2026-07-06T00:00:00Z",
         resurface_start="2026-06-22T00:00:00Z",
         **kw,
@@ -593,6 +593,98 @@ def test_resurface_min_mentions_raises_the_surge_bar(tmp_path):
     _shown_entry_with_mentions(store, 2)
     assert len(_select(store, resurface_min_mentions=2)) == 1
     assert _select(store, resurface_min_mentions=3) == []
+    store.close()
+
+
+def _new_entry(store, key, *, n_mentions=1, relevance=3, fetched_at="2026-07-10T00:00:00Z"):
+    """A never-shown, freshly-mentioned paper. More mentions ⇒ higher velocity
+    ⇒ higher score, which lets a test order new items deterministically."""
+    entry_id = store.insert_entry(
+        title=f"New Paper {key}",
+        title_norm=f"new paper {key}",
+        first_seen_at=fetched_at,
+    )
+    for i in range(n_mentions):
+        store.add_mention(
+            entry_id=entry_id, source="rss:Blog", fetched_at=fetched_at,
+            source_item_url=f"https://blog/{key}/{i}",
+        )
+    store.set_enrichment(entry_id, tldr="t", why="w", tags=[], relevance=relevance, version=2)
+    return entry_id
+
+
+def test_new_items_are_capped_at_max_new_extras_dropped(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # 12 new papers with strictly increasing scores (1..12 mentions).
+    ids = {n: _new_entry(store, f"m{n}", n_mentions=n) for n in range(1, 13)}
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
+    assert len(chosen) == 10
+    picked = {c["entry_id"] for c in chosen}
+    # the two lowest-scored new papers (1 and 2 mentions) are dropped
+    assert ids[1] not in picked and ids[2] not in picked
+    assert ids[12] in picked and ids[3] in picked
+    store.close()
+
+
+def test_never_shown_paper_outside_new_window_is_not_selected(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # mentioned 2026-07-07 — inside the 21d candidate window but before new_start.
+    _new_entry(store, "old", fetched_at="2026-07-07T00:00:00Z")
+    chosen = _select(store, new_start="2026-07-09T00:00:00Z", max_new=10, top_n=15)
+    assert chosen == []
+    store.close()
+
+
+def test_resurfaced_below_new_average_is_dropped(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # Strong new items (relevance 4, many mentions) push the average high.
+    for n in range(1, 4):
+        _new_entry(store, f"hi{n}", n_mentions=8, relevance=4)
+    # A weak resurfacing classic (relevance 2, minimum surge) scores below it.
+    _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://af/x"),
+        ("rss:AF", "2026-07-12T01:00:00Z", "https://af/y"),
+    ])
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
+    assert all(not c["resurfaced"] for c in chosen)
+    store.close()
+
+
+def test_resurfaced_above_new_average_pads_the_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # One modest new item (relevance 2) sets a low average.
+    _new_entry(store, "lo", n_mentions=1, relevance=2)
+    # A strong resurfacing paper (relevance 4) clears it and pads the digest.
+    strong = _shown_entry_with_mentions(store, 2)
+    store.set_enrichment(strong, tldr="t", why="w", tags=[], relevance=4, version=2)
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
+    assert any(c["resurfaced"] and c["entry_id"] == strong for c in chosen)
+    store.close()
+
+
+def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    news = [_new_entry(store, f"n{n}", n_mentions=1, relevance=2) for n in range(2)]
+    # three strong resurfacing papers, all above the modest new average
+    resurf = []
+    for i in range(3):
+        eid = store.insert_entry(
+            title=f"Classic {i}", title_norm=f"classic {i}",
+            first_seen_at="2026-06-01T00:00:00Z",
+        )
+        for d in (10, 12):
+            store.add_mention(
+                entry_id=eid, source=f"rss:AF{i}", fetched_at=f"2026-07-{d}T00:00:00Z",
+                source_item_url=f"https://af/{i}/{d}",
+            )
+        store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=4, version=2)
+        store.record_shown(entry_id=eid, digest_at="2026-07-08T00:00:00Z", rank=1, score=3.0, resurfaced=False)
+        resurf.append(eid)
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=5)
+    assert len(chosen) == 5
+    picked = {c["entry_id"] for c in chosen}
+    assert set(news) <= picked
+    assert len({c["entry_id"] for c in chosen if c["resurfaced"]}) == 3
     store.close()
 
 
