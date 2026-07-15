@@ -122,6 +122,7 @@ def rewrite_paper_metadata(
     authors: list[str],
     abstract: str | None,
     links: dict[str, str],
+    published_at: str | None = None,
 ) -> int:
     """Land resolved metadata on an entry, merging it away if it now has a twin.
 
@@ -140,6 +141,7 @@ def rewrite_paper_metadata(
         authors=authors,
         abstract=abstract,
         links=links,
+        published_at=published_at,
     )
     row = store.get_entry(entry_id)
     if row is None:
@@ -228,6 +230,7 @@ def resolve_paper_metadata(
                 authors=item.authors,
                 abstract=item.abstract,
                 links=links,
+                published_at=item.published_at,
             )
             updated += 1
 
@@ -451,18 +454,51 @@ def select_digest(
     return (selected_new + padding)[:top_n]
 
 
-def _to_item(c: dict) -> DigestItem:
+def _pub_display(store, row) -> tuple[str, bool]:
+    """(text, is_estimate) publication date for the digest.
+
+    An authoritative `entries.published_at` shows exact; otherwise we estimate
+    from the earliest mention's published_at (the real submit date for an arXiv
+    mention, the post date for a tweet/blog), falling back to first_seen_at.
+    Formatted as YYYY-MM.
+    """
+    real = row["published_at"]
+    if real:
+        return real[:7], False
+    estimate = store.earliest_published_at(row["id"]) or row["first_seen_at"]
+    return estimate[:7], True
+
+
+def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
+    """The links to show; fall back to a URL the entry owns when it has none."""
+    if links:
+        return links
+    for mention in store.get_mentions(entry_id):
+        if mention["source_item_url"]:
+            return {"link": mention["source_item_url"]}
+    return links
+
+
+def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
     row = c["row"]
+    entry_id = c["entry_id"]
+    pub_display, pub_is_estimate = _pub_display(store, row)
+    source_types = sorted({s.split(":", 1)[0] for s in _entry_sources(store, entry_id)})
     return DigestItem(
         title=row["title"],
         authors=c["authors"],
         tldr=row["tldr"],
         why=row["why"],
         tags=c["tags"],
-        links=json.loads(row["links_json"]),
+        links=_display_links(store, entry_id, json.loads(row["links_json"])),
         score=c["score"],
         explanation=score_explanation(c["features"]),
         resurfaced=c["resurfaced"],
+        pub_display=pub_display,
+        pub_is_estimate=pub_is_estimate,
+        surfaced_recent=store.count_shown_since(entry_id, recent_start),
+        source_types=source_types,
+        trusted=store.entry_has_trusted_mention(entry_id),
     )
 
 
@@ -480,6 +516,7 @@ def run_pipeline(
     resurface_window_days: int,
     new_window: str = "24h",
     max_new: int = 10,
+    recent_window: str = "48h",
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
@@ -498,6 +535,7 @@ def run_pipeline(
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
     new_start = since_to_iso(new_window, now=now)
+    recent_start = since_to_iso(recent_window, now=now)
 
     new_ids = ingest(
         store,
@@ -535,7 +573,7 @@ def run_pipeline(
         source_priors=source_priors,
         tracked_authors=tracked_authors,
     )
-    items = [_to_item(c) for c in chosen]
+    items = [_to_item(store, c, recent_start=recent_start) for c in chosen]
     html = render_html(items, generated_at=now_iso)
 
     result = RunResult(
@@ -753,6 +791,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             resurface_window_days=config.resurface_window_days,
             new_window=config.new_window,
             max_new=config.max_new,
+            recent_window=config.recent_window,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,

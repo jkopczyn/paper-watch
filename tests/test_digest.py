@@ -48,6 +48,50 @@ def test_render_html_empty():
     # should not crash and should say there's nothing
 
 
+def test_render_html_shows_publication_date():
+    html = render_html(
+        [_item(pub_display="2018-10", pub_is_estimate=False)],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "2018-10" in html
+    assert "~2018-10" not in html  # exact date is not marked an estimate
+
+
+def test_render_html_marks_estimated_date():
+    html = render_html(
+        [_item(pub_display="2024", pub_is_estimate=True)],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "~2024" in html  # estimate carries a tilde
+
+
+def test_render_html_shows_surfaced_count_only_when_positive():
+    shown = render_html(
+        [_item(surfaced_recent=3, resurfaced=False, explanation="2 sources")],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "surfaced 3×" in shown
+    fresh = render_html(
+        [_item(surfaced_recent=0, resurfaced=False, explanation="2 sources")],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "surfaced" not in fresh.lower()
+
+
+def test_render_html_shows_source_types_and_trusted_badge():
+    html = render_html(
+        [_item(source_types=["arxiv", "slack"], trusted=True)],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "arxiv" in html and "slack" in html
+    assert "trusted" in html.lower()
+    untrusted = render_html(
+        [_item(source_types=["rss"], trusted=False)],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "trusted" not in untrusted.lower()
+
+
 def test_score_explanation_reads_features():
     f = ScoreFeatures(
         distinct_sources=3,

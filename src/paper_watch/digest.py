@@ -21,6 +21,12 @@ class DigestItem:
     explanation: str
     resurfaced: bool = False
     extra_tags: list[str] = field(default_factory=list)
+    # Provenance / recency metadata shown as chips beneath the paper.
+    pub_display: str = ""  # publication date, e.g. "2018-10" (empty ⇒ hidden)
+    pub_is_estimate: bool = False  # rendered with a leading "~" when estimated
+    surfaced_recent: int = 0  # times surfaced in the recent window (0 ⇒ hidden)
+    source_types: list[str] = field(default_factory=list)  # e.g. ["arxiv", "slack"]
+    trusted: bool = False  # any trusted channel is a source
 
 
 def score_explanation(f: ScoreFeatures) -> str:
@@ -58,6 +64,7 @@ _TEMPLATE = """\
   <div style="border-top: 1px solid #eee; padding: 12px 0;">
     <div style="font-size: 16px; font-weight: 600;">
       {% if it.resurfaced %}<span style="background:#fde68a; color:#92400e; font-size:10px; padding:1px 5px; border-radius:3px; vertical-align:middle;">RESURFACED</span> {% endif %}
+      {% if it.trusted %}<span style="background:#bbf7d0; color:#166534; font-size:10px; padding:1px 5px; border-radius:3px; vertical-align:middle;">TRUSTED</span> {% endif %}
       {{ it.title }}
     </div>
     {% if it.authors %}<div style="color:#666; font-size:12px;">{{ it.authors|join(", ") }}</div>{% endif %}
@@ -68,6 +75,11 @@ _TEMPLATE = """\
     </div>
     <div style="font-size: 12px;">
       {% for label, url in it.links.items() %}<a href="{{ url }}" style="margin-right:10px;">{{ label }}</a>{% endfor %}
+    </div>
+    <div style="font-size: 11px; color:#667; margin-top: 5px;">
+      {% if it.pub_display %}<span style="background:#f1f1f4; color:#444; padding:1px 6px; border-radius:3px; margin-right:4px;">{{ "~" if it.pub_is_estimate }}{{ it.pub_display }}</span>{% endif %}
+      {% if it.surfaced_recent > 0 %}<span style="background:#f1f1f4; color:#444; padding:1px 6px; border-radius:3px; margin-right:4px;">surfaced {{ it.surfaced_recent }}×</span>{% endif %}
+      {% for s in it.source_types %}<span style="background:#e7edf7; color:#334; padding:1px 6px; border-radius:3px; margin-right:4px;">{{ s }}</span>{% endfor %}
     </div>
     <div style="color:#999; font-size: 11px; margin-top: 4px;">score {{ "%.2f"|format(it.score) }} — {{ it.explanation }}</div>
   </div>

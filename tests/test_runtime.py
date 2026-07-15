@@ -11,6 +11,7 @@ from paper_watch.config import (
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
 from paper_watch.runtime import (
+    _to_item,
     build_sources,
     effective_since,
     ingest,
@@ -153,6 +154,8 @@ def test_resolve_paper_metadata_turns_post_into_paper(tmp_path):
     assert row["abstract"].startswith("We propose")
     assert json.loads(row["authors_json"]) == ["Rachel Freedman"]
     assert json.loads(row["links_json"])["abstract"] == "http://arxiv.org/abs/2605.01642v1"
+    # the authoritative publication date lands on the entry
+    assert row["published_at"] == "2026-06-28T00:00:00Z"
     # the tweet survives as the mention
     assert store.get_mentions(new_ids[0])[0]["source"] == "twitter:FreedmanRach"
     store.close()
@@ -686,6 +689,78 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     assert set(news) <= picked
     assert len({c["entry_id"] for c in chosen if c["resurfaced"]}) == 3
     store.close()
+
+
+def _item_for(store, entry_id):
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
+    c = next(c for c in chosen if c["entry_id"] == entry_id)
+    return _to_item(store, c, recent_start="2026-07-09T00:00:00Z")
+
+
+def test_to_item_uses_authoritative_pub_date_exactly(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "p")
+    store.update_paper_metadata(
+        eid, title="P", title_norm="new paper p", authors=[], abstract="x",
+        links={}, published_at="2018-10-05T00:00:00Z",
+    )
+    item = _item_for(store, eid)
+    assert item.pub_display == "2018-10" and item.pub_is_estimate is False
+
+
+def test_to_item_estimates_pub_date_from_mentions(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="New Paper q", title_norm="new paper q",
+        first_seen_at="2026-07-10T00:00:00Z",
+    )
+    store.add_mention(
+        entry_id=eid, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://blog/q", published_at="2020-03-01T00:00:00Z",
+    )
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    item = _item_for(store, eid)
+    assert item.pub_display == "2020-03" and item.pub_is_estimate is True
+
+
+def test_to_item_tags_source_types_trust_and_recency(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="New Paper r", title_norm="new paper r",
+        first_seen_at="2026-07-10T00:00:00Z",
+    )
+    store.add_mention(
+        entry_id=eid, source="arxiv", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://arxiv.org/abs/2607.1",
+    )
+    store.add_mention(
+        entry_id=eid, source="slack:far:papers", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="slack://far/C1/1.2", trusted=True,
+    )
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    # surfaced twice inside the recent window (48h), once before it
+    store.record_shown(entry_id=eid, digest_at="2026-07-09T08:00:00Z", rank=1, score=1.0, resurfaced=False)
+    store.record_shown(entry_id=eid, digest_at="2026-07-09T20:00:00Z", rank=1, score=1.0, resurfaced=False)
+    store.record_shown(entry_id=eid, digest_at="2026-07-01T00:00:00Z", rank=1, score=1.0, resurfaced=False)
+    item = _item_for(store, eid)
+    assert item.source_types == ["arxiv", "slack"]
+    assert item.trusted is True
+    assert item.surfaced_recent == 2
+
+
+def test_to_item_fills_blank_links_from_owned_url(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="New Paper s", title_norm="new paper s",
+        first_seen_at="2026-07-10T00:00:00Z", links={},
+    )
+    store.add_mention(
+        entry_id=eid, source="twitter:x", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://twitter.com/x/status/1",
+    )
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    item = _item_for(store, eid)
+    assert item.links == {"link": "https://twitter.com/x/status/1"}
 
 
 def test_trusted_slack_item_bypasses_gate(tmp_path):
