@@ -148,6 +148,10 @@ class Store:
         # version so old enrichments are redone lazily.
         self._add_column_if_missing("entries", "relevance", "INTEGER")
         self._add_column_if_missing("entries", "enrich_version", "INTEGER")
+        # Best known *real* publication date of the paper (ISO-8601 Z), populated
+        # only from authoritative metadata resolution (arXiv API / S2 / Crossref);
+        # NULL means "unknown, estimate from mentions/first_seen at display time".
+        self._add_column_if_missing("entries", "published_at", "TEXT")
         self.conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, decl: str) -> None:
@@ -360,7 +364,7 @@ class Store:
 
         adopted = {
             col: loser[col]
-            for col in ("arxiv_id", "doi", "abstract", "relevance")
+            for col in ("arxiv_id", "doi", "abstract", "relevance", "published_at")
             if winner[col] is None and loser[col] is not None
         }
         merged_links = json.loads(winner["links_json"])
@@ -388,25 +392,28 @@ class Store:
         authors: list[str],
         abstract: str | None,
         links: dict[str, str],
+        published_at: str | None = None,
     ) -> None:
         """Replace a post-shaped entry's identity fields with the real paper's.
 
         `links` entries are merged over the existing ones (the post URL lives on
-        in mentions; the entry should link the paper).
+        in mentions; the entry should link the paper). `published_at` is set only
+        when given, so a later resolve that doesn't carry a date never wipes a
+        date an earlier resolve already learned.
         """
         row = self.get_entry(entry_id)
         if row is None:
             return
         merged = json.loads(row["links_json"])
         merged.update(links)
+        cols = ["title = ?", "title_norm = ?", "authors_json = ?", "abstract = ?", "links_json = ?"]
+        params: list[Any] = [title, title_norm, json.dumps(authors), abstract, json.dumps(merged)]
+        if published_at is not None:
+            cols.append("published_at = ?")
+            params.append(published_at)
+        params.append(entry_id)
         self.conn.execute(
-            """
-            UPDATE entries
-            SET title = ?, title_norm = ?, authors_json = ?, abstract = ?,
-                links_json = ?
-            WHERE id = ?
-            """,
-            (title, title_norm, json.dumps(authors), abstract, json.dumps(merged), entry_id),
+            f"UPDATE entries SET {', '.join(cols)} WHERE id = ?", params
         )
         self.conn.commit()
 
@@ -520,6 +527,28 @@ class Store:
             "SELECT 1 FROM shown WHERE entry_id = ? LIMIT 1", (entry_id,)
         ).fetchone()
         return row is not None
+
+    def count_shown_since(self, entry_id: int, since: str) -> int:
+        """How many past digests surfaced this entry at/after `since`."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM shown WHERE entry_id = ? AND digest_at >= ?",
+            (entry_id, since),
+        ).fetchone()
+        return int(row["n"])
+
+    def earliest_published_at(self, entry_id: int) -> str | None:
+        """Earliest non-null `published_at` across this entry's mentions, if any.
+
+        Used to estimate a paper's publication date when no authoritative date is
+        stored on the entry: for an arXiv-sourced mention this is the real submit
+        date; for a tweet/blog it's the post date, hence shown as an estimate.
+        """
+        row = self.conn.execute(
+            "SELECT MIN(published_at) AS p FROM mentions "
+            "WHERE entry_id = ? AND published_at IS NOT NULL",
+            (entry_id,),
+        ).fetchone()
+        return row["p"] if row and row["p"] else None
 
     def entries_shown_since(self, since: str) -> list[sqlite3.Row]:
         return self.conn.execute(

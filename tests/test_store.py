@@ -133,6 +133,77 @@ def test_entry_has_trusted_mention(tmp_path: Path):
     store.close()
 
 
+def test_entries_have_published_at_column_defaulting_null(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="T", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    assert store.get_entry(eid)["published_at"] is None
+    store.close()
+
+
+def test_update_paper_metadata_sets_published_at(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="tweet text", title_norm="tweet text",
+        first_seen_at="2026-06-19T00:00:00Z",
+    )
+    store.update_paper_metadata(
+        eid, title="Impossibility Results", title_norm="impossibility results",
+        authors=["A"], abstract="x", links={"abstract": "https://arxiv.org/abs/1810.1"},
+        published_at="2018-10-01T00:00:00Z",
+    )
+    assert store.get_entry(eid)["published_at"] == "2018-10-01T00:00:00Z"
+    store.close()
+
+
+def test_update_paper_metadata_keeps_published_at_when_not_given(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="t", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    store.update_paper_metadata(
+        eid, title="Real", title_norm="real", authors=[], abstract="x",
+        links={}, published_at="2018-01-01T00:00:00Z",
+    )
+    # A later resolve with no date must not wipe the known one.
+    store.update_paper_metadata(
+        eid, title="Real", title_norm="real", authors=[], abstract="y", links={},
+    )
+    assert store.get_entry(eid)["published_at"] == "2018-01-01T00:00:00Z"
+    store.close()
+
+
+def test_count_shown_since_windows_by_digest_time(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="t", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    for at in ("2026-07-01T00:00:00Z", "2026-07-10T08:00:00Z", "2026-07-11T08:00:00Z"):
+        store.record_shown(entry_id=eid, digest_at=at, rank=1, score=1.0, resurfaced=False)
+    assert store.count_shown_since(eid, "2026-07-10T00:00:00Z") == 2
+    assert store.count_shown_since(eid, "2026-06-01T00:00:00Z") == 3
+    assert store.count_shown_since(eid, "2026-08-01T00:00:00Z") == 0
+    store.close()
+
+
+def test_merge_adopts_published_at_when_winner_lacks_it(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    winner = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-01T00:00:00Z"
+    )
+    loser = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-02T00:00:00Z"
+    )
+    store.update_paper_metadata(
+        loser, title="P", title_norm="p", authors=[], abstract="x", links={},
+        published_at="2018-01-01T00:00:00Z",
+    )
+    store.merge_entries(winner_id=winner, loser_id=loser)
+    assert store.get_entry(winner)["published_at"] == "2018-01-01T00:00:00Z"
+    store.close()
+
+
 def test_merge_entries_repoints_mentions_metrics_and_shown(tmp_path: Path):
     store = Store(tmp_path / "pw.db")
     winner = store.insert_entry(
