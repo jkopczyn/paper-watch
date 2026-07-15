@@ -154,6 +154,18 @@ class Config(BaseModel):
     # Local run times the cron installer reads; "configurable" per design.
     schedule: list[str] = Field(default_factory=lambda: ["08:00", "16:00"])
     top_n: int = 15
+    # The digest leads with up to `max_new` genuinely new papers (never shown
+    # before, first mentioned within `new_window`); the remaining slots up to
+    # `top_n` are padded with resurfaced papers that outscore the new ones'
+    # average. Extra new papers beyond `max_new` are dropped this run.
+    new_window: str = "24h"
+    max_new: int = 10
+    # Window over which each item is tagged with how many past digests surfaced
+    # it, shown as a "surfaced N×" chip.
+    recent_window: str = "48h"
+    # Fill an entry that still has no displayable URL by searching Semantic
+    # Scholar / Crossref for its title and adopting the paper's canonical link.
+    url_search: bool = True
     # How far back to fetch papers when `--since` isn't given. Wider than one
     # cron interval so nothing slips through the gaps; already-shown papers are
     # deduped downstream, so a generous window is cheap.

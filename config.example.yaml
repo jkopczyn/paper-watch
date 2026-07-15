@@ -3,7 +3,11 @@
 # Secrets (SMTP app password, Anthropic key) live in .env, not here.
 
 db_path: paper_watch.db
-top_n: 15
+top_n: 15                        # total papers in a digest (new + resurfaced)
+new_window: 24h                  # a paper is "new" if first mentioned within this window
+max_new: 10                      # lead with up to this many new papers; extras are dropped
+recent_window: 48h               # window for the "surfaced N×" recency tag on each item
+url_search: true                 # fill blank URLs by searching S2/Crossref for the title
 lookback: 7d                     # how far back to fetch when --since isn't given
 candidate_window_days: 7         # how recently a paper must be seen to first appear; also the velocity/surge window
 resurface_window_days: 21        # how far back an already-shown paper can be brought back on a surge

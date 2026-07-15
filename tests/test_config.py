@@ -24,6 +24,11 @@ def test_load_empty_config_uses_defaults(tmp_path: Path):
     assert cfg.candidate_window_days <= cfg.resurface_window_days
     # default ingest lookback is wider than a single cron interval
     assert cfg.lookback == "7d"
+    # digest-composition knobs (wishlist)
+    assert cfg.new_window == "24h"
+    assert cfg.max_new == 10
+    assert cfg.recent_window == "48h"
+    assert cfg.url_search is True
 
 
 def test_load_populated_config(tmp_path: Path):
