@@ -17,3 +17,4 @@ out/
 
 deploy/nitter/sessions.jsonl
 .worktrees/
+paper_watch.db.*.bak
