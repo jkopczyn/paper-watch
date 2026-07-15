@@ -362,6 +362,72 @@ def _safe_search(resolver, title: str) -> dict | None:
         return None
 
 
+def _is_titleless(row) -> bool:
+    """True for an entry that is effectively just a URL: no abstract, and a title
+    that is a bare URL or too generic to be a real one."""
+    from paper_watch.identity import is_distinctive_title
+
+    if row["abstract"]:
+        return False
+    title = row["title"] or ""
+    return title.startswith("http") or not is_distinctive_title(row["title_norm"])
+
+
+def _entry_lookup_url(store, row) -> str | None:
+    """A URL to search for this entry: its abstract link, else any mention URL."""
+    url = json.loads(row["links_json"]).get("abstract")
+    if url:
+        return url
+    for mention in store.get_mentions(row["id"]):
+        if mention["source_item_url"]:
+            return mention["source_item_url"]
+    return None
+
+
+def recover_titles(store, entry_ids: list[int], resolver) -> int:
+    """Web-search the URL of each title-less entry to recover its real metadata.
+
+    For an entry that is just a URL with no title/abstract, ask the web-search
+    resolver for the work's title (+ snippet/abstract), then land it so the LLM
+    gate judges a real paper instead of a bare link. Best-effort; returns how many
+    entries were updated. Recovering a title can reveal a twin — the rewrite
+    merges it, exactly as the other resolvers do.
+    """
+    if resolver is None:
+        return 0
+    updated = 0
+    for entry_id in entry_ids:
+        row = store.get_entry(entry_id)
+        if row is None or not _is_titleless(row):
+            continue
+        url = _entry_lookup_url(store, row)
+        if not url:
+            continue
+        blurb = max(
+            (m["mention_text"] or "" for m in store.get_mentions(entry_id)),
+            key=len,
+            default="",
+        ).strip() or None
+        try:
+            meta = resolver.resolve(url, blurb)
+        except Exception as exc:  # best-effort: a failed search is never fatal
+            import logging
+
+            logging.getLogger(__name__).warning("web title recovery failed for %s: %s", url, exc)
+            continue
+        if meta and meta.get("title"):
+            rewrite_paper_metadata(
+                store,
+                entry_id,
+                title=meta["title"][:300],
+                authors=[],
+                abstract=meta.get("abstract") or meta.get("snippet"),
+                links={},
+            )
+            updated += 1
+    return updated
+
+
 # -- scoring / selection ---------------------------------------------------
 def _entry_sources(store, entry_id: int) -> set[str]:
     return {m["source"] for m in store.get_mentions(entry_id)}
@@ -567,6 +633,7 @@ def run_pipeline(
     pdf_resolver=None,
     html_resolver=None,
     search_resolver=None,
+    web_search_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -601,6 +668,10 @@ def run_pipeline(
             html_resolver=html_resolver,
             search_resolver=search_resolver,
         )
+    # Last resort for entries that are still just a URL (no title, no abstract):
+    # a web search to recover the work's title/snippet/abstract.
+    if new_ids and web_search_resolver is not None:
+        recover_titles(store, new_ids, web_search_resolver)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
     chosen = select_digest(
@@ -770,6 +841,18 @@ def _build_search_resolver(config: Config):
     return PaperSearchResolver()
 
 
+def _build_web_search_resolver(config: Config):
+    """A Claude web-search resolver to recover URL-only entries' titles, or None.
+
+    Key-gated like the PDF-OCR fallback: without an Anthropic key there is no
+    resolver, and the pipeline simply leaves the bare-URL entry as-is."""
+    if not config.url_search or not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    from paper_watch.sources.web_search import WebSearchResolver
+
+    return WebSearchResolver(config.llm.model)
+
+
 def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
     """Best-effort Semantic Scholar citation counts for entries with an arXiv id."""
     from paper_watch.sources.semantic_scholar import SemanticScholar
@@ -822,6 +905,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
         newsletter_extractor = _build_newsletter_extractor(config)
         openreview_resolver, pdf_resolver, html_resolver = _build_metadata_resolvers(config)
         search_resolver = _build_search_resolver(config)
+        web_search_resolver = _build_web_search_resolver(config)
 
         result = run_pipeline(
             store,
@@ -835,6 +919,7 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
             search_resolver=search_resolver,
+            web_search_resolver=web_search_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,

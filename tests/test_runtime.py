@@ -15,6 +15,7 @@ from paper_watch.runtime import (
     build_sources,
     effective_since,
     ingest,
+    recover_titles,
     resolve_paper_metadata,
     rewrite_paper_metadata,
     run_pipeline,
@@ -688,6 +689,51 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     picked = {c["entry_id"] for c in chosen}
     assert set(news) <= picked
     assert len({c["entry_id"] for c in chosen if c["resurfaced"]}) == 3
+    store.close()
+
+
+class _StubWebSearch:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def resolve(self, url, blurb=None):
+        self.calls.append((url, blurb))
+        return self.result
+
+
+def test_recover_titles_recovers_a_url_only_entry(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # a bare-URL entry: title is the URL, no abstract
+    eid = store.insert_entry(
+        title="https://dead.link/paper", title_norm="https dead link paper",
+        first_seen_at="2026-07-10T00:00:00Z",
+        links={"abstract": "https://dead.link/paper"},
+    )
+    store.add_mention(
+        entry_id=eid, source="twitter:x", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://dead.link/paper", mention_text="cool paper on oversight",
+    )
+    resolver = _StubWebSearch({"title": "Scalable Oversight of AI", "snippet": "A method.", "abstract": "We propose..."})
+    assert recover_titles(store, [eid], resolver) == 1
+    row = store.get_entry(eid)
+    assert row["title"] == "Scalable Oversight of AI"
+    assert row["abstract"] == "We propose..."
+    # it searched the entry's URL and passed the mention blurb as context
+    assert resolver.calls == [("https://dead.link/paper", "cool paper on oversight")]
+    store.close()
+
+
+def test_recover_titles_skips_entries_that_already_have_a_title(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="A Perfectly Good Title", title_norm="a perfectly good title",
+        first_seen_at="2026-07-10T00:00:00Z", abstract="Has an abstract too.",
+    )
+    resolver = _StubWebSearch({"title": "WRONG"})
+    assert recover_titles(store, [eid], resolver) == 0
+    assert resolver.calls == []
+    assert store.get_entry(eid)["title"] == "A Perfectly Good Title"
     store.close()
 
 
