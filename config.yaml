@@ -165,6 +165,13 @@ feeds:
   url: https://www.alignment.org/blog/feed
 - name: EleutherAI
   url: https://blog.eleuther.ai/index.xml
+# Tag-filtered ForumMagnum GraphQL feeds. LW's AI tag at this karma threshold
+# is a takes-ier distribution than the AF feed, hence its own low source prior.
+graphql:
+- name: LessWrong AI
+  endpoint: https://www.lesswrong.com/graphql
+  tag_id: sYm3HiWcfZvrGu3ui  # the "AI" tag (slug: ai)
+  min_karma: 30
 # Blogs with no RSS feed: new posts detected by diffing the index page's links.
 # Both are major-lab safety blogs (already gate-bypass domains), hence trusted.
 pages:
@@ -216,6 +223,7 @@ source_priors:
   # prior the code ships must be repeated here or it silently reverts to `default`.
   'rss:OpenAI Blog': 0.1
   page: 0.6
+  graphql: 0.3
 smtp:
   host: smtp.gmail.com
   port: 587

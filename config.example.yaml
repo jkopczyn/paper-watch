@@ -80,6 +80,17 @@ feeds:
   # - {name: Epoch Gradient Updates, url: https://epoch.ai/gradient-updates/rss.xml}
   # - {name: OpenAI Blog, url: https://openai.com/blog/rss.xml}
 
+# Tag-filtered ForumMagnum GraphQL feeds (LessWrong / Alignment Forum): newest
+# posts carrying the tag, kept only at/above min_karma. Sturdier than the RSS
+# feed and lets us set our own karma bar. Find a tag's _id with a
+# tags(tagBySlug) query against the endpoint. LW AI is takes-ier than AF, so
+# it gets a low source prior (see source_priors default "graphql": 0.3).
+graphql:
+  - name: LessWrong AI
+    endpoint: https://www.lesswrong.com/graphql
+    tag_id: sYm3HiWcfZvrGu3ui   # the "AI" tag (slug: ai)
+    min_karma: 30
+
 # Blogs with no RSS feed, watched by diffing the index page's link set (new
 # link => new post; the first run seeds a baseline and yields nothing).
 # `trusted: true` skips the LLM relevance gate, for blogs that are all signal.

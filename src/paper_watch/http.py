@@ -103,3 +103,33 @@ def get_json(
         return resp.json()
     # Unreachable: the final attempt either returns or raises above.
     raise RuntimeError("get_json: exhausted retries without returning")
+
+
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float = DEFAULT_TIMEOUT,
+    *,
+    max_retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """POST `payload` as JSON to `url` and return the parsed JSON body.
+
+    Like `get_json` but for APIs that take a JSON request body (the ForumMagnum
+    GraphQL endpoint), with the same 429 backoff.
+    """
+    for attempt in range(max_retries + 1):
+        resp = httpx.post(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
+            json=payload,
+            follow_redirects=True,
+        )
+        if resp.status_code == 429 and attempt < max_retries:
+            sleep(_retry_after(resp, attempt))
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    # Unreachable: the final attempt either returns or raises above.
+    raise RuntimeError("post_json: exhausted retries without returning")
