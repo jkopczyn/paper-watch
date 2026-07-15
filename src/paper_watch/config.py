@@ -17,6 +17,22 @@ class FeedConfig(BaseModel):
     url: str
 
 
+class GraphqlFeedConfig(BaseModel):
+    """A ForumMagnum GraphQL feed (LessWrong / Alignment Forum), filtered by tag.
+
+    Queries the forum's public GraphQL endpoint for the newest posts carrying
+    `tag_id`, keeping only those at or above `min_karma`. More robust than the
+    RSS feed (which scrapes the same data through shakier infrastructure) and
+    lets us apply our own karma threshold instead of trusting a URL param.
+    """
+
+    name: str
+    endpoint: str  # e.g. https://www.lesswrong.com/graphql
+    tag_id: str  # the tag's _id, not its slug (query `tags(tagBySlug)` to find it)
+    min_karma: int = 30
+    limit: int = 50  # newest-N window fetched per run
+
+
 class PageConfig(BaseModel):
     """A blog index page with no RSS feed, watched by diffing its links."""
 
@@ -91,6 +107,10 @@ _DEFAULT_SOURCE_PRIORS: dict[str, float] = {
     "rss:OpenAI Blog": 0.1,
     # Watched pages are hand-picked primary blogs; weight like curated feeds.
     "page": 0.6,
+    # Tag-filtered forum queries (LessWrong AI tag): a wider, takes-ier
+    # distribution than the Alignment Forum feed, so weight it below RSS.
+    # Override per feed ("graphql:<name>") in config when adding more.
+    "graphql": 0.3,
 }
 
 
@@ -117,6 +137,8 @@ class Config(BaseModel):
     db_path: str = "paper_watch.db"
     authors: list[str] = Field(default_factory=list)
     feeds: list[FeedConfig] = Field(default_factory=list)
+    # Tag-filtered ForumMagnum GraphQL feeds (LessWrong / Alignment Forum).
+    graphql: list[GraphqlFeedConfig] = Field(default_factory=list)
     # Blog index pages without an RSS feed, watched by diffing their link sets
     # (new link on the page ⇒ new post).
     pages: list[PageConfig] = Field(default_factory=list)

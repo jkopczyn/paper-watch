@@ -486,6 +486,10 @@ def build_sources(
         sources.append(ArxivSource(config.authors, fetch=fetch))
     if config.feeds:
         sources.append(RssSource(config.feeds, fetch=fetch))
+    if config.graphql:
+        from paper_watch.sources.graphql import GraphqlSource
+
+        sources.append(GraphqlSource(config.graphql))
     # Watched pages diff against a seen-link set persisted in the store, so
     # they only exist when a store is wired in (the real `run` entrypoint).
     if config.pages and store is not None:
