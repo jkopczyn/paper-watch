@@ -19,7 +19,13 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from paper_watch.config import Config
+
+# The resolver authenticates with ANTHROPIC_API_KEY, which lives in .env (as the
+# main pipeline expects) — load it so the script works without exporting it.
+load_dotenv()
 from paper_watch.runtime import _is_titleless, recover_titles
 from paper_watch.sources.web_search import WebSearchResolver
 from paper_watch.store import Store
