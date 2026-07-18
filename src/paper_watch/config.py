@@ -86,7 +86,7 @@ class SlackConfig(BaseModel):
 class ScoringWeights(BaseModel):
     # Hand-set starting points; tune offline against the ground-truth eval
     # before trusting relative values.
-    relevance: float = 2.0  # LLM 0-4 vs reader profile (cached at enrichment)
+    relevance: float = 2.0  # LLM 0-10 vs reader profile (cached at enrichment)
     source: float = 1.0  # per-source base weight (see Config.source_priors)
     overlap: float = 1.0
     velocity: float = 0.5

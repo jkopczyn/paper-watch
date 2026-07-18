@@ -298,8 +298,8 @@ def resolve_paper_metadata(
 
 # Unreadable OpenReview submissions (API is login/challenge-gated) get this
 # relevance prior so they surface as likely medium-high rather than being gated
-# out on an empty abstract. 3 = "plausible reading-group pick" (see enrich rubric).
-_OPENREVIEW_PRIOR_RELEVANCE = 3
+# out on an empty abstract. 8 = "a strong pick" on the 0-10 scale (see enrich rubric).
+_OPENREVIEW_PRIOR_RELEVANCE = 8
 
 
 def _flag_openreview_fallback(store, entry_id: int) -> None:
@@ -439,7 +439,7 @@ def _primary_source(store, entry_id: int) -> str:
 
 
 def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
-    """Trusted items bypass the gate; others need LLM relevance >= 2.
+    """Trusted items bypass the gate; others need LLM relevance >= 4.
 
     arXiv author-feed items are a trusted whitelist (bypass), as is any mention
     flagged trusted at ingest (a trusted Slack channel, or a Slack link to a
@@ -449,7 +449,7 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     if trusted or "arxiv" in sources:
         return True
     if row["relevance"] is not None:
-        return row["relevance"] >= 2
+        return row["relevance"] >= 4
     return bool(row["safety_relevant"])
 
 
@@ -767,10 +767,10 @@ def build_sources(
 
 class _PassthroughEnricher:
     """Used when no ANTHROPIC_API_KEY is set: marks entries enriched without an
-    LLM call (relevance=2 so nothing is silently gated out; no TL;DR/tags)."""
+    LLM call (relevance=5 so nothing is silently gated out; no TL;DR/tags)."""
 
     def enrich(self, *, title, abstract, source, mentions) -> EnrichmentResult:
-        return EnrichmentResult(tldr="", why="", tags=[], relevance=2)
+        return EnrichmentResult(tldr="", why="", tags=[], relevance=5)
 
 
 def _build_enricher(config: Config):

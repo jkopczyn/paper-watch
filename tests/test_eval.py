@@ -33,11 +33,11 @@ def _gt(option, url, votes, ts=POLL_TS):
 def _make_store(tmp_path):
     store = Store(tmp_path / "pw.db")
     a = _paper(
-        store, "Winner Paper", arxiv_id="2605.01642", relevance=4,
+        store, "Winner Paper", arxiv_id="2605.01642", relevance=10,
         source="slack:far:papers", url="https://arxiv.org/abs/2605.01642",
     )
     b = _paper(
-        store, "Runner Up", relevance=2,
+        store, "Runner Up", relevance=5,
         source="slack:far:papers", url="https://www.lesswrong.com/posts/abc123/x",
     )
     _paper(
@@ -96,11 +96,11 @@ def test_evaluate_scores_a_week(tmp_path):
     )
     assert len(report.weeks) == 1
     week = report.weeks[0]
-    assert week.pool_size == 2  # Gated Noise (relevance 0) excluded
+    assert week.pool_size == 2  # Gated Noise (relevance 0) excluded by the >=4 gate
     assert week.n_matched == 2
     assert week.voted_in_pool == 2
     assert week.voted_in_top == 2
-    assert week.winner_rank == 1  # relevance 4 beats relevance 2
+    assert week.winner_rank == 1  # relevance 10 beats relevance 5
     assert week.ndcg > 0.9
     assert [m.url for m in report.ingest_misses] == ["https://unknown.example/paper"]
     assert report.recall_at_n == 1.0

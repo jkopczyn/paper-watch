@@ -110,17 +110,17 @@ def test_resurface_adds_boost():
 def test_relevance_norm_scales_and_handles_none():
     assert relevance_norm(None) == 0.0
     assert relevance_norm(0) == 0.0
-    assert relevance_norm(2) == pytest.approx(0.5)
-    assert relevance_norm(4) == 1.0
-    assert relevance_norm(9) == 1.0  # clamped
+    assert relevance_norm(5) == pytest.approx(0.5)
+    assert relevance_norm(10) == 1.0
+    assert relevance_norm(11) == 1.0  # clamped
 
 
 def test_relevance_separates_fresh_single_source_papers():
     """The old 0.50 twelve-way tie: identical structural features must now
     rank by cached LLM relevance."""
     w = ScoringWeights()
-    must_see = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=4)
-    tangential = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=1)
+    must_see = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=10)
+    tangential = ScoreFeatures(1, None, None, 1, 0.0, False, relevance=2)
     assert compute_score(must_see, w) > compute_score(tangential, w)
 
 
@@ -159,7 +159,7 @@ def test_compute_score_includes_v2_terms():
     )
     f = ScoreFeatures(
         1, None, None, 0, 0.0, False,
-        relevance=4, source_prior=0.8, tracked_author=True,
+        relevance=10, source_prior=0.8, tracked_author=True,
     )
     # 2.0*1.0 + 1.0*0.8 + 0.5*1.0
     assert compute_score(f, w) == pytest.approx(3.3)

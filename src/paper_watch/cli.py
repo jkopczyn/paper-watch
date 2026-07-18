@@ -39,7 +39,7 @@ slack:           # #papers channels; see README. Fill ids via `paper-watch slack
   workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
 
 scoring:           # tune against ground truth (see eval); hand-set defaults
-  relevance: 2.0   # LLM 0-4 vs profile.md, cached at enrichment
+  relevance: 2.0   # LLM 0-10 vs profile.md, cached at enrichment
   source: 1.0      # per-source base weight (source_priors below)
   overlap: 1.0
   velocity: 0.5

@@ -1,7 +1,7 @@
 """Ranking. Deterministic arithmetic over cached features — zero LLM tokens
 per run.
 
-score = w_relevance·(relevance/4) + w_source·source_prior + w_feedback·affinity
+score = w_relevance·(relevance/10) + w_source·source_prior + w_feedback·affinity
       + w_author·tracked_author + w_overlap·overlap + w_velocity·velocity
       (+ resurface_boost if the paper is resurfacing)
 
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from paper_watch.config import ScoringWeights
 
 _VELOCITY_K = 5.0  # saturation constant: velocity_raw == K maps to 0.5
-_RELEVANCE_MAX = 4  # rubric top (see enrich.RELEVANCE_RUBRIC)
+_RELEVANCE_MAX = 10  # rubric top (see enrich.RELEVANCE_RUBRIC)
 
 
 @dataclass
@@ -30,7 +30,7 @@ class ScoreFeatures:
     new_mentions_in_window: int
     feedback_affinity: float
     resurfaced: bool
-    relevance: int | None = None  # 0-4, None until enriched under v2
+    relevance: int | None = None  # 0-10, None until enriched under v2
     source_prior: float = 0.0  # best per-source base weight among mentions
     tracked_author: bool = False  # any author on the config whitelist
 
@@ -67,7 +67,7 @@ def velocity_norm(
 
 
 def relevance_norm(relevance: int | None) -> float:
-    """LLM relevance 0-4 mapped to [0, 1]; unenriched entries contribute 0."""
+    """LLM relevance 0-10 mapped to [0, 1]; unenriched entries contribute 0."""
     if relevance is None:
         return 0.0
     return max(0, min(_RELEVANCE_MAX, relevance)) / _RELEVANCE_MAX

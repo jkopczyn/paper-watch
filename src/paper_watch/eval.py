@@ -140,7 +140,7 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     if trusted or "arxiv" in sources:
         return True
     if row["relevance"] is not None:
-        return row["relevance"] >= 2
+        return row["relevance"] >= 4
     return bool(row["safety_relevant"])
 
 

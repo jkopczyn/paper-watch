@@ -144,7 +144,7 @@ class Store:
         self._add_column_if_missing(
             "mentions", "trusted", "INTEGER NOT NULL DEFAULT 0"
         )
-        # Enrichment v2: 0-4 relevance vs the reader profile, plus a schema
+        # Enrichment v2: 0-10 relevance vs the reader profile, plus a schema
         # version so old enrichments are redone lazily.
         self._add_column_if_missing("entries", "relevance", "INTEGER")
         self._add_column_if_missing("entries", "enrich_version", "INTEGER")

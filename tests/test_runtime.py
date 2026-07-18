@@ -43,7 +43,7 @@ class FakeEnricher:
             tldr=f"tldr:{title}",
             why="why",
             tags=["interp"],
-            relevance=3 if self.relevant else 0,
+            relevance=8 if self.relevant else 0,
         )
 
 
@@ -548,7 +548,7 @@ def _shown_entry(store, mentions):
         )
     # clear the relevance gate, so these tests turn on the surge rule alone
     store.set_enrichment(
-        entry_id, tldr="t", why="w", tags=[], relevance=3, version=2
+        entry_id, tldr="t", why="w", tags=[], relevance=8, version=2
     )
     store.record_shown(
         entry_id=entry_id, digest_at="2026-07-09T00:00:00Z", rank=1, score=3.0,
@@ -600,7 +600,7 @@ def test_resurface_min_mentions_raises_the_surge_bar(tmp_path):
     store.close()
 
 
-def _new_entry(store, key, *, n_mentions=1, relevance=3, fetched_at="2026-07-10T00:00:00Z"):
+def _new_entry(store, key, *, n_mentions=1, relevance=8, fetched_at="2026-07-10T00:00:00Z"):
     """A never-shown, freshly-mentioned paper. More mentions ⇒ higher velocity
     ⇒ higher score, which lets a test order new items deterministically."""
     entry_id = store.insert_entry(
@@ -641,10 +641,10 @@ def test_never_shown_paper_outside_new_window_is_not_selected(tmp_path):
 
 def test_resurfaced_below_new_average_is_dropped(tmp_path):
     store = Store(tmp_path / "pw.db")
-    # Strong new items (relevance 4, many mentions) push the average high.
+    # Strong new items (relevance 10, many mentions) push the average high.
     for n in range(1, 4):
-        _new_entry(store, f"hi{n}", n_mentions=8, relevance=4)
-    # A weak resurfacing classic (relevance 2, minimum surge) scores below it.
+        _new_entry(store, f"hi{n}", n_mentions=8, relevance=10)
+    # A weak resurfacing classic (minimum surge) scores below it.
     _shown_entry(store, [
         ("rss:AF", "2026-07-10T01:00:00Z", "https://af/x"),
         ("rss:AF", "2026-07-12T01:00:00Z", "https://af/y"),
@@ -656,11 +656,11 @@ def test_resurfaced_below_new_average_is_dropped(tmp_path):
 
 def test_resurfaced_above_new_average_pads_the_digest(tmp_path):
     store = Store(tmp_path / "pw.db")
-    # One modest new item (relevance 2) sets a low average.
-    _new_entry(store, "lo", n_mentions=1, relevance=2)
-    # A strong resurfacing paper (relevance 4) clears it and pads the digest.
+    # One modest new item (relevance 5) sets a low average.
+    _new_entry(store, "lo", n_mentions=1, relevance=5)
+    # A strong resurfacing paper (relevance 10) clears it and pads the digest.
     strong = _shown_entry_with_mentions(store, 2)
-    store.set_enrichment(strong, tldr="t", why="w", tags=[], relevance=4, version=2)
+    store.set_enrichment(strong, tldr="t", why="w", tags=[], relevance=10, version=2)
     chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
     assert any(c["resurfaced"] and c["entry_id"] == strong for c in chosen)
     store.close()
@@ -668,7 +668,7 @@ def test_resurfaced_above_new_average_pads_the_digest(tmp_path):
 
 def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     store = Store(tmp_path / "pw.db")
-    news = [_new_entry(store, f"n{n}", n_mentions=1, relevance=2) for n in range(2)]
+    news = [_new_entry(store, f"n{n}", n_mentions=1, relevance=5) for n in range(2)]
     # three strong resurfacing papers, all above the modest new average
     resurf = []
     for i in range(3):
@@ -681,7 +681,7 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
                 entry_id=eid, source=f"rss:AF{i}", fetched_at=f"2026-07-{d}T00:00:00Z",
                 source_item_url=f"https://af/{i}/{d}",
             )
-        store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=4, version=2)
+        store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=10, version=2)
         store.record_shown(entry_id=eid, digest_at="2026-07-08T00:00:00Z", rank=1, score=3.0, resurfaced=False)
         resurf.append(eid)
     chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=5)
@@ -809,7 +809,7 @@ def test_to_item_estimates_pub_date_from_mentions(tmp_path):
         entry_id=eid, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
         source_item_url="https://blog/q", published_at="2020-03-01T00:00:00Z",
     )
-    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
     item = _item_for(store, eid)
     assert item.pub_display == "2020-03" and item.pub_is_estimate is True
 
@@ -828,7 +828,7 @@ def test_to_item_tags_source_types_trust_and_recency(tmp_path):
         entry_id=eid, source="slack:far:papers", fetched_at="2026-07-10T00:00:00Z",
         source_item_url="slack://far/C1/1.2", trusted=True,
     )
-    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
     # surfaced twice inside the recent window (48h), once before it
     store.record_shown(entry_id=eid, digest_at="2026-07-09T08:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-09T20:00:00Z", rank=1, score=1.0, resurfaced=False)
@@ -849,7 +849,7 @@ def test_to_item_fills_blank_links_from_owned_url(tmp_path):
         entry_id=eid, source="twitter:x", fetched_at="2026-07-10T00:00:00Z",
         source_item_url="https://twitter.com/x/status/1",
     )
-    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=3, version=2)
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
     item = _item_for(store, eid)
     assert item.links == {"link": "https://twitter.com/x/status/1"}
 
@@ -1088,7 +1088,7 @@ def test_openreview_fallback_flags_medium_high(tmp_path):
     new_ids = ingest(store, [ListSource("rss", [item])], since=None, now_iso="2026-06-30T08:00:00Z")
     resolve_paper_metadata(store, new_ids, None, openreview_resolver=_NullResolver())
     row = store.get_entry(new_ids[0])
-    assert row["relevance"] == 3  # medium-high prior, survives (won't be re-enriched down)
+    assert row["relevance"] == 8  # medium-high prior, survives (won't be re-enriched down)
     assert row["title"] == "A Structured Study of Oversight"  # link metadata promoted
     # and it now passes the gate on relevance alone
     from paper_watch.runtime import _passes_gate

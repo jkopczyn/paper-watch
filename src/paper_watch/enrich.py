@@ -1,5 +1,5 @@
 """LLM enrichment: per-paper TL;DR, why-priority line, controlled tags, and a
-0-4 relevance score against the reader profile.
+0-10 relevance score against the reader profile.
 
 The LLM is used ONLY at enrichment time, never per-run at ranking time.
 Enrichment is cached on the entry and versioned (`enrich_version`), so each
@@ -29,12 +29,19 @@ _MAX_MENTION_SNIPPETS = 3
 _MENTION_SNIPPET_LEN = 280
 
 RELEVANCE_RUBRIC = """\
-Score `relevance` 0-4 against the reader profile:
-0 = not relevant, or not a research artifact (product news, hiring, chatter)
-1 = tangentially relevant to the profile
-2 = relevant area but unlikely reading-group material (incremental, minor)
-3 = plausible reading-group pick
-4 = must-see for this group"""
+Score `relevance` 0-10 against the reader profile (higher = better reading-group fit):
+0   = not relevant, or not a research artifact (product news, hiring, chatter)
+1-4 = tangential to marginal — real work but a weak fit; score higher within the
+      band for a better/more-relevant instance:
+      1-2 = only tangentially relevant to the profile
+      3   = relevant-adjacent but minor or incremental
+      4   = good but not clearly relevant (e.g. an adjacent field), or clearly
+            relevant but minor — borderline worth surfacing
+5   = squarely in a relevant area, but unlikely reading-group material
+6-9 = a plausible reading-group pick; score higher for a stronger, clearer pick:
+      6-7 = plausible pick, with some reservation
+      8-9 = a strong pick
+10  = must-see for this group"""
 
 
 @dataclass
@@ -42,7 +49,7 @@ class EnrichmentResult:
     tldr: str
     why: str  # one line on why this deserves (or doesn't) the reader's attention
     tags: list[str]
-    relevance: int  # 0-4 per RELEVANCE_RUBRIC
+    relevance: int  # 0-10 per RELEVANCE_RUBRIC
 
 
 class Enricher(Protocol):
@@ -171,5 +178,5 @@ class ClaudeEnricher:
             tldr=out.tldr,
             why=out.why,
             tags=tags,
-            relevance=max(0, min(4, out.relevance)),
+            relevance=max(0, min(10, out.relevance)),
         )

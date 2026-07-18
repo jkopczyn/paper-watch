@@ -147,7 +147,7 @@ def test_load_profile_and_vocabulary_missing_files(tmp_path):
 def test_build_system_prompt_includes_profile_rubric_and_tags():
     prompt = build_system_prompt("PROFILE-SENTINEL", {"interp": "internals"})
     assert "PROFILE-SENTINEL" in prompt
-    assert "relevance` 0-4" in prompt
+    assert "relevance` 0-10" in prompt
     assert "- interp: internals" in prompt
 
 
@@ -205,8 +205,8 @@ def test_claude_enricher_maps_parsed_output():
 def test_claude_enricher_drops_unknown_tags_and_clamps_relevance():
     from paper_watch.enrich import _LLMEnrichment
 
-    obj = _LLMEnrichment(tldr="t", why="w", tags=["interp", "made-up"], relevance=9)
+    obj = _LLMEnrichment(tldr="t", why="w", tags=["interp", "made-up"], relevance=15)
     enricher = _claude(obj, vocabulary={"interp": "d"})
     result = enricher.enrich(title="T", abstract=None, source="arxiv", mentions=[])
     assert result.tags == ["interp"]
-    assert result.relevance == 4
+    assert result.relevance == 10
