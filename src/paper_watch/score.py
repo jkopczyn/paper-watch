@@ -115,6 +115,18 @@ def feedback_affinity(
     return math.tanh(total)
 
 
+def dynamic_feedback_weight(
+    weeks: int, *, start: float = 2.0, ceiling: float = 4.0, half_life: float = 10.0
+) -> float:
+    """Feedback weight as a function of weeks of feedback gathered.
+
+    Ramps from `start` toward `ceiling` with the given half-life in weeks:
+    0 weeks -> 2.0, 10 -> 3.0, ~100 -> ~4.0. More accumulated group feedback
+    means more trust in the learned per-author / per-tag / per-source weights.
+    """
+    return ceiling - (ceiling - start) * 0.5 ** (weeks / half_life)
+
+
 def has_tracked_author(authors: list[str], tracked: set[str]) -> bool:
     """Case-insensitive membership of any paper author in the config whitelist."""
     return any(a.casefold().strip() in tracked for a in authors)

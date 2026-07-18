@@ -666,6 +666,30 @@ def test_resurfaced_above_new_average_pads_the_digest(tmp_path):
     store.close()
 
 
+def test_select_digest_uses_ramped_feedback_weight(tmp_path):
+    """As feedback weeks accumulate, w.feedback ramps 2->4, so a paper whose
+    learned key weight is positive scores strictly higher than with no feedback."""
+
+    def build_and_score(weeks):
+        store = Store(tmp_path / f"pw{weeks}.db")
+        eid = _new_entry(store, "fb", n_mentions=1, relevance=8)
+        # _new_entry's only feedback key is its source ("rss:Blog"); a strong
+        # positive learned weight makes feedback_affinity ~= +1.
+        store.set_feedback_weight("source", "rss:Blog", 5.0)
+        for w in range(weeks):
+            store.record_feedback(
+                entry_id=eid, week=f"2026-W{w:02d}", picked=True,
+                group_rating=None, notes=None, imported_at="2026-07-10T00:00:00Z",
+            )
+        chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=10, top_n=15)
+        score = next(c["score"] for c in chosen if c["entry_id"] == eid)
+        store.close()
+        return score
+
+    # 10 weeks of feedback -> w.feedback 3.0 vs 2.0 at zero weeks (~+1 to score).
+    assert build_and_score(10) > build_and_score(0)
+
+
 def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     store = Store(tmp_path / "pw.db")
     news = [_new_entry(store, f"n{n}", n_mentions=1, relevance=5) for n in range(2)]

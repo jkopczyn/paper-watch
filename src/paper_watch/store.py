@@ -612,6 +612,14 @@ class Store:
         ).fetchall()
         return {(r["key_type"], r["key_value"]): float(r["weight"]) for r in rows}
 
+    def count_feedback_weeks(self) -> int:
+        """Distinct ISO weeks that have any imported feedback (drives the
+        dynamic feedback weight)."""
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT week) AS n FROM feedback"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     # -- metrics / windows (for velocity & candidacy) ----------------------
     def record_metrics(self, entry_id: int, citation_count: int, measured_at: str) -> None:
         prev = self.conn.execute(

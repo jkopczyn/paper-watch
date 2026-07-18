@@ -33,6 +33,7 @@ from paper_watch.score import (
     best_source_prior,
     compute_score,
     derive_feedback_keys,
+    dynamic_feedback_weight,
     feedback_affinity,
     has_tracked_author,
 )
@@ -155,6 +156,9 @@ def rank_pool(
 ) -> list[int]:
     """Entry ids mentioned in [start, end] that pass the gate, best score first."""
     fb_weights = store.get_feedback_weights()
+    weights = weights.model_copy(
+        update={"feedback": dynamic_feedback_weight(store.count_feedback_weeks())}
+    )
     scored: list[tuple[float, int]] = []
     for entry_id in store.entry_ids_mentioned_between(start, end):
         row = store.get_entry(entry_id)

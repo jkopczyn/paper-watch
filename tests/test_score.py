@@ -9,6 +9,7 @@ from paper_watch.score import (
     citation_growth,
     compute_score,
     derive_feedback_keys,
+    dynamic_feedback_weight,
     feedback_affinity,
     has_tracked_author,
     normalize_tracked_authors,
@@ -185,3 +186,13 @@ def test_default_weights_target_0_10_range():
 
     weak = ScoreFeatures(1, None, None, 0, 0.0, False, relevance=0, source_prior=0.0)
     assert 0.0 <= compute_score(weak, w) <= 2.0
+
+
+def test_dynamic_feedback_weight_ramps_2_to_4():
+    assert dynamic_feedback_weight(0) == pytest.approx(2.0)
+    assert dynamic_feedback_weight(10) == pytest.approx(3.0)
+    assert dynamic_feedback_weight(20) == pytest.approx(3.5)
+    assert dynamic_feedback_weight(100) == pytest.approx(4.0, abs=0.01)
+    ramp = [dynamic_feedback_weight(n) for n in range(0, 55, 5)]
+    assert ramp == sorted(ramp)  # monotonic non-decreasing
+    assert all(v < 4.0 for v in ramp)  # bounded below the ceiling

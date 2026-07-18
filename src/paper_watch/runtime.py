@@ -19,6 +19,7 @@ from paper_watch.score import (
     best_source_prior,
     compute_score,
     derive_feedback_keys,
+    dynamic_feedback_weight,
     feedback_affinity,
     has_tracked_author,
     normalize_tracked_authors,
@@ -479,6 +480,9 @@ def select_digest(
     tracked_authors = tracked_authors or set()
     new_start = new_start or candidate_start
     fb_weights = store.get_feedback_weights()
+    weights = weights.model_copy(
+        update={"feedback": dynamic_feedback_weight(store.count_feedback_weeks())}
+    )
     new_items: list[dict] = []
     resurfaced_items: list[dict] = []
 
