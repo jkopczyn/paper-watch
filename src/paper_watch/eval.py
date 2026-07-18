@@ -51,6 +51,7 @@ class GroundTruthRow:
     url: str
     context: str
     entry_id: int | None = None  # matched lazily against the store
+    attendance: int | None = None  # captured turnout (new exports); None if absent
 
 
 @dataclass
@@ -95,6 +96,7 @@ def load_groundtruth(path: str | Path) -> list[GroundTruthRow]:
                     votes=int(r["votes"] or 0),
                     url=r["url"],
                     context=r.get("context", ""),
+                    attendance=int(r["attendance"]) if r.get("attendance") else None,
                 )
             )
     return rows
@@ -145,6 +147,42 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     return bool(row["safety_relevant"])
 
 
+def score_entry(
+    store: Store,
+    entry_id: int,
+    *,
+    start: str,
+    end: str,
+    weights: ScoringWeights,
+    source_priors: dict[str, float],
+    tracked_authors: set[str],
+    fb_weights: dict[tuple[str, str], float],
+) -> float:
+    """Recompute one entry's score from cached features over [start, end]
+    (feedback affinity from `fb_weights`). Mirrors the per-entry scoring in
+    rank_pool / runtime.select_digest, minus the resurface boost."""
+    row = store.get_entry(entry_id)
+    sources = {m["source"] for m in store.get_mentions(entry_id)}
+    metrics = store.latest_metrics(entry_id)
+    authors = json.loads(row["authors_json"])
+    tags = json.loads(row["tags_json"])
+    primary = next(iter(sources)) if sources else "unknown"
+    features = ScoreFeatures(
+        distinct_sources=len(sources),
+        citation_count=metrics["citation_count"] if metrics else None,
+        citation_count_prev=metrics["citation_count_prev"] if metrics else None,
+        new_mentions_in_window=store.count_mentions_between(entry_id, start, end),
+        feedback_affinity=feedback_affinity(
+            derive_feedback_keys(authors, tags, primary), fb_weights
+        ),
+        resurfaced=False,
+        relevance=row["relevance"],
+        source_prior=best_source_prior(sources, source_priors),
+        tracked_author=has_tracked_author(authors, tracked_authors),
+    )
+    return compute_score(features, weights)
+
+
 def rank_pool(
     store: Store,
     *,
@@ -166,24 +204,12 @@ def rank_pool(
         trusted = store.entry_has_trusted_mention(entry_id)
         if not _passes_gate(row, sources, trusted):
             continue
-        metrics = store.latest_metrics(entry_id)
-        authors = json.loads(row["authors_json"])
-        tags = json.loads(row["tags_json"])
-        primary = next(iter(sources)) if sources else "unknown"
-        features = ScoreFeatures(
-            distinct_sources=len(sources),
-            citation_count=metrics["citation_count"] if metrics else None,
-            citation_count_prev=metrics["citation_count_prev"] if metrics else None,
-            new_mentions_in_window=store.count_mentions_between(entry_id, start, end),
-            feedback_affinity=feedback_affinity(
-                derive_feedback_keys(authors, tags, primary), fb_weights
-            ),
-            resurfaced=False,
-            relevance=row["relevance"],
-            source_prior=best_source_prior(sources, source_priors),
-            tracked_author=has_tracked_author(authors, tracked_authors),
+        s = score_entry(
+            store, entry_id, start=start, end=end, weights=weights,
+            source_priors=source_priors, tracked_authors=tracked_authors,
+            fb_weights=fb_weights,
         )
-        scored.append((compute_score(features, weights), entry_id))
+        scored.append((s, entry_id))
     scored.sort(key=lambda t: (-t[0], t[1]))
     return [entry_id for _, entry_id in scored]
 

@@ -35,6 +35,7 @@ class PollOption:
     votes: int
     url: str
     context: str  # the message line the link came from (title-ish)
+    attendance: int | None = None  # distinct voters in the poll (None if unknown)
 
 
 def _iso_week(ts: str) -> str:
@@ -47,6 +48,10 @@ def _reaction_counts(msg: dict) -> dict[str, int]:
     return {
         r.get("name", ""): int(r.get("count", 0)) for r in msg.get("reactions") or []
     }
+
+
+def _reaction_users(msg: dict) -> dict[str, list[str]]:
+    return {r.get("name", ""): list(r.get("users") or []) for r in msg.get("reactions") or []}
 
 
 def _line_for_url(text: str, url: str) -> str:
@@ -80,6 +85,7 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
     if len(urls) < min_options:
         return []
     reactions = _reaction_counts(msg)
+    users = _reaction_users(msg)
     ts = msg.get("ts", "")
     week = _iso_week(ts) if ts else ""
     options: list[PollOption] = []
@@ -97,6 +103,14 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
                 context=line,
             )
         )
+    # Turnout: distinct people who reacted with any ballot emoji. Falls back to
+    # the top single-option count when the API returned counts but no user lists.
+    voters: set[str] = set()
+    for o in options:
+        voters.update(users.get(o.emoji, []))
+    attendance = len(voters) if voters else (max((o.votes for o in options), default=0) or None)
+    for o in options:
+        o.attendance = attendance
     return options
 
 
@@ -127,7 +141,10 @@ def export_groundtruth(
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["week", "message_ts", "option", "emoji", "votes", "url", "context"],
+            fieldnames=[
+                "week", "message_ts", "option", "emoji", "votes",
+                "attendance", "url", "context",
+            ],
         )
         writer.writeheader()
         for r in rows:
@@ -138,6 +155,7 @@ def export_groundtruth(
                     "option": r.option,
                     "emoji": r.emoji,
                     "votes": r.votes,
+                    "attendance": r.attendance if r.attendance is not None else "",
                     "url": r.url,
                     "context": r.context,
                 }

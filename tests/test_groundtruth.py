@@ -75,4 +75,27 @@ def test_export_groundtruth_writes_csv(tmp_path):
     rows = list(csv.DictReader(out.open()))
     assert [r["option"] for r in rows] == ["1", "2", "3"]
     assert rows[0]["votes"] == "4"
+    assert rows[0]["attendance"] == "4"  # no user lists -> top ballot count
     assert rows[0]["url"] == "https://arxiv.org/abs/2605.01642"
+
+
+def test_parse_poll_message_captures_attendance_from_reactors():
+    msg = {
+        "ts": "1.0",
+        "text": (
+            "picks:\n"
+            "• :one:<https://a.example/x|First>\n"
+            "• :two:<https://b.example/y|Second>\n"
+        ),
+        "reactions": [
+            {"name": "one", "count": 2, "users": ["U1", "U2"]},
+            {"name": "two", "count": 2, "users": ["U2", "U3"]},
+        ],
+    }
+    # distinct union {U1, U2, U3} = 3, shared across the poll's options
+    assert [o.attendance for o in parse_poll_message(msg)] == [3, 3]
+
+
+def test_parse_poll_message_attendance_falls_back_to_top_count():
+    # POLL_MSG reactions carry counts but no user lists -> top ballot count (4).
+    assert all(o.attendance == 4 for o in parse_poll_message(POLL_MSG))

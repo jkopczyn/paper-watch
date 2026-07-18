@@ -208,26 +208,25 @@ def feedback_export(config_path: str, since: str, out: Path) -> None:
     default="candidates.csv",
     show_default=True,
 )
-@click.option("--week", default=None, help="Week label (default: current ISO week).")
+@click.option(
+    "--week",
+    default=None,
+    help="Candidates CSV: week label (default: current ISO week). "
+    "Votes CSV: optional week filter (default: all weeks).",
+)
 def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
-    """Import a filled candidates CSV and update feedback weights."""
-    from datetime import date
-
+    """Import feedback and update weights (auto-detects candidates vs votes CSV)."""
     from paper_watch.config import Config
-    from paper_watch.feedback import import_feedback
+    from paper_watch.feedback import import_file
     from paper_watch.store import Store
-
-    if week is None:
-        iso = date.today().isocalendar()
-        week = f"{iso.year}-W{iso.week:02d}"
 
     cfg = Config.load(config_path)
     store = Store(cfg.db_path)
     try:
-        n = import_feedback(store, path=in_file, week=week)
+        summary = import_file(store, path=in_file, week=week, config=cfg)
     finally:
         store.close()
-    click.echo(f"Imported {n} feedback row(s) for {week}")
+    click.echo(summary)
 
 
 @cli.command("groundtruth")
