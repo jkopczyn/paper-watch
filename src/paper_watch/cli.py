@@ -38,14 +38,14 @@ newsletter_links: true   # ingest papers linked inside newsletter bodies
 slack:           # #papers channels; see README. Fill ids via `paper-watch slack-channels`.
   workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
 
-scoring:           # tune against ground truth (see eval); hand-set defaults
-  relevance: 2.0   # LLM 0-10 vs profile.md, cached at enrichment
-  source: 1.0      # per-source base weight (source_priors below)
-  overlap: 1.0
-  velocity: 0.5
-  feedback: 1.0
-  author: 0.5      # paper has an author from `authors`
-  resurface_boost: 0.5
+scoring:           # tune against ground truth (see eval); score targets 0-10
+  relevance: 4.0   # LLM 0-10 vs profile.md, cached at enrichment
+  source: 2.0      # per-source base weight (source_priors below)
+  overlap: 2.0
+  velocity: 1.0
+  feedback: 2.0    # starting weight; ramps up as feedback accrues
+  author: 1.0      # paper has an author from `authors`
+  resurface_boost: 1.0
 
 source_priors:     # longest-prefix match on source labels
   default: 0.5

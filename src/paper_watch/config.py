@@ -84,15 +84,16 @@ class SlackConfig(BaseModel):
 
 
 class ScoringWeights(BaseModel):
-    # Hand-set starting points; tune offline against the ground-truth eval
-    # before trusting relative values.
-    relevance: float = 2.0  # LLM 0-10 vs reader profile (cached at enrichment)
-    source: float = 1.0  # per-source base weight (see Config.source_priors)
-    overlap: float = 1.0
-    velocity: float = 0.5
-    feedback: float = 1.0
-    author: float = 0.5  # any author on the config `authors` whitelist
-    resurface_boost: float = 0.5
+    # Scaled so raw score targets a 0-10 range on real data (see
+    # deploy/measure_score_distribution.py); tune offline against the
+    # ground-truth eval before trusting relative values.
+    relevance: float = 4.0  # LLM 0-10 vs reader profile (cached at enrichment)
+    source: float = 2.0  # per-source base weight (see Config.source_priors)
+    overlap: float = 2.0
+    velocity: float = 1.0
+    feedback: float = 2.0  # starting weight; ramps up with feedback (see score)
+    author: float = 1.0  # any author on the config `authors` whitelist
+    resurface_boost: float = 1.0
 
 
 # Base weight per source label, longest-prefix matched ("slack:alignment:x"

@@ -209,13 +209,13 @@ pages:
   url: https://transluce.org/research
   trusted: true
 scoring:
-  relevance: 2.0
-  source: 1.0
-  overlap: 1.0
-  velocity: 0.5
-  feedback: 1.0
-  author: 0.5
-  resurface_boost: 0.5
+  relevance: 4.0
+  source: 2.0
+  overlap: 2.0
+  velocity: 1.0
+  feedback: 2.0
+  author: 1.0
+  resurface_boost: 1.0
 source_priors:
   default: 0.5
   arxiv: 0.6

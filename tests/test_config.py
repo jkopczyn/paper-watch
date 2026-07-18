@@ -68,7 +68,7 @@ llm:
     assert cfg.scoring.overlap == 2.0
     assert cfg.scoring.velocity == 1.5
     # unspecified weight keeps its default
-    assert cfg.scoring.feedback == pytest.approx(1.0)
+    assert cfg.scoring.feedback == pytest.approx(2.0)
     assert cfg.smtp.to_addr == "me@gmail.com"
     assert cfg.llm.max_enrich_per_run == 30
 

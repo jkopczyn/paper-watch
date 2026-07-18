@@ -163,3 +163,25 @@ def test_compute_score_includes_v2_terms():
     )
     # 2.0*1.0 + 1.0*0.8 + 0.5*1.0
     assert compute_score(f, w) == pytest.approx(3.3)
+
+
+def test_default_weights_target_0_10_range():
+    """Default weights are scaled so real scores land in ~[0, 10] (verified on
+    the shown set by deploy/measure_score_distribution.py). A strong paper sits
+    high in the band; a weak one near the floor. Also guards the rescaled
+    defaults against silent drift."""
+    w = ScoringWeights()
+    assert (
+        w.relevance, w.source, w.overlap, w.velocity,
+        w.feedback, w.author, w.resurface_boost,
+    ) == (4.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0)
+
+    strong = ScoreFeatures(
+        distinct_sources=3, citation_count=None, citation_count_prev=None,
+        new_mentions_in_window=8, feedback_affinity=0.0, resurfaced=False,
+        relevance=10, source_prior=1.0, tracked_author=True,
+    )
+    assert 7.0 <= compute_score(strong, w) <= 10.0
+
+    weak = ScoreFeatures(1, None, None, 0, 0.0, False, relevance=0, source_prior=0.0)
+    assert 0.0 <= compute_score(weak, w) <= 2.0
