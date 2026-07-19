@@ -154,7 +154,7 @@ class SlackSource:
                     ws.token_env,
                 )
                 continue
-            for channel in ws.channels:
+            for channel in ws.ingestion_channels:
                 try:
                     yield from self._fetch_channel(token, ws, channel, since, oldest)
                 except Exception as exc:

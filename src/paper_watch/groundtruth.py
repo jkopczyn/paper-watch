@@ -116,25 +116,32 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
 
 def export_groundtruth(
     token: str,
-    channel_id: str,
+    channel_ids: str | list[str],
     *,
     oldest: str | None,
     path: str | Path,
     fetch=slack_history,
     min_options: int = 2,
 ) -> int:
-    """Scan a channel's history for poll messages and write the CSV. Returns rows."""
+    """Scan channels' history for poll messages and write the CSV. Returns rows.
+
+    Accepts one channel id or a list; rows from all channels are merged into a
+    single CSV.
+    """
+    if isinstance(channel_ids, str):
+        channel_ids = [channel_ids]
     rows: list[PollOption] = []
-    cursor: str | None = None
-    for _ in range(_MAX_PAGES):
-        page = fetch(token, channel_id, oldest, cursor)
-        if not page.get("ok", False):
-            raise RuntimeError(page.get("error", "slack api error"))
-        for msg in page.get("messages", []):
-            rows.extend(parse_poll_message(msg, min_options=min_options))
-        cursor = (page.get("response_metadata") or {}).get("next_cursor") or None
-        if not cursor:
-            break
+    for channel_id in channel_ids:
+        cursor: str | None = None
+        for _ in range(_MAX_PAGES):
+            page = fetch(token, channel_id, oldest, cursor)
+            if not page.get("ok", False):
+                raise RuntimeError(page.get("error", "slack api error"))
+            for msg in page.get("messages", []):
+                rows.extend(parse_poll_message(msg, min_options=min_options))
+            cursor = (page.get("response_metadata") or {}).get("next_cursor") or None
+            if not cursor:
+                break
 
     rows.sort(key=lambda r: (r.message_ts, r.option))
     path = Path(path)

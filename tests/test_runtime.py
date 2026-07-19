@@ -902,7 +902,7 @@ def test_build_sources_includes_slack_when_configured():
                 SlackWorkspace(
                     name="mats",
                     token_env="SLACK_TOKEN_MATS",
-                    channels=[SlackChannel(id="C1", name="papers")],
+                    ingestion_channels=[SlackChannel(id="C1", name="papers")],
                 )
             ]
         )

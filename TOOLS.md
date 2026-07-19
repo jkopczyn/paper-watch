@@ -13,7 +13,7 @@ fired twice daily by the systemd timer. Everything below is run by hand.
 | `slack-channels --workspace NAME` | List a Slack workspace's channel ids + names, to paste into config. Needs the workspace token in `.env`. |
 | `seed-handles [--from-file f] [--handle h]` | Merge Twitter handles into the config. |
 | **`feedback export` / `feedback import`** | **The group-votes learning loop — see below.** |
-| `groundtruth --workspace NAME --channel ID [--since 180d]` | Export the reading-group's weekly **poll** messages + emoji-reaction votes to `groundtruth.csv` (for `eval`). Review/prune before using. |
+| `groundtruth --workspace NAME [--channel ID] [--since 180d]` | Export the reading-group's weekly **poll** messages + emoji-reaction votes to `groundtruth.csv` (for `eval`). Defaults to the workspace's config `voting_channels`; `--channel` overrides. Review/prune before using. |
 | `eval [--groundtruth f] [--weights-json '{...}'] [--resolve-tweets]` | Score the ranker's top-N against the poll ground truth: recall@N, nDCG, and which poll papers were never even ingested ("ingest misses"). Offline — never changes behavior. |
 
 ## The feedback loop (group votes → ranking) — not yet used

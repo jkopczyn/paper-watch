@@ -36,7 +36,7 @@ tweet_resolution: true   # resolve bare tweet links via local Nitter (0 LLM)
 newsletter_links: true   # ingest papers linked inside newsletter bodies
 
 slack:           # #papers channels; see README. Fill ids via `paper-watch slack-channels`.
-  workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, channels: [{id: C0, name: papers}]}
+  workspaces: [] # - {name: mats, token_env: SLACK_TOKEN_MATS, ingestion_channels: [{id: C0, name: papers}]}
 
 scoring:           # tune against ground truth (see eval); score targets 0-10
   relevance: 4.0   # LLM 0-10 vs profile.md, cached at enrichment
@@ -125,7 +125,7 @@ def sources(config_path: str) -> None:
     click.echo(f"Watched pages: {len(cfg.pages)}")
     click.echo(f"Twitter handles: {len(cfg.handles)} (via {len(cfg.nitter_instances)} nitter instance(s))")
     workspaces = cfg.slack.workspaces if cfg.slack else []
-    n_channels = sum(len(w.channels) for w in workspaces)
+    n_channels = sum(len(w.ingestion_channels) for w in workspaces)
     click.echo(f"Slack:         {len(workspaces)} workspace(s), {n_channels} channel(s)")
 
 
@@ -232,7 +232,13 @@ def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
 @cli.command("groundtruth")
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
 @click.option("--workspace", required=True, help="Workspace `name` from config.slack.workspaces.")
-@click.option("--channel", "channel_id", required=True, help="Channel id holding the weekly polls.")
+@click.option(
+    "--channel",
+    "channel_id",
+    default=None,
+    help="Channel id holding the weekly polls. Defaults to the workspace's "
+    "config voting_channels.",
+)
 @click.option("--since", default="180d", show_default=True, help="How far back to scan.")
 @click.option(
     "--out",
@@ -240,11 +246,13 @@ def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
     default="groundtruth.csv",
     show_default=True,
 )
-def groundtruth_cmd(config_path: str, workspace: str, channel_id: str, since: str, out: Path) -> None:
+def groundtruth_cmd(config_path: str, workspace: str, channel_id: str | None, since: str, out: Path) -> None:
     """Export reading-group poll messages + emoji votes to a ground-truth CSV.
 
     Detects poll-shaped messages (>= 2 links); votes come from number-emoji
     reactions in link order. Eyeball and prune the CSV before `paper-watch eval`.
+
+    Scans the workspace's config `voting_channels` unless `--channel` overrides.
     """
     import os
 
@@ -269,8 +277,18 @@ def groundtruth_cmd(config_path: str, workspace: str, channel_id: str, since: st
     if not token:
         raise click.ClickException(f"no token in env var {ws.token_env}")
 
+    if channel_id:
+        channel_ids = [channel_id]
+    else:
+        channel_ids = [ch.id for ch in ws.voting_channels]
+    if not channel_ids:
+        raise click.ClickException(
+            f"no voting_channels configured for workspace {workspace!r}; "
+            "add them to config or pass --channel"
+        )
+
     n = export_groundtruth(
-        token, channel_id, oldest=iso_to_ts(since_to_iso(since)), path=out
+        token, channel_ids, oldest=iso_to_ts(since_to_iso(since)), path=out
     )
     click.echo(f"Wrote {n} poll option(s) to {out} — review/prune before eval.")
 

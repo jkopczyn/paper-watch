@@ -73,7 +73,11 @@ class SlackWorkspace(BaseModel):
     # Name of the env var holding this workspace's user token (xoxp-…); the
     # token itself stays out of the committed config.
     token_env: str
-    channels: list[SlackChannel] = Field(default_factory=list)
+    # Channels scanned for paper links (the ingestion source).
+    ingestion_channels: list[SlackChannel] = Field(default_factory=list)
+    # Channels holding the reading-group polls, scanned by `paper-watch
+    # groundtruth` for evaluation votes. Not ingested as paper links.
+    voting_channels: list[SlackChannel] = Field(default_factory=list)
 
 
 class SlackConfig(BaseModel):

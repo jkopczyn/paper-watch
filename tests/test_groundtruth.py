@@ -72,6 +72,11 @@ def test_export_groundtruth_writes_csv(tmp_path):
     out = tmp_path / "gt.csv"
     n = export_groundtruth("xoxp-test", "C05UTTS1RNV", oldest=None, path=out, fetch=fetch)
     assert n == 3
+    # a single id string and a one-element list behave the same
+    n_list = export_groundtruth(
+        "xoxp-test", ["C05UTTS1RNV"], oldest=None, path=out, fetch=fetch
+    )
+    assert n_list == 3
     rows = list(csv.DictReader(out.open()))
     assert [r["option"] for r in rows] == ["1", "2", "3"]
     assert rows[0]["votes"] == "4"

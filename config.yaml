@@ -241,10 +241,12 @@ slack:
   workspaces:
     - name: far
       token_env: SLACK_TOKEN_FAR
-      channels:
+      ingestion_channels:
         - {id: C05E1J60CD9, name: papers}
+      voting_channels:
+        - {id: C05UTTS1RNV, name: paper-reading-group}
     - name: alignment
       token_env: SLACK_TOKEN_ALIGNMENT
-      channels:
+      ingestion_channels:
         - {id: C015PNRDTKP, name: paper-club}
         - {id: C06276BMTK6, name: papers-running-list, trusted: true}

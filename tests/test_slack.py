@@ -22,7 +22,7 @@ def _workspace(*, trusted=False, name="papers"):
     return SlackWorkspace(
         name="mats",
         token_env="SLACK_TOKEN_MATS",
-        channels=[SlackChannel(id="C001", name=name, trusted=trusted)],
+        ingestion_channels=[SlackChannel(id="C001", name=name, trusted=trusted)],
     )
 
 
@@ -205,7 +205,7 @@ def test_channel_error_does_not_abort_other_channels():
     ws = SlackWorkspace(
         token_env="SLACK_TOKEN_MATS",
         name="mats",
-        channels=[
+        ingestion_channels=[
             SlackChannel(id="CBAD", name="broken"),
             SlackChannel(id="CGOOD", name="papers"),
         ],

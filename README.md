@@ -26,7 +26,7 @@ Sources:
 - `feeds`: name/url pairs for blog/Substack RSS feeds
 - `pages`: name/url pairs for RSS-less blog index pages, diffed between runs (first run seeds a baseline and reports nothing; add `trusted: true` to skip the relevance gate)
 - `handles`: Twitter accounts to track
-- `slack.workspaces`: `name`/`token_env` pairs to specify workspace, channels -> {id, name, (trusted: true)} dicts for channels to watch
+- `slack.workspaces`: `name`/`token_env` pairs to specify workspace; `ingestion_channels` -> {id, name, (trusted: true)} dicts for channels to watch for paper links, and optional `voting_channels` for reading-group poll channels scanned by `groundtruth`
 
 Technical Setup:
 

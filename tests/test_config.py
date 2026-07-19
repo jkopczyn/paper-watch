@@ -93,11 +93,13 @@ slack:
   workspaces:
     - name: mats
       token_env: SLACK_TOKEN_MATS
-      channels:
+      ingestion_channels:
         - {id: C0001, name: papers}
+      voting_channels:
+        - {id: C0002, name: reading-group}
     - name: alignment
       token_env: SLACK_TOKEN_ALIGNMENT
-      channels:
+      ingestion_channels:
         - {id: C0009, name: aaron-papers, trusted: true}
 """
     )
@@ -107,11 +109,14 @@ slack:
     assert [w.name for w in cfg.slack.workspaces] == ["mats", "alignment"]
     mats = cfg.slack.workspaces[0]
     assert mats.token_env == "SLACK_TOKEN_MATS"
-    assert mats.channels[0].id == "C0001"
-    assert mats.channels[0].name == "papers"
+    assert mats.ingestion_channels[0].id == "C0001"
+    assert mats.ingestion_channels[0].name == "papers"
     # trusted defaults to False when omitted
-    assert mats.channels[0].trusted is False
-    assert cfg.slack.workspaces[1].channels[0].trusted is True
+    assert mats.ingestion_channels[0].trusted is False
+    assert mats.voting_channels[0].id == "C0002"
+    # voting_channels defaults to empty when omitted
+    assert cfg.slack.workspaces[1].voting_channels == []
+    assert cfg.slack.workspaces[1].ingestion_channels[0].trusted is True
     # paper_link_domains gets a sensible default allowlist
     assert "arxiv.org" in cfg.slack.paper_link_domains
     assert "lesswrong.com" in cfg.slack.paper_link_domains
