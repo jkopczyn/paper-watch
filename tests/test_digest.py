@@ -92,6 +92,21 @@ def test_render_html_shows_source_types_and_trusted_badge():
     assert "trusted" not in untrusted.lower()
 
 
+def test_score_explanation_shows_relevance_out_of_ten():
+    f = ScoreFeatures(
+        distinct_sources=1,
+        citation_count=None,
+        citation_count_prev=None,
+        new_mentions_in_window=0,
+        feedback_affinity=0.0,
+        resurfaced=False,
+        relevance=8,
+    )
+    text = score_explanation(f)
+    assert "relevance 8/10" in text
+    assert "/4" not in text  # relevance rubric is 0-10, not 0-4
+
+
 def test_score_explanation_reads_features():
     f = ScoreFeatures(
         distinct_sources=3,

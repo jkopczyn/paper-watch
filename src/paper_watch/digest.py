@@ -33,7 +33,7 @@ def score_explanation(f: ScoreFeatures) -> str:
     """A short, human-readable reason a paper ranked where it did."""
     parts = [f"{f.distinct_sources} source{'s' if f.distinct_sources != 1 else ''}"]
     if f.relevance is not None:
-        parts.append(f"relevance {f.relevance}/4")
+        parts.append(f"relevance {f.relevance}/10")
     if f.tracked_author:
         parts.append("tracked author")
     growth = citation_growth(f.citation_count, f.citation_count_prev)
