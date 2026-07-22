@@ -212,3 +212,15 @@ def test_resolver_attaches_publication_date_from_pdf_metadata():
     meta = PdfMetaResolver(fetch=lambda _u: dated).resolve("https://x/paper.pdf")
     assert meta["title"].startswith("Scalable Oversight")
     assert meta["published_at"] == "2019-03-11T00:00:00Z"
+
+
+def test_resolver_uses_llm_date_when_pdf_has_no_creation_date():
+    calls = []
+
+    def fake_llm(text):
+        calls.append(text)
+        return "2018-07-01"
+
+    meta = PdfMetaResolver(fetch=lambda _u: PAPER, date_llm=fake_llm).resolve("https://x/paper.pdf")
+    assert meta["published_at"] == "2018-07-01T00:00:00Z"
+    assert calls and "Scalable Oversight" in calls[0]  # fed page-1 text

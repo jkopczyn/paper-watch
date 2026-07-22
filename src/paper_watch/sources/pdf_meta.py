@@ -217,11 +217,13 @@ class PdfMetaResolver:
         self,
         fetch: Callable[[str], bytes] = get_bytes,
         ocr: Callable[[bytes], dict | None] | None = None,
+        date_llm=None,
         *,
         min_text_chars: int = _MIN_TEXT_CHARS,
     ):
         self._fetch = fetch
         self._ocr = ocr
+        self._date_llm = date_llm
         self._min_text_chars = min_text_chars
 
     def resolve(self, url: str) -> dict | None:
@@ -243,7 +245,12 @@ class PdfMetaResolver:
             except Exception as exc:
                 log.debug("PDF OCR failed for %s: %s", url, exc)
         if result and result.get("title"):
-            result.setdefault("published_at", pdf_info_date(data))
+            published_at = pdf_info_date(data)
+            if published_at is None:
+                from paper_watch.sources.date_llm import safe_llm_date
+
+                published_at = safe_llm_date(self._date_llm, text)
+            result.setdefault("published_at", published_at)
             return result
         return None
 

@@ -123,3 +123,52 @@ def test_resolver_returns_published_date():
     </head>"""
     meta = HtmlMetaResolver(fetch=lambda _u: page).resolve("https://x/p")
     assert meta["published_at"] == "2019-03-11T00:00:00Z"
+
+
+def test_html_visible_text_strips_markup_and_scripts():
+    from paper_watch.sources.html_meta import html_visible_text
+
+    html = (
+        "<head><script>var x=1</script><title>t</title></head>"
+        "<body><h1>Hello</h1><p>World</p><style>.a{color:red}</style></body>"
+    )
+    txt = html_visible_text(html)
+    assert "Hello" in txt and "World" in txt
+    assert "var x" not in txt and "color:red" not in txt
+
+
+def test_resolver_uses_llm_date_when_no_meta_date():
+    page = (
+        '<head><meta property="og:title" content="Undated Post"></head>'
+        "<body><p>Posted on March 11, 2019 by A. Researcher.</p></body>"
+    )
+    calls = []
+
+    def fake_llm(text):
+        calls.append(text)
+        return "2019-03-11"
+
+    meta = HtmlMetaResolver(fetch=lambda _u: page, date_llm=fake_llm).resolve("https://x/p")
+    assert meta["published_at"] == "2019-03-11T00:00:00Z"
+    assert calls and "Posted on March 11, 2019" in calls[0]
+
+
+def test_resolver_skips_llm_date_when_meta_already_has_one():
+    page = (
+        '<head><meta property="og:title" content="Dated Post">'
+        '<meta property="article:published_time" content="2020-01-02"></head>'
+    )
+
+    def boom(_text):
+        raise AssertionError("LLM must not be called when meta carries a date")
+
+    meta = HtmlMetaResolver(fetch=lambda _u: page, date_llm=boom).resolve("https://x/p")
+    assert meta["published_at"] == "2020-01-02T00:00:00Z"
+
+
+def test_resolver_rejects_implausible_llm_date():
+    page = '<head><meta property="og:title" content="Undated"></head><body>no date</body>'
+    meta = HtmlMetaResolver(
+        fetch=lambda _u: page, date_llm=lambda _t: "2999-01-01"
+    ).resolve("https://x/p")
+    assert meta["published_at"] is None  # a hallucinated far-future date is dropped

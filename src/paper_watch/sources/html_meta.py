@@ -174,15 +174,72 @@ def parse_html_meta(html: str) -> dict | None:
     }
 
 
+class _TextCollector(HTMLParser):
+    """Visible page text, skipping <script>/<style>/<head>, bounded by length."""
+
+    _SKIP = frozenset({"script", "style", "head", "noscript"})
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip = 0
+        self._len = 0
+        self._limit = limit
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if self._skip or self._len >= self._limit:
+            return
+        text = data.strip()
+        if text:
+            self.parts.append(text)
+            self._len += len(text)
+
+
+def html_visible_text(html: str, *, limit: int = 4000) -> str:
+    """The page's visible text (no markup/scripts), truncated to `limit` chars.
+
+    Fed to the LLM date fallback: a byline/dateline near the top of the article
+    is where a stated publication date lives when no meta tag carries it.
+    """
+    p = _TextCollector(limit)
+    try:
+        p.feed(html)
+    except Exception as exc:  # malformed markup — keep whatever parsed first
+        log.debug("html text parse failed: %s", exc)
+    return " ".join(p.parts)[:limit]
+
+
 class HtmlMetaResolver:
-    def __init__(self, fetch: Callable[[str], str] = get_text):
+    def __init__(
+        self,
+        fetch: Callable[[str], str] = get_text,
+        date_llm=None,
+    ):
         self._fetch = fetch
+        self._date_llm = date_llm
 
     def resolve(self, url: str) -> dict | None:
-        """{title, abstract} for an HTML page URL, or None. Never raises."""
+        """{title, abstract, published_at} for an HTML page URL, or None.
+
+        Never raises. When no date meta/JSON-LD gave a publication date and an
+        LLM date extractor is wired, falls back to reading the visible text.
+        """
         try:
             html = self._fetch(url)
         except Exception as exc:
             log.debug("HTML fetch failed for %s: %s", url, exc)
             return None
-        return parse_html_meta(html)
+        meta = parse_html_meta(html)
+        if meta is not None and meta.get("published_at") is None:
+            from paper_watch.sources.date_llm import safe_llm_date
+
+            meta["published_at"] = safe_llm_date(self._date_llm, html_visible_text(html))
+        return meta

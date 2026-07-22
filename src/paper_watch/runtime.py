@@ -824,18 +824,27 @@ def _build_newsletter_extractor(config: Config):
 
 
 def _build_metadata_resolvers(config: Config):
-    """(openreview, pdf, html) resolvers for the metadata step; PDF OCR is only
-    wired when an Anthropic key is present (born-digital PDFs never need it)."""
+    """(openreview, pdf, html) resolvers for the metadata step. The LLM helpers
+    (PDF vision-OCR, and the publication-date fallback for pages/PDFs whose
+    metadata carries no date) are only wired when an Anthropic key is present;
+    deterministic extraction needs neither."""
     from paper_watch.sources.html_meta import HtmlMetaResolver
     from paper_watch.sources.openreview import OpenReviewResolver
     from paper_watch.sources.pdf_meta import PdfMetaResolver
 
     ocr = None
+    date_llm = None
     if os.environ.get("ANTHROPIC_API_KEY"):
+        from paper_watch.sources.date_llm import ClaudeDateExtractor
         from paper_watch.sources.pdf_meta import ClaudePdfOcr
 
         ocr = ClaudePdfOcr(config.llm.model)
-    return OpenReviewResolver(), PdfMetaResolver(ocr=ocr), HtmlMetaResolver()
+        date_llm = ClaudeDateExtractor(config.llm.model)
+    return (
+        OpenReviewResolver(),
+        PdfMetaResolver(ocr=ocr, date_llm=date_llm),
+        HtmlMetaResolver(date_llm=date_llm),
+    )
 
 
 def _build_search_resolver(config: Config):
