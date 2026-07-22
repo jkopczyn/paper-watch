@@ -37,6 +37,32 @@ def test_render_html_sorts_by_score_desc():
     assert html.index("High Paper") < html.index("Low Paper")
 
 
+def test_render_html_puts_resurfaced_below_new_despite_score():
+    # A resurfaced paper that outscores a fresh one still ranks below it: new
+    # results lead, resurfaced padding follows.
+    resurfaced = _item(title="Old Classic", score=9.0, resurfaced=True)
+    fresh = _item(title="Fresh Result", score=2.0, resurfaced=False)
+    html = render_html([resurfaced, fresh], generated_at="2026-06-19T08:00:00Z")
+    assert html.index("Fresh Result") < html.index("Old Classic")
+
+
+def test_render_html_sorts_within_new_and_resurfaced_groups():
+    new_low = _item(title="New Low", score=1.0, resurfaced=False)
+    new_high = _item(title="New High", score=3.0, resurfaced=False)
+    old_low = _item(title="Old Low", score=5.0, resurfaced=True)
+    old_high = _item(title="Old High", score=8.0, resurfaced=True)
+    html = render_html(
+        [old_low, new_low, old_high, new_high], generated_at="2026-06-19T08:00:00Z"
+    )
+    # New group leads, ordered by score; resurfaced group follows, ordered by score.
+    assert (
+        html.index("New High")
+        < html.index("New Low")
+        < html.index("Old High")
+        < html.index("Old Low")
+    )
+
+
 def test_render_html_marks_resurfaced():
     html = render_html([_item(resurfaced=True)], generated_at="2026-06-19T08:00:00Z")
     assert "resurfaced" in html.lower()

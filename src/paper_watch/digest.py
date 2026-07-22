@@ -90,6 +90,8 @@ _TEMPLATE = """\
 
 
 def render_html(items: list[DigestItem], *, generated_at: str) -> str:
-    ranked = sorted(items, key=lambda i: i.score, reverse=True)
+    # New results lead; resurfaced papers follow as padding. Within each group,
+    # rank by score. (False < True, so non-resurfaced sorts first.)
+    ranked = sorted(items, key=lambda i: (i.resurfaced, -i.score))
     env = Environment(autoescape=True)
     return env.from_string(_TEMPLATE).render(items=ranked, generated_at=generated_at)
