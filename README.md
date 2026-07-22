@@ -55,6 +55,7 @@ For secrets.
 - `SMTP_APP_PASSWORD`: Gmail [app password](https://myaccount.google.com/apppasswords) for self-sending emails
 - `ANTHROPIC_API_KEY`: Doesn't block digest if missing, but without tags and summaries, and allowing everything through the relevance gate
 - `SLACK_TOKEN_*`: One token per workspace; a bot token allowing `channels:read`, `channels:history`, `channels:join`
+- `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD`: Optional OpenReview account (your website login). Set both to read login-gated submissions' abstracts; without them only public notes resolve
 
 ## Ranking
 

@@ -260,8 +260,9 @@ def resolve_paper_metadata(
             )
             updated += 1
         else:
-            # OpenReview's API sits behind a login/challenge gate we can't pass
-            # (no bot account allowed), so the abstract is unreadable. Per Jacob:
+            # The resolver reads notes anonymously, and authenticated when
+            # OPENREVIEW_USERNAME/PASSWORD are set. If it still can't read this
+            # one (gated note, no creds), the abstract is unreadable. Per Jacob:
             # flag these medium-high by default and keep the link's own metadata.
             _flag_openreview_fallback(store, entry_id)
             updated += 1
@@ -297,9 +298,9 @@ def resolve_paper_metadata(
     return updated
 
 
-# Unreadable OpenReview submissions (API is login/challenge-gated) get this
-# relevance prior so they surface as likely medium-high rather than being gated
-# out on an empty abstract. 8 = "a strong pick" on the 0-10 scale (see enrich rubric).
+# OpenReview submissions we still can't read (a gated note, or no creds set) get
+# this relevance prior so they surface as likely medium-high rather than being
+# gated out on an empty abstract. 8 = "a strong pick" on the 0-10 scale (see enrich rubric).
 _OPENREVIEW_PRIOR_RELEVANCE = 8
 
 
