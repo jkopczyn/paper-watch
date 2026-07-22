@@ -80,3 +80,46 @@ def test_resolver_fetch_error_is_none():
         raise RuntimeError("down")
 
     assert HtmlMetaResolver(fetch=boom).resolve("https://x/p") is None
+
+
+def test_extracts_publication_date_from_article_meta():
+    html = """<head>
+      <meta property="og:title" content="Deep RL from Human Preferences">
+      <meta property="article:published_time" content="2017-06-12T09:00:00Z">
+    </head>"""
+    assert parse_html_meta(html)["published_at"] == "2017-06-12T09:00:00Z"
+
+
+def test_extracts_publication_date_from_json_ld():
+    html = """<head>
+      <meta property="og:title" content="Concrete Problems in AI Safety">
+      <script type="application/ld+json">
+      {"@type": "Article", "headline": "x", "datePublished": "2016-06-21"}
+      </script>
+    </head>"""
+    assert parse_html_meta(html)["published_at"] == "2016-06-21T00:00:00Z"
+
+
+def test_json_ld_date_found_inside_graph_in_body():
+    # JSON-LD often sits in the body and nests the article under @graph.
+    html = """<head><meta property="og:title" content="Some Post"></head>
+    <body>
+      <script type="application/ld+json">
+      {"@graph": [{"@type": "WebSite"}, {"@type": "Article", "datePublished": "2021-11-03T00:00:00+00:00"}]}
+      </script>
+    </body>"""
+    assert parse_html_meta(html)["published_at"] == "2021-11-03T00:00:00Z"
+
+
+def test_no_date_yields_none():
+    html = '<head><meta property="og:title" content="Undated Post"></head>'
+    assert parse_html_meta(html)["published_at"] is None
+
+
+def test_resolver_returns_published_date():
+    page = """<head>
+      <meta property="og:title" content="Dated Research Post">
+      <meta property="article:published_time" content="2019-03-11">
+    </head>"""
+    meta = HtmlMetaResolver(fetch=lambda _u: page).resolve("https://x/p")
+    assert meta["published_at"] == "2019-03-11T00:00:00Z"

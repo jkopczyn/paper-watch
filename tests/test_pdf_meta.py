@@ -174,3 +174,41 @@ def test_effective_date_and_version_stamps_are_not_titles():
     # "Effective <date>" stamp or the "Version N" line. Better to return None and
     # let the entry keep the title it had than to stamp it with a date.
     assert parse_first_page_text(POLICY_COVER) is None
+
+
+def test_pdf_date_to_iso_parses_pdf_date_strings():
+    from paper_watch.sources.pdf_meta import pdf_date_to_iso
+
+    assert pdf_date_to_iso("D:20190311093000Z") == "2019-03-11T00:00:00Z"
+    assert pdf_date_to_iso("D:20200502000000+00'00'") == "2020-05-02T00:00:00Z"
+    assert pdf_date_to_iso("20211103") == "2021-11-03T00:00:00Z"
+    assert pdf_date_to_iso("") is None
+    assert pdf_date_to_iso("garbage") is None
+
+
+def _with_creation_date(pdf: bytes, pdf_date: str) -> bytes:
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(pdf)))
+    writer.add_metadata({"/CreationDate": pdf_date})
+    buf = BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def test_pdf_info_date_reads_creation_date():
+    from paper_watch.sources.pdf_meta import pdf_info_date
+
+    dated = _with_creation_date(PAPER, "D:20190311093000Z")
+    assert pdf_info_date(dated) == "2019-03-11T00:00:00Z"
+    assert pdf_info_date(PAPER) is None  # no CreationDate on the bare PDF
+
+
+def test_resolver_attaches_publication_date_from_pdf_metadata():
+    dated = _with_creation_date(PAPER, "D:20190311093000Z")
+    meta = PdfMetaResolver(fetch=lambda _u: dated).resolve("https://x/paper.pdf")
+    assert meta["title"].startswith("Scalable Oversight")
+    assert meta["published_at"] == "2019-03-11T00:00:00Z"

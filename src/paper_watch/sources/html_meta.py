@@ -10,14 +10,41 @@ preview uses, and only from <head>, never the body.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from html.parser import HTMLParser
 from typing import Callable
 
+from paper_watch.dates import parse_to_iso_date
 from paper_watch.http import get_text
 from paper_watch.identity import strip_site_suffix
 
 log = logging.getLogger(__name__)
+
+# <meta> keys that carry a publication date, most-authoritative first. Keys are
+# matched against the lowercased property/name the collector stored.
+_DATE_META_KEYS = (
+    "article:published_time",
+    "og:published_time",
+    "datepublished",
+    "citation_publication_date",
+    "citation_date",
+    "citation_online_date",
+    "dc.date.issued",
+    "dcterms.date",
+    "dc.date",
+    "prism.publicationdate",
+    "parsely-pub-date",
+    "sailthru.date",
+    "pubdate",
+    "publishdate",
+    "date",
+)
+_JSONLD_RE = re.compile(
+    r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 _MIN_TITLE_CHARS = 4
 # Bare site/navigation labels a page may put in <title>; never a paper title.
@@ -81,11 +108,50 @@ def _clean(value: str | None) -> str | None:
     return cleaned
 
 
+def _find_date_published(obj) -> str | None:
+    """Recursively pull the first `datePublished` string out of parsed JSON-LD."""
+    if isinstance(obj, dict):
+        value = obj.get("datePublished")
+        if isinstance(value, str) and value.strip():
+            return value
+        for nested in obj.values():
+            found = _find_date_published(nested)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_date_published(item)
+            if found:
+                return found
+    return None
+
+
+def _extract_published_at(html: str, meta: dict[str, str]) -> str | None:
+    """Real publication date from head meta first, then JSON-LD, normalized.
+
+    JSON-LD is searched over the whole document (not just <head>) because sites
+    commonly place the Article block in the body; a stray body date can't leak
+    into the *title* (that stays head-only), only the publication date.
+    """
+    raw = next((meta[k] for k in _DATE_META_KEYS if meta.get(k)), None)
+    if raw is None:
+        for match in _JSONLD_RE.finditer(html):
+            try:
+                data = json.loads(match.group(1).strip())
+            except (ValueError, TypeError):
+                continue
+            raw = _find_date_published(data)
+            if raw:
+                break
+    return parse_to_iso_date(raw)
+
+
 def parse_html_meta(html: str) -> dict | None:
-    """{title, abstract} from a page's head metadata, or None without a title.
+    """{title, abstract, published_at} from a page's metadata, or None w/o title.
 
     Title precedence: og:title, twitter:title, then <title> (site suffix
-    stripped). Abstract: og:description, then the meta description.
+    stripped). Abstract: og:description, then the meta description. Publication
+    date: head date meta, then JSON-LD `datePublished` (None if neither).
     """
     p = _MetaCollector()
     try:
@@ -101,7 +167,11 @@ def parse_html_meta(html: str) -> dict | None:
     if title is None:
         return None
     abstract = _clean(meta.get("og:description")) or _clean(meta.get("description"))
-    return {"title": title, "abstract": abstract or None}
+    return {
+        "title": title,
+        "abstract": abstract or None,
+        "published_at": _extract_published_at(html, meta),
+    }
 
 
 class HtmlMetaResolver:

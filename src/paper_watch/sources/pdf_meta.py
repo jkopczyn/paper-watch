@@ -14,9 +14,13 @@ import re
 from io import BytesIO
 from typing import Callable
 
+from paper_watch.dates import parse_to_iso_date
 from paper_watch.http import get_bytes
 
 log = logging.getLogger(__name__)
+
+# PDF date strings look like "D:YYYYMMDDHHmmSS±HH'mm'"; we keep date precision.
+_PDF_DATE = re.compile(r"D?:?\s*(\d{4})(\d{2})(\d{2})")
 
 _WS = re.compile(r"\s+")
 _ABSTRACT = re.compile(r"\babstract\b[:.\s]*", re.IGNORECASE)
@@ -129,6 +133,36 @@ def _select_title(lines: list[str]) -> str | None:
     return None
 
 
+def pdf_date_to_iso(raw: str | None) -> str | None:
+    """Normalize a PDF date string ("D:20190311...") to an ISO-8601 'Z' date."""
+    if not raw:
+        return None
+    m = _PDF_DATE.match(raw.strip())
+    if not m:
+        return None
+    return parse_to_iso_date(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+
+
+def pdf_info_date(data: bytes) -> str | None:
+    """The PDF's own CreationDate (document info), normalized to ISO, or None.
+
+    This is the closest thing a raw PDF carries to a publication date. It is the
+    file's creation stamp, so a re-exported reprint can misdate — accepted as a
+    far better signal than "the date the link was shared", and shown at month
+    precision, which absorbs small errors. The model fallback covers PDFs whose
+    info dict has no date at all.
+    """
+    from pypdf import PdfReader
+
+    try:
+        info = PdfReader(BytesIO(data)).metadata
+        raw = info.get("/CreationDate") if info else None
+    except Exception as exc:  # malformed/encrypted PDF
+        log.debug("pdf info date read failed: %s", exc)
+        return None
+    return pdf_date_to_iso(raw)
+
+
 def pdf_first_page_text(data: bytes) -> str:
     """Extracted text of the PDF's first page ('' if none / unreadable)."""
     from pypdf import PdfReader
@@ -197,16 +231,20 @@ class PdfMetaResolver:
         except Exception as exc:
             log.debug("PDF fetch failed for %s: %s", url, exc)
             return None
+        result: dict | None = None
         text = pdf_first_page_text(data)
         if len(text.strip()) >= self._min_text_chars:
             parsed = parse_first_page_text(text)
             if parsed and parsed.get("title"):
-                return parsed
-        if self._ocr is not None:
+                result = parsed
+        if result is None and self._ocr is not None:
             try:
-                return self._ocr(pdf_first_page_pdf(data))
+                result = self._ocr(pdf_first_page_pdf(data))
             except Exception as exc:
                 log.debug("PDF OCR failed for %s: %s", url, exc)
+        if result and result.get("title"):
+            result.setdefault("published_at", pdf_info_date(data))
+            return result
         return None
 
 

@@ -278,6 +278,7 @@ def resolve_paper_metadata(
                     authors=meta.get("authors") or [],
                     abstract=meta.get("abstract"),
                     links={},
+                    published_at=meta.get("published_at"),
                 )
                 updated += 1
 

@@ -1074,6 +1074,27 @@ def test_resolve_paper_metadata_dispatches_html_pages(tmp_path):
     store.close()
 
 
+def test_resolve_lands_publication_date_from_html_and_pdf(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    items = [
+        RawItem(source="rss:AF", url="https://blog.example/post", text=None),
+        RawItem(source="rss:AF", url="https://x.example/paper.pdf", text=None),
+    ]
+    new_ids = ingest(store, [ListSource("rss:AF", items)], since=None, now_iso="2026-07-01T00:00:00Z")
+    html = _StubMetaResolver(
+        {"title": "Dated Post", "abstract": "a", "published_at": "2019-03-11T00:00:00Z"}
+    )
+    pdf = _StubMetaResolver(
+        {"title": "Dated PDF", "abstract": "p", "published_at": "2020-05-02T00:00:00Z"}
+    )
+    resolve_paper_metadata(store, new_ids, None, pdf_resolver=pdf, html_resolver=html)
+
+    by_title = {store.get_entry(i)["title"]: store.get_entry(i) for i in new_ids}
+    assert by_title["Dated Post"]["published_at"] == "2019-03-11T00:00:00Z"
+    assert by_title["Dated PDF"]["published_at"] == "2020-05-02T00:00:00Z"
+    store.close()
+
+
 def test_reresolve_reprocesses_entries_that_already_have_an_abstract(tmp_path):
     # The 8 PDF-furniture entries have a correct abstract but a junk title (the
     # old parser got the body right, the title wrong). The normal skip-if-abstract
