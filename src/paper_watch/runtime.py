@@ -590,7 +590,7 @@ def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
     row = c["row"]
     entry_id = c["entry_id"]
     pub_display, pub_is_estimate = _pub_display(store, row)
-    source_types = sorted({s.split(":", 1)[0] for s in _entry_sources(store, entry_id)})
+    sources = sorted(_entry_sources(store, entry_id))
     return DigestItem(
         title=row["title"],
         authors=c["authors"],
@@ -604,7 +604,7 @@ def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
         pub_display=pub_display,
         pub_is_estimate=pub_is_estimate,
         surfaced_recent=store.count_shown_since(entry_id, recent_start),
-        source_types=source_types,
+        sources=sources,
         trusted=store.entry_has_trusted_mention(entry_id),
     )
 

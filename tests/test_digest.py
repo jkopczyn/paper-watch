@@ -104,15 +104,17 @@ def test_render_html_shows_surfaced_count_only_when_positive():
     assert "surfaced" not in fresh.lower()
 
 
-def test_render_html_shows_source_types_and_trusted_badge():
+def test_render_html_lists_full_source_labels_and_trusted_badge():
     html = render_html(
-        [_item(source_types=["arxiv", "slack"], trusted=True)],
+        [_item(sources=["arxiv", "slack:alignment:papers-running-list"], trusted=True)],
         generated_at="2026-06-19T08:00:00Z",
     )
-    assert "arxiv" in html and "slack" in html
+    assert "arxiv" in html
+    # the full channel label, not just the "slack" prefix
+    assert "slack:alignment:papers-running-list" in html
     assert "trusted" in html.lower()
     untrusted = render_html(
-        [_item(source_types=["rss"], trusted=False)],
+        [_item(sources=["rss:import-ai"], trusted=False)],
         generated_at="2026-06-19T08:00:00Z",
     )
     assert "trusted" not in untrusted.lower()
@@ -143,7 +145,9 @@ def test_score_explanation_reads_features():
         resurfaced=True,
     )
     text = score_explanation(f)
-    assert "3 sources" in text
+    # the distinct-source count is no longer in the explanation — the digest
+    # lists the actual source labels as chips instead.
+    assert "sources" not in text
     assert "+6 citations" in text
     assert "2 recent mentions" in text
     assert "liked by group" in text

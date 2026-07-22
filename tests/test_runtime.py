@@ -838,7 +838,7 @@ def test_to_item_estimates_pub_date_from_mentions(tmp_path):
     assert item.pub_display == "2020-03" and item.pub_is_estimate is True
 
 
-def test_to_item_tags_source_types_trust_and_recency(tmp_path):
+def test_to_item_tags_sources_trust_and_recency(tmp_path):
     store = Store(tmp_path / "pw.db")
     eid = store.insert_entry(
         title="New Paper r", title_norm="new paper r",
@@ -858,7 +858,8 @@ def test_to_item_tags_source_types_trust_and_recency(tmp_path):
     store.record_shown(entry_id=eid, digest_at="2026-07-09T20:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-01T00:00:00Z", rank=1, score=1.0, resurfaced=False)
     item = _item_for(store, eid)
-    assert item.source_types == ["arxiv", "slack"]
+    # full source labels, not just the type prefix
+    assert item.sources == ["arxiv", "slack:far:papers"]
     assert item.trusted is True
     assert item.surfaced_recent == 2
 

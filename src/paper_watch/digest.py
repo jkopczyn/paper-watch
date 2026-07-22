@@ -25,13 +25,18 @@ class DigestItem:
     pub_display: str = ""  # publication date, e.g. "2018-10" (empty ⇒ hidden)
     pub_is_estimate: bool = False  # rendered with a leading "~" when estimated
     surfaced_recent: int = 0  # times surfaced in the recent window (0 ⇒ hidden)
-    source_types: list[str] = field(default_factory=list)  # e.g. ["arxiv", "slack"]
+    # full source labels shown as chips, e.g. ["arxiv", "slack:alignment:papers"]
+    sources: list[str] = field(default_factory=list)
     trusted: bool = False  # any trusted channel is a source
 
 
 def score_explanation(f: ScoreFeatures) -> str:
-    """A short, human-readable reason a paper ranked where it did."""
-    parts = [f"{f.distinct_sources} source{'s' if f.distinct_sources != 1 else ''}"]
+    """A short, human-readable reason a paper ranked where it did.
+
+    The distinct-source count is intentionally omitted: the digest lists the
+    actual source labels as chips, which carries the same information.
+    """
+    parts: list[str] = []
     if f.relevance is not None:
         parts.append(f"relevance {f.relevance}/10")
     if f.tracked_author:
@@ -79,7 +84,7 @@ _TEMPLATE = """\
     <div style="font-size: 11px; color:#667; margin-top: 5px;">
       {% if it.pub_display %}<span style="background:#f1f1f4; color:#444; padding:1px 6px; border-radius:3px; margin-right:4px;">{{ "~" if it.pub_is_estimate }}{{ it.pub_display }}</span>{% endif %}
       {% if it.surfaced_recent > 0 %}<span style="background:#f1f1f4; color:#444; padding:1px 6px; border-radius:3px; margin-right:4px;">surfaced {{ it.surfaced_recent }}×</span>{% endif %}
-      {% for s in it.source_types %}<span style="background:#e7edf7; color:#334; padding:1px 6px; border-radius:3px; margin-right:4px;">{{ s }}</span>{% endfor %}
+      {% for s in it.sources %}<span style="background:#e7edf7; color:#334; padding:1px 6px; border-radius:3px; margin-right:4px;">{{ s }}</span>{% endfor %}
     </div>
     <div style="color:#999; font-size: 11px; margin-top: 4px;">score {{ "%.2f"|format(it.score) }} — {{ it.explanation }}</div>
   </div>
