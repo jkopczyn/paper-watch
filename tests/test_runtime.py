@@ -13,6 +13,7 @@ from paper_watch.config import (
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
 from paper_watch.runtime import (
+    _pub_display,
     _to_item,
     build_sources,
     effective_since,
@@ -137,6 +138,77 @@ _ARXIV_META_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </entry>
 </feed>
 """
+
+
+def test_ingest_records_an_authoritative_date_for_the_work_itself(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _arxiv_item("2406.00050", "Dated Paper", when="2026-06-18T10:00:00Z")
+    item.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [item])], None, "2026-06-19T09:00:00Z")
+
+    (entry_id,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert store.get_entry(entry_id)["published_at"] == "2026-06-18T10:00:00Z"
+    # Known exactly, so the digest shows it without the "~" estimate marker.
+    assert _pub_display(store, store.get_entry(entry_id)) == ("2026-06", False)
+    store.close()
+
+
+def test_ingest_does_not_let_a_mention_date_masquerade_as_the_works(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A Slack message linking a paper: the ts says when someone posted it, not
+    # when the paper came out. Claiming that as authoritative would date a
+    # 2024 paper to last Tuesday.
+    msg = RawItem(
+        source="slack:far:papers",
+        url="https://arxiv.org/abs/2406.00051",
+        title="Linked Paper",
+        published_at="2026-07-30T00:00:00Z",
+    )
+    ingest(store, [ListSource("slack", [msg])], None, "2026-07-30T09:00:00Z")
+
+    (entry_id,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert store.get_entry(entry_id)["published_at"] is None
+    # It still informs the estimate, which renders with a leading "~".
+    assert _pub_display(store, store.get_entry(entry_id)) == ("2026-07", True)
+    store.close()
+
+
+def test_a_later_authoritative_date_fills_in_an_undated_entry(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    tweet = RawItem(
+        source="twitter:NeelNanda5",
+        url="https://arxiv.org/abs/2406.00052",
+        title="Tweeted Paper",
+        published_at="2026-07-30T00:00:00Z",
+    )
+    ingest(store, [ListSource("twitter", [tweet])], None, "2026-07-30T09:00:00Z")
+
+    # The arXiv feed then yields the same paper and does know its date.
+    paper = _arxiv_item("2406.00052", "Tweeted Paper", when="2026-06-18T10:00:00Z")
+    paper.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [paper])], None, "2026-07-31T09:00:00Z")
+
+    rows = list(store.conn.execute("SELECT id, published_at FROM entries"))
+    assert len(rows) == 1  # same paper, not a duplicate
+    assert rows[0]["published_at"] == "2026-06-18T10:00:00Z"
+    store.close()
+
+
+def test_an_authoritative_date_is_never_overwritten_by_a_later_one(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    first = _arxiv_item("2406.00053", "Revised Paper", when="2026-06-18T10:00:00Z")
+    first.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [first])], None, "2026-06-19T09:00:00Z")
+
+    # A later sighting reports the v2 revision date; the original submit date
+    # is the one we already trusted, so it stands.
+    revised = _arxiv_item("2406.00053", "Revised Paper", when="2026-07-01T10:00:00Z")
+    revised.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [revised])], None, "2026-07-02T09:00:00Z")
+
+    rows = list(store.conn.execute("SELECT published_at FROM entries"))
+    assert [r["published_at"] for r in rows] == ["2026-06-18T10:00:00Z"]
+    store.close()
 
 
 def test_resolve_paper_metadata_turns_post_into_paper(tmp_path):

@@ -58,3 +58,9 @@ def test_source_tolerates_a_failing_feed(fixture_text):
     items = list(src.fetch())
     # the broken feed is skipped, the good one still yields
     assert {i.source for i in items} == {"rss:ML Safety"}
+
+
+def test_rss_post_dates_itself(fixture_text):
+    items = parse_rss(fixture_text("rss_feed.xml"), feed_name="ML Safety")
+    # The entry IS the post, so the feed's pubDate is the work's date.
+    assert all(i.published_at_is_work_date for i in items)

@@ -173,6 +173,7 @@ def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
         existing = store.get_entry_by_doi(doi)
     if existing is None and is_distinctive_title(title_norm):
         existing = store.get_entry_by_title_norm(title_norm)
+    work_published_at = fields.get("work_published_at")
     if existing is not None:
         entry_id = int(existing["id"])
         # Teach the entry this URL too, so a match found the slow way (arXiv id,
@@ -181,6 +182,10 @@ def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
         # aliases: the arXiv link, the AF post, the PDF.
         if source_url:
             store.add_entry_url(entry_id, source_url)
+        # An entry born from a tweet has no publication date; the arXiv feed
+        # later yielding the same paper does know one, so let it fill the gap.
+        if work_published_at:
+            store.fill_published_at(entry_id, work_published_at)
         return entry_id, False
 
     entry_id = store.insert_entry(
@@ -193,5 +198,6 @@ def resolve_or_create(store: Store, fields: dict) -> tuple[int, bool]:
         abstract=fields.get("abstract"),
         links=fields.get("links") or {},
         source_url=source_url,
+        published_at=work_published_at,
     )
     return entry_id, True

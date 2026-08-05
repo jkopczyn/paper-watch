@@ -44,6 +44,8 @@ def parse_rss(xml: str, feed_name: str) -> list[RawItem]:
                 text=_entry_text(e),
                 published_at=published,
                 extract_ids_from_text=False,
+                # The entry IS this post, so the feed's date is the work's date.
+                published_at_is_work_date=True,
             )
         )
     return items

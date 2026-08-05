@@ -102,6 +102,8 @@ def parse_arxiv_atom(xml: str) -> list[RawItem]:
                 abstract=e.get("summary"),
                 pdf_url=pdf_url,
                 published_at=e.get("published"),
+                # The submit date of this very paper.
+                published_at_is_work_date=True,
             )
         )
     return items

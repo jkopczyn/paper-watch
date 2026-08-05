@@ -102,6 +102,10 @@ def parse_posts(data: dict[str, Any], feed) -> list[RawItem]:
                 # Ids in the body are citations; a linkpost's identity already
                 # comes from its target URL above.
                 extract_ids_from_text=False,
+                # For an ordinary post the entry IS the post, so postedAt dates
+                # it. For a linkpost the entry is the *target* paper, and
+                # postedAt only says when this forum noticed it.
+                published_at_is_work_date=not is_linkpost,
             )
         )
     return items

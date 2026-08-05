@@ -37,3 +37,9 @@ class RawItem:
     # linking many papers: no — adopting the first cited id would hijack that
     # paper's identity).
     extract_ids_from_text: bool = True
+    # Whether `published_at` is the date the *work* came out (an arXiv submit
+    # date, a blog post's pubDate) rather than the date someone mentioned it (a
+    # tweet, a Slack message, a newsletter that links it). Only the former is
+    # authoritative enough to store on the entry; a mention date still informs
+    # the estimate, which the digest renders with a leading "~".
+    published_at_is_work_date: bool = False
