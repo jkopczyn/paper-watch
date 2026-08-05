@@ -4,15 +4,19 @@ Scan AI-safety paper sources and email yourself a ranked digest a few times a da
 
 Sources: **arXiv author feeds** (replaces Google Scholar alerts), **RSS newsletters/blogs**,
 **RSS-less blogs** watched by diffing their index page's links (alignment.anthropic.com,
-www.apolloresearch.ai/science/), **Twitter via Nitter** per-user RSS, and **Slack** `#papers`-style
- channels (MATS, FAR, and the
+www.apolloresearch.ai/science/), **Twitter via Nitter** per-user RSS,
+**LessWrong/Alignment Forum via ForumMagnum GraphQL** (tag-filtered posts over a karma bar), and
+**Slack** `#papers`-style channels (MATS, FAR, and the
 alignment Slack where Aaron Scher collects papers). Papers are deduplicated across sources and ranked by
 cross-source overlap, citation/social velocity, and learned reading-group feedback. Each item gets
 an LLM-generated TL;DR, topic tags, and links. Previously-shown papers can "resurface" if their
 attention surges within a rolling 2–4 week window.
 
-The LLM (Claude) is used **only for enrichment** — TL;DR, tags, and a safety-relevance gate that
-filters newsletter/Twitter noise — never as a ranking signal. arXiv author-feed items bypass the
+The LLM (Claude) is used **at enrichment time, never per-run at ranking time** — TL;DR, tags, and
+a 0-10 safety-relevance score (cached per entry) that gates newsletter/Twitter noise and feeds one
+scoring term — plus best-effort metadata recovery for entries the deterministic resolvers can't
+crack: vision OCR on scanned-PDF cover pages, web-search title recovery for bare-URL entries, and
+a publication-date fallback when a page carries no date metadata. arXiv author-feed items bypass the
 gate (the author list is a trusted whitelist) but still get tagged. Slack items bypass the gate when
 their channel is marked `trusted` or the link is "obviously a paper" (arXiv / LessWrong / Alignment
 Forum / a major-lab safety blog); other Slack links go through the gate like Twitter.
@@ -38,6 +42,8 @@ Edit `config.yaml` to taste (e.g. set `smtp.to_addr`, tune `scoring` weights, `t
 - `ANTHROPIC_API_KEY` — used for enrichment. Without it, the digest still runs but papers have no
   TL;DR/tags and the relevance gate is skipped (everything passes).
 - `SLACK_TOKEN_*` — one Slack user token (`xoxp-…`) per workspace; see below.
+- `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD` — optional; lets the OpenReview resolver log in
+  and read login-gated submissions. Without them, gated notes just resolve anonymously (or not at all).
 
 ### Slack channels
 
@@ -58,12 +64,14 @@ slack:
   workspaces:
     - name: mats
       token_env: SLACK_TOKEN_MATS
-      channels:
+      ingestion_channels:
         - {id: C0123ABCD, name: papers}
     - name: alignment
       token_env: SLACK_TOKEN_ALIGNMENT
-      channels:
+      ingestion_channels:
         - {id: C0789WXYZ, name: aaron-papers, trusted: true}   # bypasses the gate wholesale
+      voting_channels:                                          # reading-group poll channels,
+        - {id: C0456QRST, name: paper-reading-group}            # scanned by `groundtruth`, not ingested
 ```
 
 Find channel ids with:
@@ -98,18 +106,30 @@ uv run paper-watch run --since 7d    # override the lookback window
 uv run paper-watch feedback export   # writes candidates.csv of recently-shown papers
 #   ...fill in `picked` and a 1-5 `group_rating` (the group's approval) ...
 uv run paper-watch feedback import   # records it and tunes per-author/tag/source weights
+
+# Offline eval against reading-group poll votes:
+uv run paper-watch groundtruth --workspace alignment   # export poll messages + emoji votes to groundtruth.csv
+uv run paper-watch eval                                # recall@N / nDCG of the ranker vs the votes
 ```
 
-## Scheduling (cron)
+## Scheduling (systemd user timer)
 
-Run it 1–3×/day. Example crontab (08:00 and 16:00, matching the `schedule:` in config):
+The shipped deployment is the systemd **user** timer in `deploy/systemd/` —
+`paper-watch.service` + `paper-watch.timer`, firing at 08:00 and 18:00 local. Install per
+`deploy/systemd/README.md`: symlink both units into `~/.config/systemd/user/`, then
+`systemctl --user daemon-reload && systemctl --user enable --now paper-watch.timer`
+(and `loginctl enable-linger` so it survives logout). `Persistent=true` fires a missed run
+once on the next boot, and `run` widens its window back to the last completed run, so one
+catch-up covers the whole gap.
+
+A plain crontab also works if systemd isn't an option (use absolute paths; cron has a
+minimal environment; `.env` is loaded from the working directory):
 
 ```cron
-0 8,16 * * *  cd /home/jkop/Code/paper-watch && /usr/bin/uv run paper-watch run >> ~/paper-watch.log 2>&1
+0 8,18 * * *  cd /home/jkop/Code/paper-watch && /usr/bin/uv run paper-watch run >> ~/paper-watch.log 2>&1
 ```
 
-`crontab -e` to install. Use absolute paths; cron has a minimal environment. The `.env` is loaded
-automatically from the working directory.
+Note the `schedule:` key in config.yaml is read by nothing — run times live in the timer unit.
 
 ## Development
 
@@ -121,12 +141,34 @@ Source adapters are tested against recorded fixtures (no live network), and the 
 
 ### Layout
 
-- `sources/` — arXiv, RSS, page-diff, Nitter, Slack adapters + Semantic Scholar client (each yields `RawItem`s)
+- `sources/` — one adapter per upstream, each yielding `RawItem`s:
+  - `arxiv.py` — arXiv export API queried by whitelisted author (batched to dodge rate limits)
+  - `rss.py` — RSS/Atom newsletter + blog feeds
+  - `page_watch.py` — RSS-less blog index pages, new posts found by diffing the page's link set
+  - `twitter_nitter.py` — per-handle Nitter RSS; only yields tweets with a recoverable paper id
+  - `graphql.py` — ForumMagnum GraphQL (LessWrong/AF) posts carrying a tag id, over a karma bar
+  - `slack.py` — paper links posted in `#papers`-style channels via the Slack Web API
+  - `newsletter_links.py` — fans a newsletter body out into the papers it links (one `RawItem` each)
+- `sources/` resolvers — fill in metadata for existing entries rather than yield items:
+  - `tweet_resolver.py` — expands a bare tweet link via local Nitter (text/links/thread; SQLite-cached)
+  - `openreview.py` — OpenReview API title/abstract; optional login for gated notes
+  - `pdf_meta.py` — title/abstract from page 1 of a raw PDF (vision OCR only for scanned pages)
+  - `html_meta.py` — title/blurb from an HTML landing page's Open Graph / `<title>` metadata
+  - `paper_search.py` — S2/Crossref title search to give link-less entries a canonical URL + date
+  - `web_search.py` — last-resort Claude web_search recovery for bare-URL entries (key-gated)
+  - `date_llm.py` — last-resort LLM read of a page's stated publication date (key-gated)
+  - `html_links.py` — shared HTML anchor extraction; `semantic_scholar.py` — citation counts for velocity
 - `normalize.py` / `identity.py` — `RawItem` → entry fields; arXiv-ID/DOI extraction and dedup
-- `enrich.py` — Claude TL;DR / tags / relevance gate (cached per entry)
-- `score.py` — overlap + velocity + feedback + resurface (pure functions)
+- `dates.py` — publication-date parsing/normalization to ISO-8601 UTC strings
+- `enrich.py` — Claude TL;DR / tags / 0-10 relevance vs the reader profile (cached + versioned per entry)
+- `score.py` — relevance + source prior + overlap + velocity + feedback + tracked-author + resurface (pure functions)
 - `digest.py` / `delivery/email.py` — HTML render + Gmail SMTP
-- `feedback.py` — weekly CSV export/import → EMA feedback weights
-- `runtime.py` — the `run` pipeline wiring it all together
-- `store.py` — SQLite state (entries, mentions, metrics, shown, feedback, weights, cursors)
+- `feedback.py` — weekly CSV export/import → EMA feedback weights (also ingests groundtruth votes CSVs)
+- `groundtruth.py` — export Slack reading-group poll messages + emoji votes to a CSV
+- `eval.py` — offline ranker eval vs poll ground truth (recall@N, nDCG, ingest misses)
+- `runtime.py` — the `run` pipeline wiring it all together; `resolve_paper_metadata` routes entries to resolvers
+- `nitter_local.py` — ensures the local Nitter instance is up before a real run
+- `handles.py` — merges Twitter handles into config.yaml (`seed-handles`)
+- `http.py` / `models.py` / `config.py` / `cli.py` — HTTP helper (injectable fetcher), shared dataclasses, YAML config schema, CLI
+- `store.py` — SQLite state (entries, entry_urls, mentions, metrics, shown, feedback, feedback_weights, source_state, tweet_cache, meta)
 ```
