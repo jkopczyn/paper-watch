@@ -125,7 +125,7 @@ def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) ->
     elif result.sent:
         click.echo(f"Digest sent with {len(result.chosen_ids)} paper(s).")
     else:
-        click.echo("Nothing to send; the digest stays due and will retry.")
+        click.echo("Nothing to send; the digest is not marked delivered.")
 
 
 @cli.command()

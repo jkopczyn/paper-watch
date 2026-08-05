@@ -961,7 +961,11 @@ def run(
         enricher = _build_enricher(config)
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
 
-        if not dry_run:
+        # Citation counts are read once per digest, not once per tick: polling
+        # Semantic Scholar for the whole active pool every few hours is a lot of
+        # unauthenticated requests for a number nothing reads in between. Doing
+        # it here also makes citation *growth* the change between digests.
+        if deliver and not dry_run:
             pool_days = max(config.candidate_window_days, config.resurface_window_days)
             window_start = (now - timedelta(days=pool_days)).strftime(_ISO)
             update_metrics(store, store.active_entry_ids_since(window_start), now.strftime(_ISO))

@@ -155,7 +155,7 @@ def test_run_reports_a_due_digest_that_could_not_be_filled(tmp_path, monkeypatch
     )
     result = CliRunner().invoke(cli, ["run", "--config", str(cfg)])
     assert result.exit_code == 0, result.output
-    assert "stays due and will retry" in result.output
+    assert "not marked delivered" in result.output
 
 
 def test_run_passes_force_send_through(tmp_path, monkeypatch):
