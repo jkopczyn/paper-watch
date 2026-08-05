@@ -111,15 +111,15 @@ handles:
 - ARGleave
 - DavidBau
 - chrmanning
-- NinaRimsky
+  # - NinaRimsky  # 404 on all instances 2026-08-05 (renamed/gone)
 - tri_dao
 - sleepinyourhat
-- bowen_baker
-- miles_wang_
+  # - bowen_baker  # 404 on all instances 2026-08-05 (renamed/gone)
+  # - miles_wang_  # 404 on all instances 2026-08-05 (renamed/gone)
 - aleks_madry
 - JoHeidecke
 - woj_zaremba
-- saachijain
+  # - saachijain  # 404 on all instances 2026-08-05 (renamed/gone)
 nitter_instances:
 - http://localhost:8080
 - https://nitter.net
