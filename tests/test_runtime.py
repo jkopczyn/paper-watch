@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from paper_watch.config import (
     Config,
     ScoringWeights,
@@ -11,9 +13,11 @@ from paper_watch.config import (
 from paper_watch.enrich import EnrichmentResult
 from paper_watch.models import RawItem
 from paper_watch.runtime import (
+    _pub_display,
     _to_item,
     build_sources,
     effective_since,
+    fresh_start,
     ingest,
     recover_titles,
     resolve_paper_metadata,
@@ -134,6 +138,77 @@ _ARXIV_META_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </entry>
 </feed>
 """
+
+
+def test_ingest_records_an_authoritative_date_for_the_work_itself(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = _arxiv_item("2406.00050", "Dated Paper", when="2026-06-18T10:00:00Z")
+    item.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [item])], None, "2026-06-19T09:00:00Z")
+
+    (entry_id,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert store.get_entry(entry_id)["published_at"] == "2026-06-18T10:00:00Z"
+    # Known exactly, so the digest shows it without the "~" estimate marker.
+    assert _pub_display(store, store.get_entry(entry_id)) == ("2026-06", False)
+    store.close()
+
+
+def test_ingest_does_not_let_a_mention_date_masquerade_as_the_works(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A Slack message linking a paper: the ts says when someone posted it, not
+    # when the paper came out. Claiming that as authoritative would date a
+    # 2024 paper to last Tuesday.
+    msg = RawItem(
+        source="slack:far:papers",
+        url="https://arxiv.org/abs/2406.00051",
+        title="Linked Paper",
+        published_at="2026-07-30T00:00:00Z",
+    )
+    ingest(store, [ListSource("slack", [msg])], None, "2026-07-30T09:00:00Z")
+
+    (entry_id,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert store.get_entry(entry_id)["published_at"] is None
+    # It still informs the estimate, which renders with a leading "~".
+    assert _pub_display(store, store.get_entry(entry_id)) == ("2026-07", True)
+    store.close()
+
+
+def test_a_later_authoritative_date_fills_in_an_undated_entry(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    tweet = RawItem(
+        source="twitter:NeelNanda5",
+        url="https://arxiv.org/abs/2406.00052",
+        title="Tweeted Paper",
+        published_at="2026-07-30T00:00:00Z",
+    )
+    ingest(store, [ListSource("twitter", [tweet])], None, "2026-07-30T09:00:00Z")
+
+    # The arXiv feed then yields the same paper and does know its date.
+    paper = _arxiv_item("2406.00052", "Tweeted Paper", when="2026-06-18T10:00:00Z")
+    paper.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [paper])], None, "2026-07-31T09:00:00Z")
+
+    rows = list(store.conn.execute("SELECT id, published_at FROM entries"))
+    assert len(rows) == 1  # same paper, not a duplicate
+    assert rows[0]["published_at"] == "2026-06-18T10:00:00Z"
+    store.close()
+
+
+def test_an_authoritative_date_is_never_overwritten_by_a_later_one(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    first = _arxiv_item("2406.00053", "Revised Paper", when="2026-06-18T10:00:00Z")
+    first.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [first])], None, "2026-06-19T09:00:00Z")
+
+    # A later sighting reports the v2 revision date; the original submit date
+    # is the one we already trusted, so it stands.
+    revised = _arxiv_item("2406.00053", "Revised Paper", when="2026-07-01T10:00:00Z")
+    revised.published_at_is_work_date = True
+    ingest(store, [ListSource("arxiv", [revised])], None, "2026-07-02T09:00:00Z")
+
+    rows = list(store.conn.execute("SELECT published_at FROM entries"))
+    assert [r["published_at"] for r in rows] == ["2026-06-18T10:00:00Z"]
+    store.close()
 
 
 def test_resolve_paper_metadata_turns_post_into_paper(tmp_path):
@@ -269,6 +344,170 @@ def test_run_pipeline_sends_and_records_when_not_dry(tmp_path):
     subject, html = sender.sent[0]
     assert "Sendable Paper" in html
     assert store.was_shown(result.chosen_ids[0])
+    store.close()
+
+
+class ExplodingSender:
+    def send(self, *, subject, html, to_addr=None):
+        raise RuntimeError("smtp is down")
+
+
+def _pipeline(store, sources, sender, **kw):
+    """run_pipeline with the boilerplate a delivery-gating test doesn't care about."""
+    kw.setdefault("now", datetime(2026, 8, 7, 12, tzinfo=timezone.utc))
+    kw.setdefault("since", "2026-08-01T00:00:00Z")
+    return run_pipeline(
+        store,
+        sources=sources,
+        enricher=FakeEnricher(),
+        sender=sender,
+        weights=ScoringWeights(),
+        top_n=20,
+        candidate_window_days=7,
+        resurface_window_days=21,
+        max_enrich=50,
+        **{
+            "dry_run": False,
+            "out_dir": "out",  # only touched by a dry run, which passes its own
+            **kw,
+        },
+    )
+
+
+def test_fresh_start_falls_back_to_new_window_before_any_delivery(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    now = datetime(2026, 8, 7, 12, tzinfo=timezone.utc)
+    assert fresh_start(store, "24h", now) == "2026-08-06T12:00:00Z"
+    store.close()
+
+
+def test_fresh_start_measures_from_the_last_delivered_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    store.set_last_sent_at("2026-08-04T12:00:00Z")
+    now = datetime(2026, 8, 7, 12, tzinfo=timezone.utc)
+    # The series opened at Tuesday's send, not 24h ago.
+    assert fresh_start(store, "24h", now) == "2026-08-04T12:00:00Z"
+    store.close()
+
+
+def test_ingest_only_tick_fetches_but_does_not_deliver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00010", "Wednesday Paper")])],
+        sender,
+        now=datetime(2026, 8, 5, 8, tzinfo=timezone.utc),
+        deliver=False,
+    )
+
+    assert result.new_count == 1 and result.enriched_count == 1
+    assert sender.sent == []
+    assert result.chosen_ids == []
+    # Nothing was consumed: the paper is still unshown and still owed a digest.
+    assert not store.was_shown(1)
+    assert store.get_last_sent_at() is None
+    store.close()
+
+
+def test_a_paper_ingested_midweek_still_leads_the_next_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    store.set_last_sent_at("2026-08-04T12:00:00Z")  # Tuesday's digest
+
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00011", "Midweek Paper")])],
+        sender,
+        now=datetime(2026, 8, 5, 8, tzinfo=timezone.utc),
+        new_window="24h",
+        deliver=False,
+    )
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [])],
+        sender,
+        now=datetime(2026, 8, 7, 12, tzinfo=timezone.utc),
+        new_window="24h",
+        deliver=True,
+    )
+
+    # Two days old — well outside the 24h fallback window — but the series began
+    # at Tuesday's send, so Friday's digest still leads with it.
+    assert len(sender.sent) == 1
+    assert "Midweek Paper" in sender.sent[0][1]
+    assert result.sent
+    assert store.get_last_sent_at() == "2026-08-07T12:00:00Z"
+    assert store.was_shown(result.chosen_ids[0])
+    store.close()
+
+
+def test_a_long_published_paper_reaches_the_email_marked_older(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    old = _arxiv_item("2401.00001", "Long Published Paper", when="2025-01-15T00:00:00Z")
+    _pipeline(store, [ListSource("arxiv", [old])], sender, old_after_days=90)
+
+    assert len(sender.sent) == 1
+    html = sender.sent[0][1]
+    assert "Long Published Paper" in html
+    # The arXiv mention carries the real submit date, so it is marked even with
+    # no authoritative entries.published_at.
+    assert "OLDER · 2025-01" in html
+    store.close()
+
+
+def test_a_recent_paper_is_not_marked_older(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    fresh = _arxiv_item("2408.00002", "Fresh Paper", when="2026-08-01T00:00:00Z")
+    _pipeline(store, [ListSource("arxiv", [fresh])], sender, old_after_days=90)
+
+    assert "OLDER" not in sender.sent[0][1]
+    store.close()
+
+
+def test_a_failed_send_leaves_the_delivery_owed(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    with pytest.raises(RuntimeError):
+        _pipeline(
+            store,
+            [ListSource("arxiv", [_arxiv_item("2408.00012", "Undelivered Paper")])],
+            ExplodingSender(),
+            deliver=True,
+        )
+
+    # The watermark must not move, or the 16:00 retry would skip the digest and
+    # the paper would never be shown.
+    assert store.get_last_sent_at() is None
+    assert not store.was_shown(1)
+    store.close()
+
+
+def test_an_empty_digest_does_not_count_as_delivered(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    result = _pipeline(store, [ListSource("arxiv", [])], sender, deliver=True)
+
+    assert sender.sent == []
+    assert not result.sent
+    # Nothing went out, so the delivery stays owed and later ticks retry it.
+    assert store.get_last_sent_at() is None
+    store.close()
+
+
+def test_dry_run_never_moves_the_delivery_watermark(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00013", "Previewed Paper")])],
+        sender,
+        deliver=True,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+    assert store.get_last_sent_at() is None
     store.close()
 
 
@@ -716,6 +955,212 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     store.close()
 
 
+def _strong_resurfacer(store, i: int) -> int:
+    """An already-shown paper surging again, scored well above any new item."""
+    entry_id = store.insert_entry(
+        title=f"Classic {i}", title_norm=f"classic {i}",
+        first_seen_at="2026-06-01T00:00:00Z",
+    )
+    for d in (10, 12):
+        store.add_mention(
+            entry_id=entry_id, source=f"rss:AF{i}", fetched_at=f"2026-07-{d}T00:00:00Z",
+            source_item_url=f"https://af/{i}/{d}",
+        )
+    store.set_enrichment(entry_id, tldr="t", why="w", tags=[], relevance=10, version=2)
+    store.record_shown(
+        entry_id=entry_id, digest_at="2026-07-08T00:00:00Z", rank=1, score=3.0,
+        resurfaced=False,
+    )
+    return entry_id
+
+
+def test_resurfaced_are_capped_at_max_resurface(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A quiet series: two modest new papers, eight classics all clearing the bar.
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    _new_entry(store, "n2", n_mentions=1, relevance=5)
+    for i in range(8):
+        _strong_resurfacer(store, i)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20, max_resurface=5
+    )
+    # Room for 18 more, but resurfaced papers must never take more than 5 slots.
+    assert sum(1 for c in chosen if c["resurfaced"]) == 5
+    assert len(chosen) == 7
+    store.close()
+
+
+def test_max_resurface_keeps_the_highest_scoring_classics(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    weak = _strong_resurfacer(store, 0)
+    strong = [_strong_resurfacer(store, i) for i in (1, 2)]
+    # Give the two keepers an extra source, which lifts their overlap term.
+    for entry_id in strong:
+        store.add_mention(
+            entry_id=entry_id, source="slack:far:papers",
+            fetched_at="2026-07-11T00:00:00Z",
+            source_item_url=f"https://slack/{entry_id}",
+        )
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20, max_resurface=2
+    )
+    resurfaced = {c["entry_id"] for c in chosen if c["resurfaced"]}
+    assert resurfaced == set(strong)
+    assert weak not in resurfaced
+    store.close()
+
+
+OLD_BEFORE = "2026-04-13T00:00:00Z"  # ~3 months before the tests' 2026-07 "now"
+
+
+def _set_published(store, entry_id, iso):
+    store.conn.execute(
+        "UPDATE entries SET published_at = ? WHERE id = ?", (iso, entry_id)
+    )
+    store.conn.commit()
+
+
+def _old_entry(store, key, *, published_at="2025-11-01T00:00:00Z", relevance=5):
+    """A never-shown paper that is fresh to *us* but long since published."""
+    entry_id = store.insert_entry(
+        title=f"Old {key}", title_norm=f"old {key}",
+        first_seen_at="2026-07-10T00:00:00Z",
+    )
+    _set_published(store, entry_id, published_at)
+    store.add_mention(
+        entry_id=entry_id, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url=f"https://blog/{key}",
+    )
+    store.set_enrichment(
+        entry_id, tldr="t", why="w", tags=[], relevance=relevance, version=2
+    )
+    return entry_id
+
+
+def test_a_long_published_paper_is_padding_not_a_lead(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    old = _old_entry(store, "a")
+    fresh = _new_entry(store, "n1", n_mentions=1, relevance=5)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    by_id = {c["entry_id"]: c for c in chosen}
+    assert by_id[old]["is_old"]
+    assert not by_id[fresh]["is_old"]
+    # It is not a repeat, so it gets no resurface boost and is not recorded as one.
+    assert by_id[old]["resurfaced"] is False
+    assert by_id[old]["features"].resurfaced is False
+    store.close()
+
+
+def test_a_long_published_paper_does_not_consume_a_new_slot(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    olds = [_old_entry(store, f"o{i}") for i in range(3)]
+    fresh = [_new_entry(store, f"n{i}", n_mentions=1, relevance=5) for i in range(2)]
+    # Only two lead slots: the fresh pair takes both, the old papers pad instead.
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=2, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    picked = {c["entry_id"] for c in chosen}
+    assert set(fresh) <= picked
+    assert set(olds) <= picked
+    store.close()
+
+
+def test_long_published_papers_count_against_the_resurface_cap(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    for i in range(4):
+        _old_entry(store, f"o{i}")
+    for i in range(4):
+        _strong_resurfacer(store, i)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    padding = [c for c in chosen if c["is_old"] or c["resurfaced"]]
+    # One shared cap: old papers and reruns compete for the same 5 slots.
+    assert len(padding) == 5
+    assert len(chosen) == 6
+    store.close()
+
+
+def test_a_long_published_paper_survives_a_strong_fresh_crop(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A high-scoring fresh crop that a weak old paper cannot possibly outscore.
+    for i in range(3):
+        _new_entry(store, f"hi{i}", n_mentions=8, relevance=10)
+    # relevance 4 is the lowest that clears the relevance gate, so this tests
+    # the outscore bar rather than accidentally re-testing the gate.
+    old = _old_entry(store, "quiet", relevance=4)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    # Nothing else will ever surface it, so it skips the "beat the fresh crop" bar.
+    assert old in {c["entry_id"] for c in chosen}
+    store.close()
+
+
+def test_an_already_shown_old_paper_still_faces_the_bar(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    for i in range(3):
+        _new_entry(store, f"hi{i}", n_mentions=8, relevance=10)
+    # A genuine classic: long published AND already shown. Age must not become a
+    # loophole that readmits every stale favourite on a minimum surge.
+    classic = _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://af/x"),
+        ("rss:AF", "2026-07-12T01:00:00Z", "https://af/y"),
+    ])
+    _set_published(store, classic, "2024-01-01T00:00:00Z")
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    assert classic not in {c["entry_id"] for c in chosen}
+    store.close()
+
+
+def test_age_falls_back_to_the_estimated_publication_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # No authoritative published_at; the earliest mention carries a 2025 date.
+    entry_id = store.insert_entry(
+        title="Undated", title_norm="undated", first_seen_at="2026-07-10T00:00:00Z"
+    )
+    store.add_mention(
+        entry_id=entry_id, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://blog/undated", published_at="2025-09-01T00:00:00Z",
+    )
+    store.set_enrichment(entry_id, tldr="t", why="w", tags=[], relevance=5, version=2)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    assert next(c for c in chosen if c["entry_id"] == entry_id)["is_old"]
+    store.close()
+
+
+def test_old_before_unset_marks_nothing(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    old = _old_entry(store, "a")
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20)
+    assert not next(c for c in chosen if c["entry_id"] == old)["is_old"]
+    store.close()
+
+
+def test_max_resurface_unset_means_no_cap(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    for i in range(6):
+        _strong_resurfacer(store, i)
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20)
+    assert sum(1 for c in chosen if c["resurfaced"]) == 6
+    store.close()
+
+
 class _StubWebSearch:
     def __init__(self, result):
         self.result = result
@@ -853,7 +1298,7 @@ def test_to_item_tags_sources_trust_and_recency(tmp_path):
         source_item_url="slack://far/C1/1.2", trusted=True,
     )
     store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
-    # surfaced twice inside the recent window (48h), once before it
+    # surfaced twice inside the recent window (see _item_for), once before it
     store.record_shown(entry_id=eid, digest_at="2026-07-09T08:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-09T20:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-01T00:00:00Z", rank=1, score=1.0, resurfaced=False)

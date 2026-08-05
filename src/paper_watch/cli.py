@@ -15,15 +15,18 @@ from paper_watch import __version__
 EXAMPLE_CONFIG = """\
 # paper-watch configuration. Secrets go in .env, not here.
 db_path: paper_watch.db
-top_n: 15
+top_n: 20
+max_new: 20
+max_resurface: 5  # cap on slots given back to already-shown papers
+old_after_days: 90  # older than this => marked OLDER and padded in, not a lead
 lookback: 7d
 candidate_window_days: 7
 resurface_window_days: 21
 resurface_min_mentions: 2
 
-schedule:        # local run times the cron installer reads
-  - "08:00"
-  - "16:00"
+schedule:        # run every few hours; mail on these days at this local time
+  deliver_days: [tue, fri]
+  deliver_at: "12:00"
 
 authors: []      # arXiv author names (replaces Google Scholar alerts)
 feeds: []        # - {name: ML Safety, url: https://newsletter.mlsafety.org/feed}
@@ -96,21 +99,34 @@ def init(path: Path, force: bool) -> None:
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
 @click.option("--dry-run", is_flag=True, help="Render the digest but don't send.")
 @click.option("--since", default=None, help="Override lookback window, e.g. 7d.")
-def run(config_path: str, dry_run: bool, since: str | None) -> None:
-    """Fetch, score, and send (or render) the digest."""
+@click.option(
+    "--force-send",
+    is_flag=True,
+    help="Deliver now even if no digest is due on the schedule.",
+)
+def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) -> None:
+    """Fetch and enrich; deliver the digest when the schedule says one is due.
+
+    Meant to be run on a short interval (see deploy/systemd). Most ticks only
+    ingest; a tick where a delivery is owed builds and mails the digest, and
+    retries on the following ticks until one gets through.
+    """
     from paper_watch import runtime
 
-    result = runtime.run(config_path, dry_run=dry_run, since=since)
-    click.echo(
-        f"Ingested {result.new_count} new, enriched {result.enriched_count}, "
-        f"selected {len(result.chosen_ids)} for the digest."
+    result = runtime.run(
+        config_path, dry_run=dry_run, since=since, force_send=force_send
     )
+    click.echo(f"Ingested {result.new_count} new, enriched {result.enriched_count}.")
     if result.digest_path is not None:
         click.echo(f"Dry run: wrote {result.digest_path}")
+    elif not result.attempted_delivery:
+        due = result.next_delivery
+        when = due.strftime("%a %Y-%m-%d %H:%M") if due else "never (no delivery days)"
+        click.echo(f"No digest due; next delivery {when}.")
     elif result.sent:
-        click.echo("Digest sent.")
+        click.echo(f"Digest sent with {len(result.chosen_ids)} paper(s).")
     else:
-        click.echo("Nothing to send.")
+        click.echo("Nothing to send; the digest is not marked delivered.")
 
 
 @cli.command()

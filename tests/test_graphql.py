@@ -121,3 +121,20 @@ def test_config_defaults():
     feed = _feed()
     assert feed.min_karma == 30
     assert feed.limit == 50
+
+
+def test_an_ordinary_post_is_dated_by_its_own_posting():
+    (item,) = _fetch(_feed(), _response(_post(title="A Take On Evals")))
+    # The entry IS the post, so postedAt is the work's date.
+    assert item.published_at_is_work_date
+
+
+def test_a_linkpost_does_not_date_the_paper_it_points_at():
+    response = _response(
+        _post(title="New Interp Paper", url="https://arxiv.org/abs/2506.18032")
+    )
+    (item,) = _fetch(_feed(), response)
+    # The entry is the arXiv paper; postedAt only says when LessWrong noticed
+    # it, which would date a year-old paper to last week.
+    assert not item.published_at_is_work_date
+    assert to_entry_fields(item)["work_published_at"] is None

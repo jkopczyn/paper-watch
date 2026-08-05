@@ -129,6 +129,13 @@ SCHEMA: list[str] = [
 # by the machine being powered off. See runtime.effective_since.
 LAST_RUN_KEY = "last_run_at"
 
+# Key under which the ISO timestamp of the last *delivered* digest is stored.
+# Distinct from LAST_RUN_KEY because the pipeline now ingests far more often
+# than it mails: this watermark is what decides whether a delivery is still owed
+# (see paper_watch.schedule) and how far back "new" reaches, so it must advance
+# only when an email actually went out.
+LAST_SENT_KEY = "last_sent_at"
+
 
 class Store:
     def __init__(self, path: str | Path):
@@ -186,6 +193,12 @@ class Store:
 
     def set_last_run_at(self, iso: str) -> None:
         self.set_meta(LAST_RUN_KEY, iso)
+
+    def get_last_sent_at(self) -> str | None:
+        return self.get_meta(LAST_SENT_KEY)
+
+    def set_last_sent_at(self, iso: str) -> None:
+        self.set_meta(LAST_SENT_KEY, iso)
 
     # -- source cursors ----------------------------------------------------
     def get_cursor(self, source: str) -> str | None:
@@ -247,13 +260,14 @@ class Store:
         abstract: str | None = None,
         links: dict[str, str] | None = None,
         source_url: str | None = None,
+        published_at: str | None = None,
     ) -> int:
         cur = self.conn.execute(
             """
             INSERT INTO entries
                 (arxiv_id, doi, title, title_norm, authors_json, abstract,
-                 links_json, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 links_json, first_seen_at, published_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 arxiv_id,
@@ -264,6 +278,7 @@ class Store:
                 abstract,
                 json.dumps(links or {}),
                 first_seen_at,
+                published_at,
             ),
         )
         entry_id = int(cur.lastrowid)
@@ -535,6 +550,21 @@ class Store:
             (entry_id, since),
         ).fetchone()
         return int(row["n"])
+
+    def fill_published_at(self, entry_id: int, iso: str) -> None:
+        """Set the entry's publication date, but only if it has none.
+
+        First authoritative date wins. A later sighting reporting a different
+        date (an arXiv v2 revision, say) does not get to move a date we already
+        trusted, and the single conditional UPDATE keeps that true without a
+        read-then-write race.
+        """
+        self.conn.execute(
+            "UPDATE entries SET published_at = ? "
+            "WHERE id = ? AND published_at IS NULL",
+            (iso, entry_id),
+        )
+        self.conn.commit()
 
     def earliest_published_at(self, entry_id: int) -> str | None:
         """Earliest non-null `published_at` across this entry's mentions, if any.

@@ -40,7 +40,12 @@ def to_entry_fields(raw: RawItem) -> dict:
         "authors": list(raw.authors),
         "abstract": raw.abstract,
         "links": links,
+        # When the mention happened, always; when the work came out, only if
+        # this source's date actually means that.
         "published_at": raw.published_at,
+        "work_published_at": (
+            raw.published_at if raw.published_at_is_work_date else None
+        ),
     }
 
 

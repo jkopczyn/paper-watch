@@ -115,21 +115,31 @@ uv run paper-watch eval                                # recall@N / nDCG of the 
 ## Scheduling (systemd user timer)
 
 The shipped deployment is the systemd **user** timer in `deploy/systemd/` —
-`paper-watch.service` + `paper-watch.timer`, firing at 08:00 and 18:00 local. Install per
-`deploy/systemd/README.md`: symlink both units into `~/.config/systemd/user/`, then
+`paper-watch.service` + `paper-watch.timer`, ticking every 4 hours (00, 04, 08, 12, 16, 20
+local). Install per `deploy/systemd/README.md`: symlink both units into
+`~/.config/systemd/user/`, then
 `systemctl --user daemon-reload && systemctl --user enable --now paper-watch.timer`
-(and `loginctl enable-linger` so it survives logout). `Persistent=true` fires a missed run
+(and `loginctl enable-linger` so it survives logout). `Persistent=true` fires a missed tick
 once on the next boot, and `run` widens its window back to the last completed run, so one
 catch-up covers the whole gap.
+
+**Ticking is not delivering.** Every tick ingests; a digest is mailed only when the
+`schedule:` key in `config.yaml` says one is due — `deliver_days` + `deliver_at`, by default
+local noon on Tuesday and Friday, so Friday's digest covers Wed–Fri and Tuesday's covers
+Sat–Tue. A failed send leaves the digest owed, so the following ticks retry it at 16:00,
+20:00, and onward until one lands. Needing those retries is why the timer ticks more often
+than it mails.
+
+```bash
+uv run paper-watch run --force-send   # deliver now, off-schedule
+```
 
 A plain crontab also works if systemd isn't an option (use absolute paths; cron has a
 minimal environment; `.env` is loaded from the working directory):
 
 ```cron
-0 8,18 * * *  cd /home/jkop/Code/paper-watch && /usr/bin/uv run paper-watch run >> ~/paper-watch.log 2>&1
+0 */4 * * *  cd /home/jkop/Code/paper-watch && /usr/bin/uv run paper-watch run >> ~/paper-watch.log 2>&1
 ```
-
-Note the `schedule:` key in config.yaml is read by nothing — run times live in the timer unit.
 
 ## Development
 

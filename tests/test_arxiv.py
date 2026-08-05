@@ -115,3 +115,9 @@ def test_fetch_metadata_tolerates_failure():
         raise RuntimeError("down")
 
     assert fetch_metadata(["2406.01234"], fetch=boom) == {}
+
+
+def test_arxiv_dates_the_paper_itself(fixture_text):
+    items = parse_arxiv_atom(fixture_text("arxiv_response.xml"))
+    # An arXiv entry's date is the paper's submit date, not a mention date.
+    assert all(i.published_at_is_work_date for i in items)

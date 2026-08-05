@@ -52,3 +52,27 @@ def test_doi_recovered_from_text():
     )
     f = to_entry_fields(raw)
     assert f["doi"] == "10.1038/s41586-020-2649-2"
+
+
+def test_work_date_is_exposed_only_when_the_item_is_the_work():
+    """A source's date means different things: an arXiv entry's date is the
+    paper's, a Slack message's date is only when someone mentioned it."""
+    paper = RawItem(
+        source="arxiv",
+        url="https://arxiv.org/abs/2406.00001",
+        title="Scalable Oversight",
+        published_at="2026-06-18T00:00:00Z",
+        published_at_is_work_date=True,
+    )
+    assert to_entry_fields(paper)["work_published_at"] == "2026-06-18T00:00:00Z"
+
+    mention = RawItem(
+        source="slack:far:papers",
+        url="https://arxiv.org/abs/2406.00001",
+        title="Scalable Oversight",
+        published_at="2026-07-30T00:00:00Z",
+    )
+    fields = to_entry_fields(mention)
+    assert fields["work_published_at"] is None
+    # The mention still records when it was posted.
+    assert fields["published_at"] == "2026-07-30T00:00:00Z"

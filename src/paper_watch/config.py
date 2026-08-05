@@ -6,15 +6,52 @@ environment variables / .env so the config file can be committed safely.
 
 from __future__ import annotations
 
+from datetime import time
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from paper_watch.schedule import parse_deliver_at, parse_weekdays
 
 
 class FeedConfig(BaseModel):
     name: str
     url: str
+
+
+class ScheduleConfig(BaseModel):
+    """Which days the digest is delivered, and at what local time.
+
+    Each delivery covers everything since the previous successful send, so the
+    days define the series: with Tue+Fri, Friday's email covers Wed-Fri and
+    Tuesday's covers Sat-Tue. The runner ticks more often than this (every 4h)
+    and simply retries whenever a delivery moment is still uncovered — see
+    `paper_watch.schedule`.
+    """
+
+    deliver_days: list[str] = Field(default_factory=lambda: ["tue", "fri"])
+    deliver_at: str = "12:00"
+
+    @property
+    def weekdays(self) -> set[int]:
+        return parse_weekdays(self.deliver_days)
+
+    @property
+    def at_time(self) -> time:
+        return parse_deliver_at(self.deliver_at)
+
+    @field_validator("deliver_days")
+    @classmethod
+    def _check_days(cls, value: list[str]) -> list[str]:
+        parse_weekdays(value)  # raises on an unknown or empty day list
+        return value
+
+    @field_validator("deliver_at")
+    @classmethod
+    def _check_at(cls, value: str) -> str:
+        parse_deliver_at(value)
+        return value
 
 
 class GraphqlFeedConfig(BaseModel):
@@ -156,18 +193,30 @@ class Config(BaseModel):
     # generous pause; raise this if you still see 429s.
     nitter_min_interval: float = 2.0
     slack: SlackConfig | None = None
-    # Local run times the cron installer reads; "configurable" per design.
-    schedule: list[str] = Field(default_factory=lambda: ["08:00", "16:00"])
-    top_n: int = 15
+    # Delivery days and local delivery time. The runner ticks every few hours
+    # and only mails when one of these moments is uncovered.
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    top_n: int = 20
     # The digest leads with up to `max_new` genuinely new papers (never shown
     # before, first mentioned within `new_window`); the remaining slots up to
-    # `top_n` are padded with resurfaced papers that outscore the new ones'
-    # average. Extra new papers beyond `max_new` are dropped this run.
-    new_window: str = "24h"
-    max_new: int = 10
+    # `top_n` are padded with at most `max_resurface` resurfaced papers that
+    # outscore the new ones' average. Extra new papers beyond `max_new` are
+    # dropped this run.
+    #
+    # `new_window` is only the fallback bound on "new": once a digest has been
+    # delivered, freshness is measured from the last successful send, so a
+    # paper first seen on Wednesday still leads Friday's email.
+    new_window: str = "4d"
+    max_new: int = 20
+    max_resurface: int = 5
+    # A paper published longer ago than this is marked OLDER and treated as
+    # padding even the first time we see it — news to us, but not new — so it
+    # shares the `max_resurface` budget instead of a lead slot.
+    old_after_days: int = 90
     # Window over which each item is tagged with how many past digests surfaced
-    # it, shown as a "surfaced N×" chip.
-    recent_window: str = "48h"
+    # it, shown as a "surfaced N×" chip. Must span several digests to say
+    # anything: at two deliveries a week, a 48h window only ever saw one.
+    recent_window: str = "14d"
     # Fill an entry that still has no displayable URL by searching Semantic
     # Scholar / Crossref for its title and adopting the paper's canonical link.
     url_search: bool = True

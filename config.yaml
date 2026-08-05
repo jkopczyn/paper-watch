@@ -1,15 +1,24 @@
 db_path: paper_watch.db
-top_n: 15
-new_window: 24h
-max_new: 10
-recent_window: 48h
+top_n: 20
+# Fallback freshness bound only: once a digest has gone out, "new" means
+# "since the last delivered digest".
+new_window: 4d
+max_new: 20
+max_resurface: 5
+# Published longer ago than this => marked OLDER and treated as padding, even
+# the first time we see it: news to us, but not new.
+old_after_days: 90
+recent_window: 14d
 url_search: true
 candidate_window_days: 7
 resurface_window_days: 21
 resurface_min_mentions: 2
+# Two digests a week: Friday's covers Wed-Fri, Tuesday's covers Sat-Tue. The
+# runner ticks every 4h and delivers at the first tick at or after local noon
+# on a delivery day, retrying at 16:00, 20:00, ... until a send succeeds.
 schedule:
-- 08:00
-- '18:00'
+  deliver_days: [tue, fri]
+  deliver_at: '12:00'
 authors:
 - Ilya Sutskever
 - Jason Wei

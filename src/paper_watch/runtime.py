@@ -14,6 +14,7 @@ from paper_watch.digest import DigestItem, render_html, score_explanation
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
+from paper_watch.schedule import is_delivery_due, next_delivery_after
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
@@ -35,6 +36,10 @@ class RunResult:
     sent: bool = False
     new_count: int = 0
     enriched_count: int = 0
+    # Whether this tick was supposed to produce a digest at all: most ticks just
+    # ingest. Set by `run`, along with when the next digest is due.
+    attempted_delivery: bool = False
+    next_delivery: datetime | None = None
 
 
 def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
@@ -53,6 +58,17 @@ def effective_since(store, since: str | None, lookback: str, now: datetime) -> s
         if last_run and last_run < since_iso:
             since_iso = last_run
     return since_iso
+
+
+def fresh_start(store, new_window: str, now: datetime) -> str:
+    """Cutoff for what still counts as a *new* paper in this digest.
+
+    Freshness is measured from the last delivered digest, not from a fixed
+    window: a digest covers a multi-day series, so a paper first mentioned on
+    Wednesday must still lead Friday's email. `new_window` only applies before
+    anything has been delivered, or if a send is somehow more recent than it.
+    """
+    return store.get_last_sent_at() or since_to_iso(new_window, now=now)
 
 
 # -- ingest ----------------------------------------------------------------
@@ -464,19 +480,31 @@ def select_digest(
     candidate_start,
     resurface_start,
     new_start: str | None = None,
+    old_before: str | None = None,
     max_new: int | None = None,
+    max_resurface: int | None = None,
     resurface_min_mentions: int = 2,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
 ) -> list[dict]:
     """Assemble the digest: lead with fresh papers, pad with resurfacing ones.
 
-    A never-shown paper is "new" if it was mentioned within `new_start` (the last
-    24h by default). The digest takes up to `max_new` of them by score; the
-    remaining slots up to `top_n` are filled with resurfacing papers that outscore
-    the new picks' average — so a stale classic only reappears when it genuinely
-    beats this run's fresh crop. `new_start` defaults to `candidate_start` and
-    `max_new` to unbounded, which reproduces a single ranked pool.
+    A never-shown paper is "new" if it was mentioned within `new_start` (since
+    the last delivered digest, in a real run). The digest takes up to `max_new`
+    of them by score; the remaining slots up to `top_n` are filled with at most
+    `max_resurface` resurfacing papers that outscore the new picks' average — so
+    a stale classic only reappears when it genuinely beats this run's fresh crop,
+    and a quiet series still reads as a digest of new work rather than a rerun.
+    A paper published before `old_before` is treated as padding too, even the
+    first time we see it: it is news to us, but it is not new, so it should not
+    displace this week's fresh work. It shares the `max_resurface` budget with
+    the reruns. It does *not* get the resurface boost (nobody has seen it) and
+    it skips the outscore-the-fresh-crop bar (nothing else will ever surface
+    it) — but an already-shown paper keeps that bar whatever its age, or every
+    stale favourite would slip back in on a minimum surge.
+
+    `new_start` defaults to `candidate_start`, and `old_before` / `max_new` /
+    `max_resurface` to unbounded, which reproduces a single ranked pool.
     """
     source_priors = source_priors or {}
     tracked_authors = tracked_authors or set()
@@ -486,7 +514,7 @@ def select_digest(
         update={"feedback": dynamic_feedback_weight(store.count_feedback_weeks())}
     )
     new_items: list[dict] = []
-    resurfaced_items: list[dict] = []
+    padding_items: list[dict] = []
 
     for entry_id in store.active_entry_ids_since(min(candidate_start, resurface_start)):
         row = store.get_entry(entry_id)
@@ -525,6 +553,8 @@ def select_digest(
                 continue
             resurfaced = False
 
+        is_old = old_before is not None and _pub_date(store, row)[0] < old_before
+
         features = ScoreFeatures(
             distinct_sources=len(sources),
             citation_count=citation_count,
@@ -536,13 +566,15 @@ def select_digest(
             source_prior=best_source_prior(sources, source_priors),
             tracked_author=has_tracked_author(authors, tracked_authors),
         )
-        (resurfaced_items if resurfaced else new_items).append(
+        bucket = padding_items if (resurfaced or is_old) else new_items
+        bucket.append(
             {
                 "entry_id": entry_id,
                 "row": row,
                 "score": compute_score(features, weights),
                 "features": features,
                 "resurfaced": resurfaced,
+                "is_old": is_old,
                 "tags": tags,
                 "authors": authors,
             }
@@ -556,25 +588,43 @@ def select_digest(
         if selected_new
         else 0.0
     )
-    resurfaced_items.sort(key=lambda c: c["score"], reverse=True)
-    padding = [c for c in resurfaced_items if c["score"] > avg_new]
+    padding_items.sort(key=lambda c: c["score"], reverse=True)
+    # Reruns must beat this run's fresh crop to earn a slot back. An old paper
+    # nobody has seen yet is exempt — it has no other way in — but being old
+    # never exempts one we have already shown.
+    padding = [
+        c
+        for c in padding_items
+        if (c["is_old"] and not c["resurfaced"]) or c["score"] > avg_new
+    ]
+    if max_resurface is not None:
+        padding = padding[:max_resurface]
 
     return (selected_new + padding)[:top_n]
 
 
-def _pub_display(store, row) -> tuple[str, bool]:
-    """(text, is_estimate) publication date for the digest.
+def _pub_date(store, row) -> tuple[str, bool]:
+    """(ISO date, is_estimate) — when this paper was published, best effort.
 
-    An authoritative `entries.published_at` shows exact; otherwise we estimate
-    from the earliest mention's published_at (the real submit date for an arXiv
+    An authoritative `entries.published_at` is exact; otherwise we estimate from
+    the earliest mention's published_at (the real submit date for an arXiv
     mention, the post date for a tweet/blog), falling back to first_seen_at.
-    Formatted as YYYY-MM.
+
+    That last fallback is why the estimate can only ever make a paper look
+    *newer* than it is: an undated old paper reads as first seen today. So age
+    tests built on this under-report old papers rather than mislabelling fresh
+    ones.
     """
     real = row["published_at"]
     if real:
-        return real[:7], False
-    estimate = store.earliest_published_at(row["id"]) or row["first_seen_at"]
-    return estimate[:7], True
+        return real, False
+    return (store.earliest_published_at(row["id"]) or row["first_seen_at"]), True
+
+
+def _pub_display(store, row) -> tuple[str, bool]:
+    """(text, is_estimate) publication date for the digest, as YYYY-MM."""
+    date, is_estimate = _pub_date(store, row)
+    return date[:7], is_estimate
 
 
 def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
@@ -602,6 +652,7 @@ def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
         score=c["score"],
         explanation=score_explanation(c["features"]),
         resurfaced=c["resurfaced"],
+        is_old=c.get("is_old", False),
         pub_display=pub_display,
         pub_is_estimate=pub_is_estimate,
         surfaced_recent=store.count_shown_since(entry_id, recent_start),
@@ -624,11 +675,14 @@ def run_pipeline(
     resurface_window_days: int,
     new_window: str = "24h",
     max_new: int = 10,
+    max_resurface: int | None = None,
+    old_after_days: int | None = None,
     recent_window: str = "48h",
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
     dry_run: bool,
+    deliver: bool = True,
     out_dir: Path,
     metadata_fetch=None,
     source_priors: dict[str, float] | None = None,
@@ -644,8 +698,13 @@ def run_pipeline(
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
-    new_start = since_to_iso(new_window, now=now)
+    new_start = fresh_start(store, new_window, now)
     recent_start = since_to_iso(recent_window, now=now)
+    old_before = (
+        None
+        if old_after_days is None
+        else (now - timedelta(days=old_after_days)).strftime(_ISO)
+    )
 
     new_ids = ingest(
         store,
@@ -680,6 +739,13 @@ def run_pipeline(
         recover_titles(store, new_ids, web_search_resolver)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
+    result = RunResult(new_count=len(new_ids), enriched_count=enriched)
+    if not deliver:
+        # An off-schedule tick: keep the sources polled (page-watch diffs and
+        # Slack history are lossy if we only look every few days) and stop
+        # before selection, so nothing is marked shown ahead of its digest.
+        return result
+
     chosen = select_digest(
         store,
         weights,
@@ -687,19 +753,16 @@ def run_pipeline(
         candidate_start=candidate_start,
         resurface_start=resurface_start,
         new_start=new_start,
+        old_before=old_before,
         max_new=max_new,
+        max_resurface=max_resurface,
         resurface_min_mentions=resurface_min_mentions,
         source_priors=source_priors,
         tracked_authors=tracked_authors,
     )
     items = [_to_item(store, c, recent_start=recent_start) for c in chosen]
     html = render_html(items, generated_at=now_iso)
-
-    result = RunResult(
-        chosen_ids=[c["entry_id"] for c in chosen],
-        new_count=len(new_ids),
-        enriched_count=enriched,
-    )
+    result.chosen_ids = [c["entry_id"] for c in chosen]
 
     if dry_run:
         out_dir = Path(out_dir)
@@ -709,9 +772,17 @@ def run_pipeline(
         result.digest_path = path
         return result
 
-    if items:
-        sender.send(subject=f"paper-watch digest — {len(items)} paper(s)", html=html)
-        result.sent = True
+    if not items:
+        # Nothing to mail, so the delivery stays owed: later ticks retry it and
+        # the series keeps accumulating rather than being silently written off.
+        return result
+
+    sender.send(subject=f"paper-watch digest — {len(items)} paper(s)", html=html)
+    result.sent = True
+    # Both watermarks move only once the mail is actually out. A send that
+    # raises leaves the digest owed, so the next tick retries it with these
+    # papers still unshown.
+    store.set_last_sent_at(now_iso)
     for rank, c in enumerate(chosen, start=1):
         store.record_shown(
             entry_id=c["entry_id"],
@@ -882,7 +953,13 @@ def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
             store.record_metrics(entry_id, count, now_iso)
 
 
-def run(config_path: str, *, dry_run: bool = False, since: str | None = None) -> RunResult:
+def run(
+    config_path: str,
+    *,
+    dry_run: bool = False,
+    since: str | None = None,
+    force_send: bool = False,
+) -> RunResult:
     try:
         from dotenv import load_dotenv
 
@@ -897,6 +974,18 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
     store = Store(config.db_path)
     try:
         now = datetime.now(timezone.utc)
+        # Most ticks only ingest. A dry run always builds a digest (that is what
+        # it is for) and never delivers one, so it can preview off-schedule.
+        deliver = (
+            dry_run
+            or force_send
+            or is_delivery_due(
+                now,
+                store.get_last_sent_at(),
+                days=config.schedule.weekdays,
+                at=config.schedule.at_time,
+            )
+        )
         since_iso = effective_since(store, since, config.lookback, now)
         nitter_instances = config.nitter_instances
         if config.handles:
@@ -909,7 +998,11 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
         enricher = _build_enricher(config)
         sender = GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
 
-        if not dry_run:
+        # Citation counts are read once per digest, not once per tick: polling
+        # Semantic Scholar for the whole active pool every few hours is a lot of
+        # unauthenticated requests for a number nothing reads in between. Doing
+        # it here also makes citation *growth* the change between digests.
+        if deliver and not dry_run:
             pool_days = max(config.candidate_window_days, config.resurface_window_days)
             window_start = (now - timedelta(days=pool_days)).strftime(_ISO)
             update_metrics(store, store.active_entry_ids_since(window_start), now.strftime(_ISO))
@@ -944,18 +1037,26 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             resurface_window_days=config.resurface_window_days,
             new_window=config.new_window,
             max_new=config.max_new,
+            max_resurface=config.max_resurface,
+            old_after_days=config.old_after_days,
             recent_window=config.recent_window,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,
             dry_run=dry_run,
+            deliver=deliver,
             out_dir=Path("out"),
         )
         # Record the watermark only for real runs, so the next run covers the
         # gap from here even if the machine is off across scheduled elapses. A
-        # dry run must not advance it.
+        # dry run must not advance it. This tracks *ingestion*; the separate
+        # delivery watermark is moved by run_pipeline, and only on a real send.
         if not dry_run:
             store.set_last_run_at(now.strftime(_ISO))
+        result.attempted_delivery = deliver
+        result.next_delivery = next_delivery_after(
+            now, days=config.schedule.weekdays, at=config.schedule.at_time
+        )
         return result
     finally:
         store.close()
