@@ -152,3 +152,38 @@ def test_score_explanation_reads_features():
     assert "2 recent mentions" in text
     assert "liked by group" in text
     assert "resurfaced" in text
+
+
+def test_render_html_marks_a_long_published_paper_with_its_date():
+    html = render_html(
+        [_item(resurfaced=False, is_old=True, pub_display="2025-03")],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "OLDER · 2025-03" in html
+    # It is not a rerun, so the RESURFACED chip must not appear.
+    assert "RESURFACED" not in html
+
+
+def test_render_html_shows_both_chips_when_an_old_paper_also_resurfaces():
+    html = render_html(
+        [_item(resurfaced=True, is_old=True, pub_display="2024-11")],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    # "you have seen this" and "this is not new" are different facts.
+    assert "OLDER · 2024-11" in html
+    assert "RESURFACED" in html
+
+
+def test_render_html_omits_the_date_from_the_older_chip_when_unknown():
+    html = render_html(
+        [_item(resurfaced=False, is_old=True, pub_display="")],
+        generated_at="2026-06-19T08:00:00Z",
+    )
+    assert "OLDER<" in html or "OLDER</span>" in html
+
+
+def test_render_html_puts_a_long_published_paper_below_fresh_work():
+    old = _item(title="Old But New To Us", score=9.0, resurfaced=False, is_old=True)
+    fresh = _item(title="Fresh Result", score=2.0, resurfaced=False)
+    html = render_html([old, fresh], generated_at="2026-06-19T08:00:00Z")
+    assert html.index("Fresh Result") < html.index("Old But New To Us")

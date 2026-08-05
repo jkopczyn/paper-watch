@@ -20,6 +20,10 @@ class DigestItem:
     score: float
     explanation: str
     resurfaced: bool = False
+    # Published long enough ago to not count as news, whether or not we have
+    # shown it before. Distinct from `resurfaced` — one means "you have seen
+    # this", the other "this is not new" — so both chips can appear at once.
+    is_old: bool = False
     extra_tags: list[str] = field(default_factory=list)
     # Provenance / recency metadata shown as chips beneath the paper.
     pub_display: str = ""  # publication date, e.g. "2018-10" (empty ⇒ hidden)
@@ -68,6 +72,7 @@ _TEMPLATE = """\
   {% for it in items %}
   <div style="border-top: 1px solid #eee; padding: 12px 0;">
     <div style="font-size: 16px; font-weight: 600;">
+      {% if it.is_old %}<span style="background:#e5e7eb; color:#4b5563; font-size:10px; padding:1px 5px; border-radius:3px; vertical-align:middle;">OLDER{% if it.pub_display %} · {{ it.pub_display }}{% endif %}</span> {% endif %}
       {% if it.resurfaced %}<span style="background:#fde68a; color:#92400e; font-size:10px; padding:1px 5px; border-radius:3px; vertical-align:middle;">RESURFACED</span> {% endif %}
       {% if it.trusted %}<span style="background:#bbf7d0; color:#166534; font-size:10px; padding:1px 5px; border-radius:3px; vertical-align:middle;">TRUSTED</span> {% endif %}
       {{ it.title }}
@@ -95,8 +100,9 @@ _TEMPLATE = """\
 
 
 def render_html(items: list[DigestItem], *, generated_at: str) -> str:
-    # New results lead; resurfaced papers follow as padding. Within each group,
-    # rank by score. (False < True, so non-resurfaced sorts first.)
-    ranked = sorted(items, key=lambda i: (i.resurfaced, -i.score))
+    # New results lead; padding — reruns and long-published papers alike —
+    # follows. Within each group, rank by score. (False < True, so the fresh
+    # leads sort first.)
+    ranked = sorted(items, key=lambda i: (i.resurfaced or i.is_old, -i.score))
     env = Environment(autoescape=True)
     return env.from_string(_TEMPLATE).render(items=ranked, generated_at=generated_at)

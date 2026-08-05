@@ -38,7 +38,8 @@ Technical Setup:
 Options:
 
 - `top_n`: number of entries to include in digest (highest-quality N)
-- `max_new` / `max_resurface`: at most this many never-shown papers lead the digest, and at most this many already-shown papers pad it out — so a quiet stretch produces a short digest rather than a rerun of old favourites
+- `max_new` / `max_resurface`: at most this many never-shown papers lead the digest, and at most this many padding papers follow — so a quiet stretch produces a short digest rather than a rerun of old favourites
+- `old_after_days`: a paper published longer ago than this is marked `OLDER · YYYY-MM` and treated as padding even the first time it appears — news to you, but not new, so it shares the `max_resurface` budget instead of taking a lead slot. It gets no resurface boost, and unlike a genuine rerun it doesn't have to outscore the fresh crop (nothing else would ever surface it). Age is read from the publication date the digest shows, which falls back to an estimate — so an undated old paper can slip through unmarked, but a fresh one is never mislabelled
 - `candidate_window_days`: how recently a paper must be seen to enter the digest as new; also the window over which recent mentions drive the velocity / 'buzz' signal
 - `resurface_window_days`: how far back an already-shown paper can be brought back when attention surges (surge measured within the candidate window)
 - `schedule`: `deliver_days` + `deliver_at` (local) — when a digest is mailed. `paper-watch run` is meant to tick more often than that (every 4h under systemd): it ingests on every tick and delivers on the first tick at or after `deliver_at` on a delivery day, retrying on later ticks until a send succeeds. Each digest covers everything since the last successful send, so `[tue, fri]` at noon means Friday's email covers Wed–Fri and Tuesday's covers Sat–Tue.

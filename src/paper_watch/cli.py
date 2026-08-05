@@ -18,6 +18,7 @@ db_path: paper_watch.db
 top_n: 20
 max_new: 20
 max_resurface: 5  # cap on slots given back to already-shown papers
+old_after_days: 90  # older than this => marked OLDER and padded in, not a lead
 lookback: 7d
 candidate_window_days: 7
 resurface_window_days: 21

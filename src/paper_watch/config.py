@@ -209,9 +209,14 @@ class Config(BaseModel):
     new_window: str = "4d"
     max_new: int = 20
     max_resurface: int = 5
+    # A paper published longer ago than this is marked OLDER and treated as
+    # padding even the first time we see it — news to us, but not new — so it
+    # shares the `max_resurface` budget instead of a lead slot.
+    old_after_days: int = 90
     # Window over which each item is tagged with how many past digests surfaced
-    # it, shown as a "surfaced N×" chip.
-    recent_window: str = "48h"
+    # it, shown as a "surfaced N×" chip. Must span several digests to say
+    # anything: at two deliveries a week, a 48h window only ever saw one.
+    recent_window: str = "14d"
     # Fill an entry that still has no displayable URL by searching Semantic
     # Scholar / Crossref for its title and adopting the paper's canonical link.
     url_search: bool = True

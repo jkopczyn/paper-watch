@@ -480,6 +480,7 @@ def select_digest(
     candidate_start,
     resurface_start,
     new_start: str | None = None,
+    old_before: str | None = None,
     max_new: int | None = None,
     max_resurface: int | None = None,
     resurface_min_mentions: int = 2,
@@ -494,8 +495,16 @@ def select_digest(
     `max_resurface` resurfacing papers that outscore the new picks' average — so
     a stale classic only reappears when it genuinely beats this run's fresh crop,
     and a quiet series still reads as a digest of new work rather than a rerun.
-    `new_start` defaults to `candidate_start`, and `max_new` / `max_resurface` to
-    unbounded, which reproduces a single ranked pool.
+    A paper published before `old_before` is treated as padding too, even the
+    first time we see it: it is news to us, but it is not new, so it should not
+    displace this week's fresh work. It shares the `max_resurface` budget with
+    the reruns. It does *not* get the resurface boost (nobody has seen it) and
+    it skips the outscore-the-fresh-crop bar (nothing else will ever surface
+    it) — but an already-shown paper keeps that bar whatever its age, or every
+    stale favourite would slip back in on a minimum surge.
+
+    `new_start` defaults to `candidate_start`, and `old_before` / `max_new` /
+    `max_resurface` to unbounded, which reproduces a single ranked pool.
     """
     source_priors = source_priors or {}
     tracked_authors = tracked_authors or set()
@@ -505,7 +514,7 @@ def select_digest(
         update={"feedback": dynamic_feedback_weight(store.count_feedback_weeks())}
     )
     new_items: list[dict] = []
-    resurfaced_items: list[dict] = []
+    padding_items: list[dict] = []
 
     for entry_id in store.active_entry_ids_since(min(candidate_start, resurface_start)):
         row = store.get_entry(entry_id)
@@ -544,6 +553,8 @@ def select_digest(
                 continue
             resurfaced = False
 
+        is_old = old_before is not None and _pub_date(store, row)[0] < old_before
+
         features = ScoreFeatures(
             distinct_sources=len(sources),
             citation_count=citation_count,
@@ -555,13 +566,15 @@ def select_digest(
             source_prior=best_source_prior(sources, source_priors),
             tracked_author=has_tracked_author(authors, tracked_authors),
         )
-        (resurfaced_items if resurfaced else new_items).append(
+        bucket = padding_items if (resurfaced or is_old) else new_items
+        bucket.append(
             {
                 "entry_id": entry_id,
                 "row": row,
                 "score": compute_score(features, weights),
                 "features": features,
                 "resurfaced": resurfaced,
+                "is_old": is_old,
                 "tags": tags,
                 "authors": authors,
             }
@@ -575,27 +588,43 @@ def select_digest(
         if selected_new
         else 0.0
     )
-    resurfaced_items.sort(key=lambda c: c["score"], reverse=True)
-    padding = [c for c in resurfaced_items if c["score"] > avg_new]
+    padding_items.sort(key=lambda c: c["score"], reverse=True)
+    # Reruns must beat this run's fresh crop to earn a slot back. An old paper
+    # nobody has seen yet is exempt — it has no other way in — but being old
+    # never exempts one we have already shown.
+    padding = [
+        c
+        for c in padding_items
+        if (c["is_old"] and not c["resurfaced"]) or c["score"] > avg_new
+    ]
     if max_resurface is not None:
         padding = padding[:max_resurface]
 
     return (selected_new + padding)[:top_n]
 
 
-def _pub_display(store, row) -> tuple[str, bool]:
-    """(text, is_estimate) publication date for the digest.
+def _pub_date(store, row) -> tuple[str, bool]:
+    """(ISO date, is_estimate) — when this paper was published, best effort.
 
-    An authoritative `entries.published_at` shows exact; otherwise we estimate
-    from the earliest mention's published_at (the real submit date for an arXiv
+    An authoritative `entries.published_at` is exact; otherwise we estimate from
+    the earliest mention's published_at (the real submit date for an arXiv
     mention, the post date for a tweet/blog), falling back to first_seen_at.
-    Formatted as YYYY-MM.
+
+    That last fallback is why the estimate can only ever make a paper look
+    *newer* than it is: an undated old paper reads as first seen today. So age
+    tests built on this under-report old papers rather than mislabelling fresh
+    ones.
     """
     real = row["published_at"]
     if real:
-        return real[:7], False
-    estimate = store.earliest_published_at(row["id"]) or row["first_seen_at"]
-    return estimate[:7], True
+        return real, False
+    return (store.earliest_published_at(row["id"]) or row["first_seen_at"]), True
+
+
+def _pub_display(store, row) -> tuple[str, bool]:
+    """(text, is_estimate) publication date for the digest, as YYYY-MM."""
+    date, is_estimate = _pub_date(store, row)
+    return date[:7], is_estimate
 
 
 def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
@@ -623,6 +652,7 @@ def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
         score=c["score"],
         explanation=score_explanation(c["features"]),
         resurfaced=c["resurfaced"],
+        is_old=c.get("is_old", False),
         pub_display=pub_display,
         pub_is_estimate=pub_is_estimate,
         surfaced_recent=store.count_shown_since(entry_id, recent_start),
@@ -646,6 +676,7 @@ def run_pipeline(
     new_window: str = "24h",
     max_new: int = 10,
     max_resurface: int | None = None,
+    old_after_days: int | None = None,
     recent_window: str = "48h",
     resurface_min_mentions: int = 2,
     now: datetime,
@@ -669,6 +700,11 @@ def run_pipeline(
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
     new_start = fresh_start(store, new_window, now)
     recent_start = since_to_iso(recent_window, now=now)
+    old_before = (
+        None
+        if old_after_days is None
+        else (now - timedelta(days=old_after_days)).strftime(_ISO)
+    )
 
     new_ids = ingest(
         store,
@@ -717,6 +753,7 @@ def run_pipeline(
         candidate_start=candidate_start,
         resurface_start=resurface_start,
         new_start=new_start,
+        old_before=old_before,
         max_new=max_new,
         max_resurface=max_resurface,
         resurface_min_mentions=resurface_min_mentions,
@@ -1001,6 +1038,7 @@ def run(
             new_window=config.new_window,
             max_new=config.max_new,
             max_resurface=config.max_resurface,
+            old_after_days=config.old_after_days,
             recent_window=config.recent_window,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,

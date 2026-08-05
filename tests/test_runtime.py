@@ -370,6 +370,31 @@ def test_a_paper_ingested_midweek_still_leads_the_next_digest(tmp_path):
     store.close()
 
 
+def test_a_long_published_paper_reaches_the_email_marked_older(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    old = _arxiv_item("2401.00001", "Long Published Paper", when="2025-01-15T00:00:00Z")
+    _pipeline(store, [ListSource("arxiv", [old])], sender, old_after_days=90)
+
+    assert len(sender.sent) == 1
+    html = sender.sent[0][1]
+    assert "Long Published Paper" in html
+    # The arXiv mention carries the real submit date, so it is marked even with
+    # no authoritative entries.published_at.
+    assert "OLDER · 2025-01" in html
+    store.close()
+
+
+def test_a_recent_paper_is_not_marked_older(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    fresh = _arxiv_item("2408.00002", "Fresh Paper", when="2026-08-01T00:00:00Z")
+    _pipeline(store, [ListSource("arxiv", [fresh])], sender, old_after_days=90)
+
+    assert "OLDER" not in sender.sent[0][1]
+    store.close()
+
+
 def test_a_failed_send_leaves_the_delivery_owed(tmp_path):
     store = Store(tmp_path / "pw.db")
     with pytest.raises(RuntimeError):
@@ -914,6 +939,146 @@ def test_max_resurface_keeps_the_highest_scoring_classics(tmp_path):
     store.close()
 
 
+OLD_BEFORE = "2026-04-13T00:00:00Z"  # ~3 months before the tests' 2026-07 "now"
+
+
+def _set_published(store, entry_id, iso):
+    store.conn.execute(
+        "UPDATE entries SET published_at = ? WHERE id = ?", (iso, entry_id)
+    )
+    store.conn.commit()
+
+
+def _old_entry(store, key, *, published_at="2025-11-01T00:00:00Z", relevance=5):
+    """A never-shown paper that is fresh to *us* but long since published."""
+    entry_id = store.insert_entry(
+        title=f"Old {key}", title_norm=f"old {key}",
+        first_seen_at="2026-07-10T00:00:00Z",
+    )
+    _set_published(store, entry_id, published_at)
+    store.add_mention(
+        entry_id=entry_id, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url=f"https://blog/{key}",
+    )
+    store.set_enrichment(
+        entry_id, tldr="t", why="w", tags=[], relevance=relevance, version=2
+    )
+    return entry_id
+
+
+def test_a_long_published_paper_is_padding_not_a_lead(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    old = _old_entry(store, "a")
+    fresh = _new_entry(store, "n1", n_mentions=1, relevance=5)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    by_id = {c["entry_id"]: c for c in chosen}
+    assert by_id[old]["is_old"]
+    assert not by_id[fresh]["is_old"]
+    # It is not a repeat, so it gets no resurface boost and is not recorded as one.
+    assert by_id[old]["resurfaced"] is False
+    assert by_id[old]["features"].resurfaced is False
+    store.close()
+
+
+def test_a_long_published_paper_does_not_consume_a_new_slot(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    olds = [_old_entry(store, f"o{i}") for i in range(3)]
+    fresh = [_new_entry(store, f"n{i}", n_mentions=1, relevance=5) for i in range(2)]
+    # Only two lead slots: the fresh pair takes both, the old papers pad instead.
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=2, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    picked = {c["entry_id"] for c in chosen}
+    assert set(fresh) <= picked
+    assert set(olds) <= picked
+    store.close()
+
+
+def test_long_published_papers_count_against_the_resurface_cap(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    for i in range(4):
+        _old_entry(store, f"o{i}")
+    for i in range(4):
+        _strong_resurfacer(store, i)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    padding = [c for c in chosen if c["is_old"] or c["resurfaced"]]
+    # One shared cap: old papers and reruns compete for the same 5 slots.
+    assert len(padding) == 5
+    assert len(chosen) == 6
+    store.close()
+
+
+def test_a_long_published_paper_survives_a_strong_fresh_crop(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A high-scoring fresh crop that a weak old paper cannot possibly outscore.
+    for i in range(3):
+        _new_entry(store, f"hi{i}", n_mentions=8, relevance=10)
+    # relevance 4 is the lowest that clears the relevance gate, so this tests
+    # the outscore bar rather than accidentally re-testing the gate.
+    old = _old_entry(store, "quiet", relevance=4)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    # Nothing else will ever surface it, so it skips the "beat the fresh crop" bar.
+    assert old in {c["entry_id"] for c in chosen}
+    store.close()
+
+
+def test_an_already_shown_old_paper_still_faces_the_bar(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    for i in range(3):
+        _new_entry(store, f"hi{i}", n_mentions=8, relevance=10)
+    # A genuine classic: long published AND already shown. Age must not become a
+    # loophole that readmits every stale favourite on a minimum surge.
+    classic = _shown_entry(store, [
+        ("rss:AF", "2026-07-10T01:00:00Z", "https://af/x"),
+        ("rss:AF", "2026-07-12T01:00:00Z", "https://af/y"),
+    ])
+    _set_published(store, classic, "2024-01-01T00:00:00Z")
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    assert classic not in {c["entry_id"] for c in chosen}
+    store.close()
+
+
+def test_age_falls_back_to_the_estimated_publication_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # No authoritative published_at; the earliest mention carries a 2025 date.
+    entry_id = store.insert_entry(
+        title="Undated", title_norm="undated", first_seen_at="2026-07-10T00:00:00Z"
+    )
+    store.add_mention(
+        entry_id=entry_id, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://blog/undated", published_at="2025-09-01T00:00:00Z",
+    )
+    store.set_enrichment(entry_id, tldr="t", why="w", tags=[], relevance=5, version=2)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20,
+        max_resurface=5, old_before=OLD_BEFORE,
+    )
+    assert next(c for c in chosen if c["entry_id"] == entry_id)["is_old"]
+    store.close()
+
+
+def test_old_before_unset_marks_nothing(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    old = _old_entry(store, "a")
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20)
+    assert not next(c for c in chosen if c["entry_id"] == old)["is_old"]
+    store.close()
+
+
 def test_max_resurface_unset_means_no_cap(tmp_path):
     store = Store(tmp_path / "pw.db")
     _new_entry(store, "n1", n_mentions=1, relevance=5)
@@ -1061,7 +1226,7 @@ def test_to_item_tags_sources_trust_and_recency(tmp_path):
         source_item_url="slack://far/C1/1.2", trusted=True,
     )
     store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
-    # surfaced twice inside the recent window (48h), once before it
+    # surfaced twice inside the recent window (see _item_for), once before it
     store.record_shown(entry_id=eid, digest_at="2026-07-09T08:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-09T20:00:00Z", rank=1, score=1.0, resurfaced=False)
     store.record_shown(entry_id=eid, digest_at="2026-07-01T00:00:00Z", rank=1, score=1.0, resurfaced=False)

@@ -29,7 +29,9 @@ def test_load_empty_config_uses_defaults(tmp_path: Path):
     assert cfg.max_new == 20
     assert cfg.max_resurface == 5
     assert cfg.max_resurface < cfg.top_n
-    assert cfg.recent_window == "48h"
+    # ~3 months: past that, a paper is padding rather than a lead
+    assert cfg.old_after_days == 90
+    assert cfg.recent_window == "14d"
     assert cfg.url_search is True
     # two digests a week, delivered at local noon on the last day of each series
     assert cfg.schedule.weekdays == {1, 4}

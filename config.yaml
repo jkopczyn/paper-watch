@@ -5,7 +5,10 @@ top_n: 20
 new_window: 4d
 max_new: 20
 max_resurface: 5
-recent_window: 48h
+# Published longer ago than this => marked OLDER and treated as padding, even
+# the first time we see it: news to us, but not new.
+old_after_days: 90
+recent_window: 14d
 url_search: true
 candidate_window_days: 7
 resurface_window_days: 21
