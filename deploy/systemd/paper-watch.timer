@@ -1,14 +1,19 @@
 [Unit]
-Description=Run paper-watch twice daily (08:00 and 18:00 local time)
+Description=Tick paper-watch every 4 hours (ingest always, deliver when due)
 
 [Timer]
-OnCalendar=*-*-* 08:00:00
-OnCalendar=*-*-* 18:00:00
-# If the machine was powered off (or asleep) when a run was due, fire once on
+# Every 4 hours on the hour: 00, 04, 08, 12, 16, 20 local. Most of these ticks
+# only ingest. The digest itself is scheduled in config.yaml (`schedule:`) —
+# by default local noon on Tuesday and Friday — and the tick at or after that
+# moment mails it. If that send fails the digest stays owed, so the following
+# ticks (16:00, 20:00, ...) retry it until one gets through: this frequency is
+# what makes those fallback times exist.
+OnCalendar=*-*-* 00/4:00:00
+# If the machine was powered off (or asleep) when a tick was due, fire once on
 # the next boot to catch up. systemd only remembers a single missed elapse per
 # timer, but that is enough: `paper-watch run` widens its own fetch window back
-# to the last completed run, so one catch-up fire covers the whole gap even if
-# several scheduled runs were missed while powered off.
+# to the last completed run, and an undelivered digest stays owed no matter how
+# many ticks were missed.
 Persistent=true
 
 [Install]

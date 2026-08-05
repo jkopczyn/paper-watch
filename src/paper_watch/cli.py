@@ -15,15 +15,17 @@ from paper_watch import __version__
 EXAMPLE_CONFIG = """\
 # paper-watch configuration. Secrets go in .env, not here.
 db_path: paper_watch.db
-top_n: 15
+top_n: 20
+max_new: 20
+max_resurface: 5  # cap on slots given back to already-shown papers
 lookback: 7d
 candidate_window_days: 7
 resurface_window_days: 21
 resurface_min_mentions: 2
 
-schedule:        # local run times the cron installer reads
-  - "08:00"
-  - "16:00"
+schedule:        # run every few hours; mail on these days at this local time
+  deliver_days: [tue, fri]
+  deliver_at: "12:00"
 
 authors: []      # arXiv author names (replaces Google Scholar alerts)
 feeds: []        # - {name: ML Safety, url: https://newsletter.mlsafety.org/feed}

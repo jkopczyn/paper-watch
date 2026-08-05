@@ -100,16 +100,17 @@ uv run paper-watch feedback export   # writes candidates.csv of recently-shown p
 uv run paper-watch feedback import   # records it and tunes per-author/tag/source weights
 ```
 
-## Scheduling (cron)
+## Scheduling
 
-Run it 1–3×/day. Example crontab (08:00 and 16:00, matching the `schedule:` in config):
+Use the systemd user units in `deploy/systemd/` (see the README there); they tick
+`paper-watch run` every 4 hours and survive reboots. Ticking is not delivering: every tick
+ingests, and a digest is mailed only when `schedule:` in `config.yaml` says one is due
+(default: local noon on Tuesday and Friday). A failed send leaves the digest owed, so the
+following ticks retry it at 16:00, 20:00, and onward until one lands.
 
-```cron
-0 8,16 * * *  cd /home/jkop/Code/paper-watch && /usr/bin/uv run paper-watch run >> ~/paper-watch.log 2>&1
+```bash
+uv run paper-watch run --force-send   # deliver now, off-schedule
 ```
-
-`crontab -e` to install. Use absolute paths; cron has a minimal environment. The `.env` is loaded
-automatically from the working directory.
 
 ## Development
 

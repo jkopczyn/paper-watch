@@ -38,9 +38,10 @@ Technical Setup:
 Options:
 
 - `top_n`: number of entries to include in digest (highest-quality N)
+- `max_new` / `max_resurface`: at most this many never-shown papers lead the digest, and at most this many already-shown papers pad it out — so a quiet stretch produces a short digest rather than a rerun of old favourites
 - `candidate_window_days`: how recently a paper must be seen to enter the digest as new; also the window over which recent mentions drive the velocity / 'buzz' signal
 - `resurface_window_days`: how far back an already-shown paper can be brought back when attention surges (surge measured within the candidate window)
-- `schedule`: daily times (cron) to run the digest
+- `schedule`: `deliver_days` + `deliver_at` (local) — when a digest is mailed. `paper-watch run` is meant to tick more often than that (every 4h under systemd): it ingests on every tick and delivers on the first tick at or after `deliver_at` on a delivery day, retrying on later ticks until a send succeeds. Each digest covers everything since the last successful send, so `[tue, fri]` at noon means Friday's email covers Wed–Fri and Tuesday's covers Sat–Tue.
 - `scoring`: weights for the linear ranking model (the LLM is not a ranking signal). `score = overlap·overlap_norm + velocity·velocity_norm + feedback·feedback_affinity`, plus a flat `resurface_boost` added when a paper is resurfacing.
   - `overlap`: cross-source overlap, `min(distinct_sources, 3)/3`
   - `velocity`: `(citation_growth + new_mentions)` saturated to [0,1) via `raw/(raw+5)`

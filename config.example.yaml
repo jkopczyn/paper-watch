@@ -3,9 +3,10 @@
 # Secrets (SMTP app password, Anthropic key) live in .env, not here.
 
 db_path: paper_watch.db
-top_n: 15                        # total papers in a digest (new + resurfaced)
-new_window: 24h                  # a paper is "new" if first mentioned within this window
-max_new: 10                      # lead with up to this many new papers; extras are dropped
+top_n: 20                        # total papers in a digest (new + resurfaced)
+new_window: 4d                   # freshness bound before the first delivery; after that, "new" means "since the last digest"
+max_new: 20                      # lead with up to this many new papers; extras are dropped
+max_resurface: 5                 # never give more than this many slots back to already-shown papers
 recent_window: 48h               # window for the "surfaced N×" recency tag on each item
 url_search: true                 # fill blank URLs by searching S2/Crossref for the title
 lookback: 7d                     # how far back to fetch when --since isn't given
@@ -13,9 +14,15 @@ candidate_window_days: 7         # how recently a paper must be seen to first ap
 resurface_window_days: 21        # how far back an already-shown paper can be brought back on a surge
 resurface_min_mentions: 2        # mentions within candidate_window_days that count as that surge; raise to resurface less
 
-schedule:                        # local run times the cron installer reads
-  - "08:00"
-  - "16:00"
+# When digests are delivered. Each one covers everything since the previous
+# successful send, so these days define the series: Friday's digest covers
+# Wed-Fri, Tuesday's covers Sat-Tue. `paper-watch run` is meant to tick more
+# often than this (every 4h, see deploy/systemd) — it ingests on every tick and
+# mails on the first one at or after `deliver_at` on a delivery day, retrying on
+# later ticks until a send succeeds.
+schedule:
+  deliver_days: [tue, fri]
+  deliver_at: "12:00"            # local time
 
 # arXiv author feeds — replaces the Google Scholar alerts in method-rec.md.
 authors:
