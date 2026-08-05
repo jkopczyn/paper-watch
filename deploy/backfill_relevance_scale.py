@@ -8,10 +8,16 @@ buckets cannot recover the new granularity, so only future re-enrichments get
 it. Gate behaviour on existing rows is unchanged: nothing lands in [4, 5), so
 `>= 4` and the old `>= 2`-equivalent (`>= 5`) admit exactly the same rows.
 
+The remap has no scale marker to key on (enrich_version was not bumped for the
+rubric change), so once new-scale rows exist the blanket remap is destructive —
+a genuine new-scale 3 would become 8. `--before ISO` restricts the remap to
+entries with `first_seen_at` earlier than the cutoff; pass the date the 0-10
+rubric was deployed (entries seen later were enriched under the new rubric).
+
 Dry-run by default on a throwaway copy; pass --apply to write (backs up first).
 Run from the repo root:
 
-    uv run python deploy/backfill_relevance_scale.py [--apply]
+    uv run python deploy/backfill_relevance_scale.py [--apply] [--before ISO]
 """
 
 import shutil
@@ -36,7 +42,7 @@ def rescale_relevance(old: int) -> int:
     return max(0, min(10, round(old * 2.5)))  # defensive: unexpected out-of-range
 
 
-def main(apply: bool) -> None:
+def main(apply: bool, before: str | None = None) -> None:
     config = Config.load("config.yaml")
     src = config.db_path
     work = src if apply else str(Path(tempfile.mkdtemp()) / "preview.db")
@@ -50,9 +56,13 @@ def main(apply: bool) -> None:
         shutil.copy2(src, work)
 
     store = Store(work)  # opening runs migrations (relevance column already exists)
-    rows = store.conn.execute(
-        "SELECT id, relevance FROM entries WHERE relevance IS NOT NULL"
-    ).fetchall()
+    query = "SELECT id, relevance FROM entries WHERE relevance IS NOT NULL"
+    params: tuple = ()
+    if before:
+        query += " AND first_seen_at < ?"
+        params = (before,)
+        print(f"restricting to entries first seen before {before}")
+    rows = store.conn.execute(query, params).fetchall()
 
     before: dict[int, int] = {}
     after: dict[int, int] = {}
@@ -81,4 +91,7 @@ def main(apply: bool) -> None:
 
 
 if __name__ == "__main__":
-    main("--apply" in sys.argv)
+    before_arg = None
+    if "--before" in sys.argv:
+        before_arg = sys.argv[sys.argv.index("--before") + 1]
+    main("--apply" in sys.argv, before=before_arg)
