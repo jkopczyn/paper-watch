@@ -14,6 +14,7 @@ from paper_watch.digest import DigestItem, render_html, score_explanation
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
+from paper_watch.schedule import is_delivery_due, next_delivery_after
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
@@ -35,6 +36,10 @@ class RunResult:
     sent: bool = False
     new_count: int = 0
     enriched_count: int = 0
+    # Whether this tick was supposed to produce a digest at all: most ticks just
+    # ingest. Set by `run`, along with when the next digest is due.
+    attempted_delivery: bool = False
+    next_delivery: datetime | None = None
 
 
 def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
@@ -53,6 +58,17 @@ def effective_since(store, since: str | None, lookback: str, now: datetime) -> s
         if last_run and last_run < since_iso:
             since_iso = last_run
     return since_iso
+
+
+def fresh_start(store, new_window: str, now: datetime) -> str:
+    """Cutoff for what still counts as a *new* paper in this digest.
+
+    Freshness is measured from the last delivered digest, not from a fixed
+    window: a digest covers a multi-day series, so a paper first mentioned on
+    Wednesday must still lead Friday's email. `new_window` only applies before
+    anything has been delivered, or if a send is somehow more recent than it.
+    """
+    return store.get_last_sent_at() or since_to_iso(new_window, now=now)
 
 
 # -- ingest ----------------------------------------------------------------
@@ -465,18 +481,21 @@ def select_digest(
     resurface_start,
     new_start: str | None = None,
     max_new: int | None = None,
+    max_resurface: int | None = None,
     resurface_min_mentions: int = 2,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
 ) -> list[dict]:
     """Assemble the digest: lead with fresh papers, pad with resurfacing ones.
 
-    A never-shown paper is "new" if it was mentioned within `new_start` (the last
-    24h by default). The digest takes up to `max_new` of them by score; the
-    remaining slots up to `top_n` are filled with resurfacing papers that outscore
-    the new picks' average — so a stale classic only reappears when it genuinely
-    beats this run's fresh crop. `new_start` defaults to `candidate_start` and
-    `max_new` to unbounded, which reproduces a single ranked pool.
+    A never-shown paper is "new" if it was mentioned within `new_start` (since
+    the last delivered digest, in a real run). The digest takes up to `max_new`
+    of them by score; the remaining slots up to `top_n` are filled with at most
+    `max_resurface` resurfacing papers that outscore the new picks' average — so
+    a stale classic only reappears when it genuinely beats this run's fresh crop,
+    and a quiet series still reads as a digest of new work rather than a rerun.
+    `new_start` defaults to `candidate_start`, and `max_new` / `max_resurface` to
+    unbounded, which reproduces a single ranked pool.
     """
     source_priors = source_priors or {}
     tracked_authors = tracked_authors or set()
@@ -558,6 +577,8 @@ def select_digest(
     )
     resurfaced_items.sort(key=lambda c: c["score"], reverse=True)
     padding = [c for c in resurfaced_items if c["score"] > avg_new]
+    if max_resurface is not None:
+        padding = padding[:max_resurface]
 
     return (selected_new + padding)[:top_n]
 
@@ -624,11 +645,13 @@ def run_pipeline(
     resurface_window_days: int,
     new_window: str = "24h",
     max_new: int = 10,
+    max_resurface: int | None = None,
     recent_window: str = "48h",
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
     dry_run: bool,
+    deliver: bool = True,
     out_dir: Path,
     metadata_fetch=None,
     source_priors: dict[str, float] | None = None,
@@ -644,7 +667,7 @@ def run_pipeline(
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
     resurface_start = (now - timedelta(days=resurface_window_days)).strftime(_ISO)
-    new_start = since_to_iso(new_window, now=now)
+    new_start = fresh_start(store, new_window, now)
     recent_start = since_to_iso(recent_window, now=now)
 
     new_ids = ingest(
@@ -680,6 +703,13 @@ def run_pipeline(
         recover_titles(store, new_ids, web_search_resolver)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
+    result = RunResult(new_count=len(new_ids), enriched_count=enriched)
+    if not deliver:
+        # An off-schedule tick: keep the sources polled (page-watch diffs and
+        # Slack history are lossy if we only look every few days) and stop
+        # before selection, so nothing is marked shown ahead of its digest.
+        return result
+
     chosen = select_digest(
         store,
         weights,
@@ -688,18 +718,14 @@ def run_pipeline(
         resurface_start=resurface_start,
         new_start=new_start,
         max_new=max_new,
+        max_resurface=max_resurface,
         resurface_min_mentions=resurface_min_mentions,
         source_priors=source_priors,
         tracked_authors=tracked_authors,
     )
     items = [_to_item(store, c, recent_start=recent_start) for c in chosen]
     html = render_html(items, generated_at=now_iso)
-
-    result = RunResult(
-        chosen_ids=[c["entry_id"] for c in chosen],
-        new_count=len(new_ids),
-        enriched_count=enriched,
-    )
+    result.chosen_ids = [c["entry_id"] for c in chosen]
 
     if dry_run:
         out_dir = Path(out_dir)
@@ -709,9 +735,17 @@ def run_pipeline(
         result.digest_path = path
         return result
 
-    if items:
-        sender.send(subject=f"paper-watch digest — {len(items)} paper(s)", html=html)
-        result.sent = True
+    if not items:
+        # Nothing to mail, so the delivery stays owed: later ticks retry it and
+        # the series keeps accumulating rather than being silently written off.
+        return result
+
+    sender.send(subject=f"paper-watch digest — {len(items)} paper(s)", html=html)
+    result.sent = True
+    # Both watermarks move only once the mail is actually out. A send that
+    # raises leaves the digest owed, so the next tick retries it with these
+    # papers still unshown.
+    store.set_last_sent_at(now_iso)
     for rank, c in enumerate(chosen, start=1):
         store.record_shown(
             entry_id=c["entry_id"],
@@ -882,7 +916,13 @@ def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
             store.record_metrics(entry_id, count, now_iso)
 
 
-def run(config_path: str, *, dry_run: bool = False, since: str | None = None) -> RunResult:
+def run(
+    config_path: str,
+    *,
+    dry_run: bool = False,
+    since: str | None = None,
+    force_send: bool = False,
+) -> RunResult:
     try:
         from dotenv import load_dotenv
 
@@ -897,6 +937,18 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
     store = Store(config.db_path)
     try:
         now = datetime.now(timezone.utc)
+        # Most ticks only ingest. A dry run always builds a digest (that is what
+        # it is for) and never delivers one, so it can preview off-schedule.
+        deliver = (
+            dry_run
+            or force_send
+            or is_delivery_due(
+                now,
+                store.get_last_sent_at(),
+                days=config.schedule.weekdays,
+                at=config.schedule.at_time,
+            )
+        )
         since_iso = effective_since(store, since, config.lookback, now)
         nitter_instances = config.nitter_instances
         if config.handles:
@@ -944,18 +996,25 @@ def run(config_path: str, *, dry_run: bool = False, since: str | None = None) ->
             resurface_window_days=config.resurface_window_days,
             new_window=config.new_window,
             max_new=config.max_new,
+            max_resurface=config.max_resurface,
             recent_window=config.recent_window,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,
             dry_run=dry_run,
+            deliver=deliver,
             out_dir=Path("out"),
         )
         # Record the watermark only for real runs, so the next run covers the
         # gap from here even if the machine is off across scheduled elapses. A
-        # dry run must not advance it.
+        # dry run must not advance it. This tracks *ingestion*; the separate
+        # delivery watermark is moved by run_pipeline, and only on a real send.
         if not dry_run:
             store.set_last_run_at(now.strftime(_ISO))
+        result.attempted_delivery = deliver
+        result.next_delivery = next_delivery_after(
+            now, days=config.schedule.weekdays, at=config.schedule.at_time
+        )
         return result
     finally:
         store.close()

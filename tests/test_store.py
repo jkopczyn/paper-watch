@@ -68,6 +68,18 @@ def test_last_run_at_roundtrip(tmp_path: Path):
     store.close()
 
 
+def test_last_sent_at_is_tracked_separately_from_last_run(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    assert store.get_last_sent_at() is None
+    store.set_last_run_at("2026-08-05T08:00:00Z")
+    # ingest-only ticks move last_run_at; the delivery watermark stays put
+    assert store.get_last_sent_at() is None
+    store.set_last_sent_at("2026-08-07T12:00:00Z")
+    assert store.get_last_sent_at() == "2026-08-07T12:00:00Z"
+    assert store.get_last_run_at() == "2026-08-05T08:00:00Z"
+    store.close()
+
+
 def test_insert_and_fetch_entry(tmp_path: Path):
     store = Store(tmp_path / "pw.db")
     entry_id = store.insert_entry(

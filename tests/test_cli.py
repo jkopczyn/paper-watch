@@ -120,3 +120,56 @@ slack:
     )
     assert result.exit_code != 0
     assert "voting_channels" in result.output
+
+
+def test_run_reports_an_ingest_only_tick(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    import paper_watch.runtime as runtime_mod
+
+    cfg = _write_config(tmp_path)
+    monkeypatch.setattr(
+        runtime_mod,
+        "run",
+        lambda *a, **kw: runtime_mod.RunResult(
+            new_count=3,
+            enriched_count=2,
+            attempted_delivery=False,
+            next_delivery=datetime(2026, 8, 7, 12, tzinfo=timezone.utc),
+        ),
+    )
+    result = CliRunner().invoke(cli, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "Ingested 3 new, enriched 2." in result.output
+    assert "No digest due; next delivery Fri 2026-08-07 12:00." in result.output
+
+
+def test_run_reports_a_due_digest_that_could_not_be_filled(tmp_path, monkeypatch):
+    import paper_watch.runtime as runtime_mod
+
+    cfg = _write_config(tmp_path)
+    monkeypatch.setattr(
+        runtime_mod,
+        "run",
+        lambda *a, **kw: runtime_mod.RunResult(attempted_delivery=True, sent=False),
+    )
+    result = CliRunner().invoke(cli, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "stays due and will retry" in result.output
+
+
+def test_run_passes_force_send_through(tmp_path, monkeypatch):
+    import paper_watch.runtime as runtime_mod
+
+    cfg = _write_config(tmp_path)
+    captured = {}
+
+    def fake_run(config_path, **kw):
+        captured.update(kw)
+        return runtime_mod.RunResult(attempted_delivery=True, sent=True, chosen_ids=[1])
+
+    monkeypatch.setattr(runtime_mod, "run", fake_run)
+    result = CliRunner().invoke(cli, ["run", "--config", str(cfg), "--force-send"])
+    assert result.exit_code == 0, result.output
+    assert captured["force_send"] is True
+    assert "Digest sent with 1 paper(s)." in result.output

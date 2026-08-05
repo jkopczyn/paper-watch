@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from paper_watch.config import (
     Config,
     ScoringWeights,
@@ -14,6 +16,7 @@ from paper_watch.runtime import (
     _to_item,
     build_sources,
     effective_since,
+    fresh_start,
     ingest,
     recover_titles,
     resolve_paper_metadata,
@@ -269,6 +272,145 @@ def test_run_pipeline_sends_and_records_when_not_dry(tmp_path):
     subject, html = sender.sent[0]
     assert "Sendable Paper" in html
     assert store.was_shown(result.chosen_ids[0])
+    store.close()
+
+
+class ExplodingSender:
+    def send(self, *, subject, html, to_addr=None):
+        raise RuntimeError("smtp is down")
+
+
+def _pipeline(store, sources, sender, **kw):
+    """run_pipeline with the boilerplate a delivery-gating test doesn't care about."""
+    kw.setdefault("now", datetime(2026, 8, 7, 12, tzinfo=timezone.utc))
+    kw.setdefault("since", "2026-08-01T00:00:00Z")
+    return run_pipeline(
+        store,
+        sources=sources,
+        enricher=FakeEnricher(),
+        sender=sender,
+        weights=ScoringWeights(),
+        top_n=20,
+        candidate_window_days=7,
+        resurface_window_days=21,
+        max_enrich=50,
+        **{
+            "dry_run": False,
+            "out_dir": "out",  # only touched by a dry run, which passes its own
+            **kw,
+        },
+    )
+
+
+def test_fresh_start_falls_back_to_new_window_before_any_delivery(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    now = datetime(2026, 8, 7, 12, tzinfo=timezone.utc)
+    assert fresh_start(store, "24h", now) == "2026-08-06T12:00:00Z"
+    store.close()
+
+
+def test_fresh_start_measures_from_the_last_delivered_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    store.set_last_sent_at("2026-08-04T12:00:00Z")
+    now = datetime(2026, 8, 7, 12, tzinfo=timezone.utc)
+    # The series opened at Tuesday's send, not 24h ago.
+    assert fresh_start(store, "24h", now) == "2026-08-04T12:00:00Z"
+    store.close()
+
+
+def test_ingest_only_tick_fetches_but_does_not_deliver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00010", "Wednesday Paper")])],
+        sender,
+        now=datetime(2026, 8, 5, 8, tzinfo=timezone.utc),
+        deliver=False,
+    )
+
+    assert result.new_count == 1 and result.enriched_count == 1
+    assert sender.sent == []
+    assert result.chosen_ids == []
+    # Nothing was consumed: the paper is still unshown and still owed a digest.
+    assert not store.was_shown(1)
+    assert store.get_last_sent_at() is None
+    store.close()
+
+
+def test_a_paper_ingested_midweek_still_leads_the_next_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    store.set_last_sent_at("2026-08-04T12:00:00Z")  # Tuesday's digest
+
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00011", "Midweek Paper")])],
+        sender,
+        now=datetime(2026, 8, 5, 8, tzinfo=timezone.utc),
+        new_window="24h",
+        deliver=False,
+    )
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [])],
+        sender,
+        now=datetime(2026, 8, 7, 12, tzinfo=timezone.utc),
+        new_window="24h",
+        deliver=True,
+    )
+
+    # Two days old — well outside the 24h fallback window — but the series began
+    # at Tuesday's send, so Friday's digest still leads with it.
+    assert len(sender.sent) == 1
+    assert "Midweek Paper" in sender.sent[0][1]
+    assert result.sent
+    assert store.get_last_sent_at() == "2026-08-07T12:00:00Z"
+    assert store.was_shown(result.chosen_ids[0])
+    store.close()
+
+
+def test_a_failed_send_leaves_the_delivery_owed(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    with pytest.raises(RuntimeError):
+        _pipeline(
+            store,
+            [ListSource("arxiv", [_arxiv_item("2408.00012", "Undelivered Paper")])],
+            ExplodingSender(),
+            deliver=True,
+        )
+
+    # The watermark must not move, or the 16:00 retry would skip the digest and
+    # the paper would never be shown.
+    assert store.get_last_sent_at() is None
+    assert not store.was_shown(1)
+    store.close()
+
+
+def test_an_empty_digest_does_not_count_as_delivered(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    result = _pipeline(store, [ListSource("arxiv", [])], sender, deliver=True)
+
+    assert sender.sent == []
+    assert not result.sent
+    # Nothing went out, so the delivery stays owed and later ticks retry it.
+    assert store.get_last_sent_at() is None
+    store.close()
+
+
+def test_dry_run_never_moves_the_delivery_watermark(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00013", "Previewed Paper")])],
+        sender,
+        deliver=True,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+    assert store.get_last_sent_at() is None
     store.close()
 
 
@@ -713,6 +855,72 @@ def test_fewer_than_max_new_still_pads_to_top_n_with_resurfaced(tmp_path):
     picked = {c["entry_id"] for c in chosen}
     assert set(news) <= picked
     assert len({c["entry_id"] for c in chosen if c["resurfaced"]}) == 3
+    store.close()
+
+
+def _strong_resurfacer(store, i: int) -> int:
+    """An already-shown paper surging again, scored well above any new item."""
+    entry_id = store.insert_entry(
+        title=f"Classic {i}", title_norm=f"classic {i}",
+        first_seen_at="2026-06-01T00:00:00Z",
+    )
+    for d in (10, 12):
+        store.add_mention(
+            entry_id=entry_id, source=f"rss:AF{i}", fetched_at=f"2026-07-{d}T00:00:00Z",
+            source_item_url=f"https://af/{i}/{d}",
+        )
+    store.set_enrichment(entry_id, tldr="t", why="w", tags=[], relevance=10, version=2)
+    store.record_shown(
+        entry_id=entry_id, digest_at="2026-07-08T00:00:00Z", rank=1, score=3.0,
+        resurfaced=False,
+    )
+    return entry_id
+
+
+def test_resurfaced_are_capped_at_max_resurface(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A quiet series: two modest new papers, eight classics all clearing the bar.
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    _new_entry(store, "n2", n_mentions=1, relevance=5)
+    for i in range(8):
+        _strong_resurfacer(store, i)
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20, max_resurface=5
+    )
+    # Room for 18 more, but resurfaced papers must never take more than 5 slots.
+    assert sum(1 for c in chosen if c["resurfaced"]) == 5
+    assert len(chosen) == 7
+    store.close()
+
+
+def test_max_resurface_keeps_the_highest_scoring_classics(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    weak = _strong_resurfacer(store, 0)
+    strong = [_strong_resurfacer(store, i) for i in (1, 2)]
+    # Give the two keepers an extra source, which lifts their overlap term.
+    for entry_id in strong:
+        store.add_mention(
+            entry_id=entry_id, source="slack:far:papers",
+            fetched_at="2026-07-11T00:00:00Z",
+            source_item_url=f"https://slack/{entry_id}",
+        )
+    chosen = _select(
+        store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20, max_resurface=2
+    )
+    resurfaced = {c["entry_id"] for c in chosen if c["resurfaced"]}
+    assert resurfaced == set(strong)
+    assert weak not in resurfaced
+    store.close()
+
+
+def test_max_resurface_unset_means_no_cap(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _new_entry(store, "n1", n_mentions=1, relevance=5)
+    for i in range(6):
+        _strong_resurfacer(store, i)
+    chosen = _select(store, new_start="2026-07-06T00:00:00Z", max_new=20, top_n=20)
+    assert sum(1 for c in chosen if c["resurfaced"]) == 6
     store.close()
 
 

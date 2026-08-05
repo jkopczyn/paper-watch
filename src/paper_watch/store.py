@@ -129,6 +129,13 @@ SCHEMA: list[str] = [
 # by the machine being powered off. See runtime.effective_since.
 LAST_RUN_KEY = "last_run_at"
 
+# Key under which the ISO timestamp of the last *delivered* digest is stored.
+# Distinct from LAST_RUN_KEY because the pipeline now ingests far more often
+# than it mails: this watermark is what decides whether a delivery is still owed
+# (see paper_watch.schedule) and how far back "new" reaches, so it must advance
+# only when an email actually went out.
+LAST_SENT_KEY = "last_sent_at"
+
 
 class Store:
     def __init__(self, path: str | Path):
@@ -186,6 +193,12 @@ class Store:
 
     def set_last_run_at(self, iso: str) -> None:
         self.set_meta(LAST_RUN_KEY, iso)
+
+    def get_last_sent_at(self) -> str | None:
+        return self.get_meta(LAST_SENT_KEY)
+
+    def set_last_sent_at(self, iso: str) -> None:
+        self.set_meta(LAST_SENT_KEY, iso)
 
     # -- source cursors ----------------------------------------------------
     def get_cursor(self, source: str) -> str | None:

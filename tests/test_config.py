@@ -25,10 +25,15 @@ def test_load_empty_config_uses_defaults(tmp_path: Path):
     # default ingest lookback is wider than a single cron interval
     assert cfg.lookback == "7d"
     # digest-composition knobs (wishlist)
-    assert cfg.new_window == "24h"
-    assert cfg.max_new == 10
+    assert cfg.new_window == "4d"
+    assert cfg.max_new == 20
+    assert cfg.max_resurface == 5
+    assert cfg.max_resurface < cfg.top_n
     assert cfg.recent_window == "48h"
     assert cfg.url_search is True
+    # two digests a week, delivered at local noon on the last day of each series
+    assert cfg.schedule.weekdays == {1, 4}
+    assert cfg.schedule.at_time.hour == 12
 
 
 def test_load_populated_config(tmp_path: Path):
@@ -71,6 +76,35 @@ llm:
     assert cfg.scoring.feedback == pytest.approx(2.0)
     assert cfg.smtp.to_addr == "me@gmail.com"
     assert cfg.llm.max_enrich_per_run == 30
+
+
+def test_schedule_override(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+schedule:
+  deliver_days: [Mon, thursday]
+  deliver_at: "16:30"
+"""
+    )
+    cfg = Config.load(cfg_file)
+    assert cfg.schedule.weekdays == {0, 3}
+    assert (cfg.schedule.at_time.hour, cfg.schedule.at_time.minute) == (16, 30)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "schedule:\n  deliver_days: [funday]\n",
+        'schedule:\n  deliver_at: "noon"\n',
+        "schedule:\n  deliver_days: []\n",
+    ],
+)
+def test_bad_schedule_is_rejected_at_load(tmp_path: Path, body: str):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(body)
+    with pytest.raises(ValueError):
+        Config.load(cfg_file)
 
 
 def test_load_missing_file_raises(tmp_path: Path):
