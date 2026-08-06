@@ -214,9 +214,12 @@ pages:
 - name: Timaeus
   url: https://timaeus.co/research
   trusted: true
-- name: Transluce Research
-  url: https://transluce.org/research
-  trusted: true
+# Transluce folded every blog (research, essays, Docent demos, org news) into
+# one index, so this is no longer an all-signal page: it also carries hiring
+# posts and fundraisers. Hence untrusted — the relevance gate sorts it out.
+- name: Transluce
+  url: https://transluce.org/news
+  trusted: false
 scoring:
   relevance: 4.0
   source: 2.0
