@@ -8,6 +8,9 @@ max_resurface: 5
 # Published longer ago than this => marked OLDER and treated as padding, even
 # the first time we see it: news to us, but not new.
 old_after_days: 90
+# Runs in a row a source must fail before the digest calls it out. A dead URL
+# fails every run; a rate-limit blip clears on the next one.
+alert_after_failures: 3
 recent_window: 14d
 url_search: true
 candidate_window_days: 7

@@ -8,6 +8,7 @@ new_window: 4d                   # freshness bound before the first delivery; af
 max_new: 20                      # lead with up to this many new papers; extras are dropped
 max_resurface: 5                 # never give more than this many slots back to already-shown papers
 old_after_days: 90               # published longer ago than this => marked OLDER, padding rather than a lead
+alert_after_failures: 3          # runs in a row a source must fail before the digest flags it as dead
 recent_window: 14d               # window for the "surfaced N×" recency tag; needs to span several digests
 url_search: true                 # fill blank URLs by searching S2/Crossref for the title
 lookback: 7d                     # how far back to fetch when --since isn't given

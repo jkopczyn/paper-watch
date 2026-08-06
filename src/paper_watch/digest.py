@@ -34,6 +34,26 @@ class DigestItem:
     trusted: bool = False  # any trusted channel is a source
 
 
+@dataclass
+class SourceWarning:
+    """A source that has stopped working, surfaced at the top of the digest.
+
+    A dead source is invisible by construction — it yields nothing, which reads
+    exactly like a blog that hasn't posted lately. The email is the only place
+    it reliably gets seen, and a quiet digest is precisely when it matters most.
+    """
+
+    label: str
+    url: str
+    consecutive_failures: int
+    last_ok_at: str | None  # None ⇒ never worked at all (a URL wrong from the start)
+    error: str
+
+    @property
+    def since(self) -> str:
+        return f"since {self.last_ok_at[:10]}" if self.last_ok_at else "never succeeded"
+
+
 def score_explanation(f: ScoreFeatures) -> str:
     """A short, human-readable reason a paper ranked where it did.
 
@@ -66,6 +86,17 @@ _TEMPLATE = """\
 <body style="font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 720px; margin: 0 auto; color: #1a1a1a;">
   <h1 style="font-size: 18px;">paper-watch digest</h1>
   <p style="color:#666; font-size: 12px;">{{ generated_at }} · {{ items|length }} paper(s)</p>
+  {% if warnings %}
+  <div style="border:1px solid #fcd34d; background:#fffbeb; border-radius:4px; padding:8px 12px; margin: 10px 0; font-size:12px; color:#78350f;">
+    <div style="font-weight:600;">⚠ {{ warnings|length }} source{{ "s" if warnings|length != 1 }} unhealthy</div>
+    {% for w in warnings %}
+    <div style="margin-top:4px;">
+      {{ w.label }} — {{ w.consecutive_failures }} consecutive failure{{ "s" if w.consecutive_failures != 1 }}, {{ w.since }}<br>
+      <span style="color:#92400e;">{{ w.error }}</span> · <span style="color:#a16207;">{{ w.url }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if not items %}
   <p>Nothing new worth surfacing this run.</p>
   {% endif %}
@@ -99,10 +130,17 @@ _TEMPLATE = """\
 """
 
 
-def render_html(items: list[DigestItem], *, generated_at: str) -> str:
+def render_html(
+    items: list[DigestItem],
+    *,
+    generated_at: str,
+    warnings: list[SourceWarning] | None = None,
+) -> str:
     # New results lead; padding — reruns and long-published papers alike —
     # follows. Within each group, rank by score. (False < True, so the fresh
     # leads sort first.)
     ranked = sorted(items, key=lambda i: (i.resurfaced or i.is_old, -i.score))
     env = Environment(autoescape=True)
-    return env.from_string(_TEMPLATE).render(items=ranked, generated_at=generated_at)
+    return env.from_string(_TEMPLATE).render(
+        items=ranked, generated_at=generated_at, warnings=list(warnings or [])
+    )

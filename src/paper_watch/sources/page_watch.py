@@ -19,6 +19,7 @@ import logging
 from typing import Iterable, Iterator, Protocol
 from urllib.parse import urldefrag, urljoin
 
+from paper_watch.dates import now_iso
 from paper_watch.http import get_text
 from paper_watch.models import RawItem
 from paper_watch.sources import Fetcher
@@ -27,10 +28,15 @@ from paper_watch.sources.html_links import collect_links
 log = logging.getLogger(__name__)
 
 _MAX_TEXT_CHARS = 500  # index blurbs run ~100-200 chars; keep them whole
+_MAX_ERROR_CHARS = 200  # some fetch errors carry a whole HTML body
 
 
 class PageState(Protocol):
-    """The slice of Store this source needs (per-source cursor persistence)."""
+    """The slice of Store this source needs (per-source cursor persistence).
+
+    Health recording is optional: a state that only knows about cursors still
+    ingests normally, it just doesn't get the dead-page alarm.
+    """
 
     def get_cursor(self, source: str) -> str | None: ...
 
@@ -80,14 +86,43 @@ class PageWatchSource:
                 html = self._fetch(page.url)
             except Exception as exc:  # one bad page must not abort the rest
                 log.warning("watched page failed: %s (%s)", page.url, exc)
+                self._record_failure(page, str(exc))
                 continue
             links = extract_post_links(html, page.url)
             if not links:
                 # An empty/unparseable page is more likely an outage than a
                 # site wipe; bail rather than seed (or diff against) nothing.
                 log.warning("watched page had no links, skipping: %s", page.url)
+                self._record_failure(page, "index parsed to no links")
                 continue
+            self._record_ok(page)
             yield from self._diff_page(page, links)
+
+    def _record_ok(self, page) -> None:
+        recorder = getattr(self._state, "record_source_ok", None)
+        if recorder is not None:
+            recorder(f"page:{page.url}", label=page.name, at=now_iso())
+
+    def _record_failure(self, page, error: str) -> None:
+        """Remember that this page is down.
+
+        Without this the page just yields nothing, which reads exactly like a
+        blog that hasn't posted lately — the reason a 404 went unnoticed for
+        days.
+
+        Only the first line is kept: httpx appends a "For more information
+        check: <MDN link>" paragraph that would swamp a one-line warning in the
+        digest, and some fetch errors carry a whole HTML body.
+        """
+        recorder = getattr(self._state, "record_source_failure", None)
+        if recorder is not None:
+            first_line = " ".join(error.strip().splitlines()[0].split())
+            recorder(
+                f"page:{page.url}",
+                label=page.name,
+                error=first_line[:_MAX_ERROR_CHARS],
+                at=now_iso(),
+            )
 
     def _diff_page(self, page, links: list[tuple[str, str]]) -> Iterator[RawItem]:
         key = f"page:{page.url}"

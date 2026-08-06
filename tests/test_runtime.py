@@ -467,6 +467,49 @@ def test_a_recent_paper_is_not_marked_older(tmp_path):
     store.close()
 
 
+def test_a_dead_watched_page_is_flagged_in_the_digest(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    key = "page:https://transluce.org/news"
+    for _ in range(3):
+        store.record_source_failure(
+            key, label="Transluce", error="404 Not Found", at="2026-08-05T08:00:00Z"
+        )
+
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00020", "Some Paper")])],
+        sender,
+        alert_after_failures=3,
+    )
+
+    html = sender.sent[0][1]
+    assert "1 source unhealthy" in html
+    assert "Transluce" in html and "404 Not Found" in html
+    assert [w.label for w in result.warnings] == ["Transluce"]
+    store.close()
+
+
+def test_a_briefly_flaky_page_is_not_flagged(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    # One 429 is weather, not a dead source.
+    store.record_source_failure(
+        "page:https://x.example", label="Flaky", error="429", at="2026-08-05T08:00:00Z"
+    )
+
+    result = _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00021", "Some Paper")])],
+        sender,
+        alert_after_failures=3,
+    )
+
+    assert result.warnings == []
+    assert "unhealthy" not in sender.sent[0][1]
+    store.close()
+
+
 def test_a_failed_send_leaves_the_delivery_owed(tmp_path):
     store = Store(tmp_path / "pw.db")
     with pytest.raises(RuntimeError):

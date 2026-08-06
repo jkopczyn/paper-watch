@@ -19,6 +19,7 @@ top_n: 20
 max_new: 20
 max_resurface: 5  # cap on slots given back to already-shown papers
 old_after_days: 90  # older than this => marked OLDER and padded in, not a lead
+alert_after_failures: 3  # failed runs in a row before the digest flags a dead source
 lookback: 7d
 candidate_window_days: 7
 resurface_window_days: 21
@@ -117,6 +118,13 @@ def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) ->
         config_path, dry_run=dry_run, since=since, force_send=force_send
     )
     click.echo(f"Ingested {result.new_count} new, enriched {result.enriched_count}.")
+    for w in result.warnings:
+        plural = "" if w.consecutive_failures == 1 else "s"
+        click.echo(
+            f"  ⚠ {w.label}: {w.consecutive_failures} consecutive failure{plural} "
+            f"({w.since}) — {w.error} [{w.url}]",
+            err=True,
+        )
     if result.digest_path is not None:
         click.echo(f"Dry run: wrote {result.digest_path}")
     elif not result.attempted_delivery:

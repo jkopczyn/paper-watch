@@ -213,6 +213,10 @@ class Config(BaseModel):
     # padding even the first time we see it — news to us, but not new — so it
     # shares the `max_resurface` budget instead of a lead slot.
     old_after_days: int = 90
+    # How many runs in a row a source must fail before the digest calls it out.
+    # A dead URL fails every run; a rate-limit blip clears on the next one, and
+    # at 4-hourly ticks this is about half a day of being genuinely down.
+    alert_after_failures: int = 3
     # Window over which each item is tagged with how many past digests surfaced
     # it, shown as a "surfaced N×" chip. Must span several digests to say
     # anything: at two deliveries a week, a 48h window only ever saw one.

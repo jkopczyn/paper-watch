@@ -264,3 +264,54 @@ def test_merge_entries_tolerates_a_mention_both_entries_share(tmp_path: Path):
     assert store.get_entry(loser) is None
     assert len(store.get_mentions(winner)) == 1
     store.close()
+
+
+def test_source_health_counts_consecutive_failures(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    key = "page:https://transluce.org/news"
+    assert store.unhealthy_sources(1) == []
+
+    for _ in range(3):
+        store.record_source_failure(
+            key, label="Transluce", error="404 Not Found", at="2026-08-05T08:00:00Z"
+        )
+    (row,) = store.unhealthy_sources(1)
+    assert row["label"] == "Transluce"
+    assert row["consecutive_failures"] == 3
+    assert row["last_error"] == "404 Not Found"
+    store.close()
+
+
+def test_a_success_clears_the_failure_streak(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    key = "page:https://x.example/blog"
+    store.record_source_failure(key, label="X", error="boom", at="2026-08-05T08:00:00Z")
+    store.record_source_failure(key, label="X", error="boom", at="2026-08-05T12:00:00Z")
+    store.record_source_ok(key, label="X", at="2026-08-05T16:00:00Z")
+
+    assert store.unhealthy_sources(1) == []
+    row = store.get_source_health(key)
+    assert row["consecutive_failures"] == 0
+    assert row["last_ok_at"] == "2026-08-05T16:00:00Z"
+    store.close()
+
+
+def test_unhealthy_sources_respects_the_threshold(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    # A transient blip must not raise an alarm the way a dead URL does.
+    store.record_source_failure("page:a", label="Blip", error="429", at="2026-08-05T08:00:00Z")
+    for _ in range(4):
+        store.record_source_failure("page:b", label="Dead", error="404", at="2026-08-05T08:00:00Z")
+
+    assert [r["label"] for r in store.unhealthy_sources(3)] == ["Dead"]
+    assert {r["label"] for r in store.unhealthy_sources(1)} == {"Blip", "Dead"}
+    store.close()
+
+
+def test_source_health_reports_a_source_that_never_worked(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    store.record_source_failure("page:c", label="Typo'd", error="404", at="2026-08-05T08:00:00Z")
+    (row,) = store.unhealthy_sources(1)
+    # Never succeeded, so there is no "healthy since" date to show.
+    assert row["last_ok_at"] is None
+    store.close()

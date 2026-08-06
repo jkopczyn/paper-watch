@@ -173,3 +173,33 @@ def test_run_passes_force_send_through(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert captured["force_send"] is True
     assert "Digest sent with 1 paper(s)." in result.output
+
+
+def test_run_reports_unhealthy_sources(tmp_path, monkeypatch):
+    import paper_watch.runtime as runtime_mod
+    from paper_watch.digest import SourceWarning
+
+    cfg = _write_config(tmp_path)
+    monkeypatch.setattr(
+        runtime_mod,
+        "run",
+        lambda *a, **kw: runtime_mod.RunResult(
+            attempted_delivery=True,
+            sent=True,
+            chosen_ids=[1],
+            warnings=[
+                SourceWarning(
+                    label="Transluce",
+                    url="https://transluce.org/news",
+                    consecutive_failures=18,
+                    last_ok_at="2026-08-04T08:00:00Z",
+                    error="404 Not Found",
+                )
+            ],
+        ),
+    )
+    result = CliRunner().invoke(cli, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "Transluce: 18 consecutive failures" in result.output
+    assert "since 2026-08-04" in result.output
+    assert "404 Not Found" in result.output

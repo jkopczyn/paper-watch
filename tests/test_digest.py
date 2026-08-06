@@ -1,4 +1,9 @@
-from paper_watch.digest import DigestItem, render_html, score_explanation
+from paper_watch.digest import (
+    DigestItem,
+    SourceWarning,
+    render_html,
+    score_explanation,
+)
 from paper_watch.score import ScoreFeatures
 
 
@@ -187,3 +192,64 @@ def test_render_html_puts_a_long_published_paper_below_fresh_work():
     fresh = _item(title="Fresh Result", score=2.0, resurfaced=False)
     html = render_html([old, fresh], generated_at="2026-06-19T08:00:00Z")
     assert html.index("Fresh Result") < html.index("Old But New To Us")
+
+
+def _warning(**kw):
+    base = dict(
+        label="Transluce",
+        url="https://transluce.org/news",
+        consecutive_failures=18,
+        last_ok_at="2026-08-04T08:00:00Z",
+        error="404 Not Found",
+    )
+    base.update(kw)
+    return SourceWarning(**base)
+
+
+def test_render_html_warns_about_a_dead_source():
+    html = render_html(
+        [_item()], generated_at="2026-08-07T12:00:00Z", warnings=[_warning()]
+    )
+    assert "1 source unhealthy" in html
+    assert "Transluce" in html
+    assert "18 consecutive failures" in html
+    assert "since 2026-08-04" in html
+    assert "404 Not Found" in html
+
+
+def test_render_html_has_no_warning_block_when_everything_works():
+    html = render_html([_item()], generated_at="2026-08-07T12:00:00Z")
+    assert "unhealthy" not in html
+
+
+def test_render_html_pluralizes_multiple_unhealthy_sources():
+    html = render_html(
+        [_item()],
+        generated_at="2026-08-07T12:00:00Z",
+        warnings=[_warning(), _warning(label="Timaeus")],
+    )
+    assert "2 sources unhealthy" in html
+
+
+def test_render_html_says_never_for_a_source_that_never_worked():
+    html = render_html(
+        [_item()], generated_at="2026-08-07T12:00:00Z",
+        warnings=[_warning(last_ok_at=None)],
+    )
+    # A typo'd URL has no "healthy since" date to report.
+    assert "never succeeded" in html
+
+
+def test_render_html_warns_even_when_there_are_no_papers():
+    # The quiet-digest case is exactly when a dead source is easiest to miss.
+    html = render_html([], generated_at="2026-08-07T12:00:00Z", warnings=[_warning()])
+    assert "1 source unhealthy" in html
+
+
+def test_a_single_failure_reads_in_the_singular():
+    html = render_html(
+        [_item()], generated_at="2026-08-07T12:00:00Z",
+        warnings=[_warning(consecutive_failures=1)],
+    )
+    assert "1 consecutive failure," in html
+    assert "1 consecutive failures" not in html

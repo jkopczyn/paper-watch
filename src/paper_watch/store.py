@@ -105,6 +105,20 @@ SCHEMA: list[str] = [
         last_fetched_at TEXT
     )
     """,
+    # Whether each source is still working. A watched page that starts 404ing
+    # fails *silently* — the run logs a warning and carries on, so the source
+    # simply looks quiet. Counting consecutive failures separates a dead URL
+    # from a transient 429, so the digest can say which one this is.
+    """
+    CREATE TABLE IF NOT EXISTS source_health (
+        source               TEXT PRIMARY KEY,
+        label                TEXT,
+        last_ok_at           TEXT,
+        last_error           TEXT,
+        last_error_at        TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS tweet_cache (
         url        TEXT PRIMARY KEY,
@@ -199,6 +213,60 @@ class Store:
 
     def set_last_sent_at(self, iso: str) -> None:
         self.set_meta(LAST_SENT_KEY, iso)
+
+    # -- source health -----------------------------------------------------
+    def record_source_ok(self, source: str, *, label: str, at: str) -> None:
+        """Note that this source fetched cleanly, ending any failure streak."""
+        self.conn.execute(
+            """
+            INSERT INTO source_health (source, label, last_ok_at, consecutive_failures)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(source) DO UPDATE SET
+                label = excluded.label,
+                last_ok_at = excluded.last_ok_at,
+                consecutive_failures = 0
+            """,
+            (source, label, at),
+        )
+        self.conn.commit()
+
+    def record_source_failure(
+        self, source: str, *, label: str, error: str, at: str
+    ) -> None:
+        """Note that this source failed, lengthening its streak.
+
+        The streak is what distinguishes a dead URL from a blip, so it is
+        incremented in SQL rather than read-modify-written.
+        """
+        self.conn.execute(
+            """
+            INSERT INTO source_health
+                (source, label, last_error, last_error_at, consecutive_failures)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(source) DO UPDATE SET
+                label = excluded.label,
+                last_error = excluded.last_error,
+                last_error_at = excluded.last_error_at,
+                consecutive_failures = source_health.consecutive_failures + 1
+            """,
+            (source, label, error, at),
+        )
+        self.conn.commit()
+
+    def get_source_health(self, source: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM source_health WHERE source = ?", (source,)
+        ).fetchone()
+
+    def unhealthy_sources(self, min_failures: int) -> list[sqlite3.Row]:
+        """Sources that have failed at least `min_failures` runs in a row."""
+        return list(
+            self.conn.execute(
+                "SELECT * FROM source_health WHERE consecutive_failures >= ? "
+                "ORDER BY consecutive_failures DESC, source",
+                (min_failures,),
+            )
+        )
 
     # -- source cursors ----------------------------------------------------
     def get_cursor(self, source: str) -> str | None:

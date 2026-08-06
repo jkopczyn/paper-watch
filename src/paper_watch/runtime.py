@@ -10,7 +10,12 @@ from pathlib import Path
 
 from paper_watch.config import Config, ScoringWeights
 from paper_watch.dates import since_to_iso
-from paper_watch.digest import DigestItem, render_html, score_explanation
+from paper_watch.digest import (
+    DigestItem,
+    SourceWarning,
+    render_html,
+    score_explanation,
+)
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
@@ -40,6 +45,8 @@ class RunResult:
     # ingest. Set by `run`, along with when the next digest is due.
     attempted_delivery: bool = False
     next_delivery: datetime | None = None
+    # Sources that have failed enough runs in a row to be worth reporting.
+    warnings: list = field(default_factory=list)
 
 
 def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
@@ -58,6 +65,28 @@ def effective_since(store, since: str | None, lookback: str, now: datetime) -> s
         if last_run and last_run < since_iso:
             since_iso = last_run
     return since_iso
+
+
+def source_warnings(store, alert_after_failures: int | None) -> list[SourceWarning]:
+    """Sources that have failed enough runs in a row to be worth reporting.
+
+    A streak, not a single failure: a dead URL fails every run, while a rate
+    limit clears on the next one, and only the first is worth interrupting a
+    digest for. A falsy threshold disables the check.
+    """
+    if not alert_after_failures:
+        return []
+    return [
+        SourceWarning(
+            label=row["label"] or row["source"],
+            # Health keys are "page:<url>"; show the URL, which is the thing to fix.
+            url=row["source"].split(":", 1)[-1],
+            consecutive_failures=row["consecutive_failures"],
+            last_ok_at=row["last_ok_at"],
+            error=row["last_error"] or "",
+        )
+        for row in store.unhealthy_sources(alert_after_failures)
+    ]
 
 
 def fresh_start(store, new_window: str, now: datetime) -> str:
@@ -677,6 +706,7 @@ def run_pipeline(
     max_new: int = 10,
     max_resurface: int | None = None,
     old_after_days: int | None = None,
+    alert_after_failures: int | None = None,
     recent_window: str = "48h",
     resurface_min_mentions: int = 2,
     now: datetime,
@@ -739,7 +769,11 @@ def run_pipeline(
         recover_titles(store, new_ids, web_search_resolver)
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
-    result = RunResult(new_count=len(new_ids), enriched_count=enriched)
+    result = RunResult(
+        new_count=len(new_ids),
+        enriched_count=enriched,
+        warnings=source_warnings(store, alert_after_failures),
+    )
     if not deliver:
         # An off-schedule tick: keep the sources polled (page-watch diffs and
         # Slack history are lossy if we only look every few days) and stop
@@ -761,7 +795,7 @@ def run_pipeline(
         tracked_authors=tracked_authors,
     )
     items = [_to_item(store, c, recent_start=recent_start) for c in chosen]
-    html = render_html(items, generated_at=now_iso)
+    html = render_html(items, generated_at=now_iso, warnings=result.warnings)
     result.chosen_ids = [c["entry_id"] for c in chosen]
 
     if dry_run:
@@ -1039,6 +1073,7 @@ def run(
             max_new=config.max_new,
             max_resurface=config.max_resurface,
             old_after_days=config.old_after_days,
+            alert_after_failures=config.alert_after_failures,
             recent_window=config.recent_window,
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,

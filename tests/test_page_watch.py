@@ -118,3 +118,80 @@ def test_failing_or_empty_page_skips_without_touching_state(fixture_text):
     src = PageWatchSource([down, blank, good], state, fetch=fetch)
     assert list(src.fetch()) == []  # good page seeds; others skip
     assert set(state.cursors) == {f"page:{BASE}"}
+
+
+class HealthState(FakeState):
+    """FakeState that also records source health, like the real Store."""
+
+    def __init__(self):
+        super().__init__()
+        self.ok: list[tuple[str, str]] = []
+        self.failures: list[tuple[str, str, str]] = []
+
+    def record_source_ok(self, source, *, label, at):
+        self.ok.append((source, label))
+
+    def record_source_failure(self, source, *, label, error, at):
+        self.failures.append((source, label, error))
+
+
+def _boom(url):
+    raise RuntimeError("404 Not Found")
+
+
+def test_a_failing_page_is_recorded_as_unhealthy():
+    state = HealthState()
+    source = PageWatchSource(
+        [PageConfig(name="Dead Blog", url=BASE, trusted=False)], state, fetch=_boom
+    )
+    assert list(source.fetch()) == []
+
+    # A dead page yields nothing, which is indistinguishable from a quiet one
+    # unless the failure is recorded.
+    assert state.failures == [(f"page:{BASE}", "Dead Blog", "404 Not Found")]
+    assert state.ok == []
+
+
+def test_a_working_page_is_recorded_as_healthy(fixture_text):
+    state = HealthState()
+    source = _source(state, html_by_url={BASE: fixture_text("page_index.html")})
+    list(source.fetch())
+    assert state.ok == [(f"page:{BASE}", "Test Blog")]
+    assert state.failures == []
+
+
+def test_a_page_that_parses_to_no_links_counts_as_a_failure():
+    state = HealthState()
+    source = _source(state, html_by_url={BASE: "<html><body></body></html>"})
+    assert list(source.fetch()) == []
+    # An index with no links is an outage, not a site that deleted everything.
+    assert len(state.failures) == 1
+    assert "no links" in state.failures[0][2]
+    assert state.ok == []
+
+
+def test_health_recording_is_optional_for_plain_cursor_state(fixture_text):
+    # The Slack/eval paths pass a bare cursor store; health is a bonus, not a
+    # requirement, so a state without the methods must not break ingestion.
+    state = FakeState()
+    source = _source(state, html_by_url={BASE: fixture_text("page_index.html")})
+    list(source.fetch())  # must not raise
+
+
+def test_a_multi_line_fetch_error_is_reduced_to_its_first_line():
+    def raise_httpx_style(url):
+        raise RuntimeError(
+            "Client error '404 Not Found' for url 'https://x.example/blog'\n"
+            "For more information check: https://developer.mozilla.org/en-US/docs/"
+            "Web/HTTP/Status/404"
+        )
+
+    state = HealthState()
+    source = PageWatchSource(
+        [PageConfig(name="X", url=BASE, trusted=False)], state, fetch=raise_httpx_style
+    )
+    list(source.fetch())
+    # The MDN boilerplate would swamp a one-line warning in the email.
+    assert state.failures[0][2] == (
+        "Client error '404 Not Found' for url 'https://x.example/blog'"
+    )
