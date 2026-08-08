@@ -818,6 +818,12 @@ class Store:
         )
         self.conn.commit()
 
+    def delete_readings_for_poll(self, message_ts: str) -> None:
+        """Drop a poll's ledger rows — its CSV data was hand-corrected, so the
+        winner (if any) is about to be re-derived from the fixed rows."""
+        self.conn.execute("DELETE FROM readings WHERE message_ts = ?", (message_ts,))
+        self.conn.commit()
+
     def unresolved_readings(self) -> list[sqlite3.Row]:
         """Readings whose paper had not been ingested when they were recorded."""
         return self.conn.execute(

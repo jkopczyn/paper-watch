@@ -129,6 +129,32 @@ def _existing_rows(path: Path) -> tuple[list[dict], set[str]]:
     return rows, {r["message_ts"] for r in rows if r.get("message_ts")}
 
 
+def changed_polls(path: Path | str, snapshot_path: Path | str) -> set[str]:
+    """message_ts of polls hand-edited since the snapshot was taken.
+
+    The snapshot is a copy of the CSV made right after the last successful
+    import, so any difference is a hand edit (or hand deletion): a poll counts
+    as changed when its row set differs from the snapshot's, including
+    vanishing entirely. Polls absent from the snapshot are *new* — ordinary
+    append/import territory, not edits. No snapshot yet means no baseline:
+    nothing is reported changed.
+    """
+    snap_rows, snap_ts = _existing_rows(Path(snapshot_path))
+    if not snap_ts:
+        return set()
+    cur_rows, _ = _existing_rows(Path(path))
+
+    def by_poll(rows: list[dict]) -> dict[str, list[tuple]]:
+        polls: dict[str, list[tuple]] = {}
+        for r in rows:
+            ts = r.get("message_ts") or ""
+            polls.setdefault(ts, []).append(tuple(sorted(r.items())))
+        return {ts: sorted(opts) for ts, opts in polls.items()}
+
+    snap, cur = by_poll(snap_rows), by_poll(cur_rows)
+    return {ts for ts in snap if cur.get(ts) != snap[ts]}
+
+
 def export_groundtruth(
     token: str,
     channel_ids: str | list[str],

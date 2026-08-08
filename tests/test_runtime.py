@@ -2002,7 +2002,7 @@ def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
         "2026-08-07T08:00": _arxiv_item("2408.10003", "Read Before Ingest", when="2026-08-06T07:00:00Z"),
     }
 
-    def refresh_importer(store_arg, *, path, config):
+    def refresh_importer(store_arg, *, path, config, force_ts=frozenset()):
         # Thursday's poll winner enters the readings ledger; the paper is not
         # in the DB yet, so the reading lands with entry_id NULL.
         row = store_arg.get_entry_by_arxiv_id("2408.10003")

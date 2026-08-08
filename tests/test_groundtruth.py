@@ -226,3 +226,45 @@ def test_parse_poll_message_captures_attendance_from_reactors():
 def test_parse_poll_message_attendance_falls_back_to_top_count():
     # POLL_MSG reactions carry counts but no user lists -> top ballot count (4).
     assert all(o.attendance == 4 for o in parse_poll_message(POLL_MSG))
+
+
+# -- hand-edit detection (changed_polls) --------------------------------------
+
+_HDR = "week,message_ts,option,emoji,votes,url,context\n"
+
+
+def _rows(*lines):
+    return _HDR + "".join(l + "\n" for l in lines)
+
+
+def test_changed_polls_empty_when_identical_or_no_snapshot(tmp_path):
+    from paper_watch.groundtruth import changed_polls
+
+    cur = tmp_path / "gt.csv"
+    snap = tmp_path / "gt.csv.imported"
+    cur.write_text(_rows("2026-W27,111.0,1,one,3,https://x/a,A"))
+    assert changed_polls(cur, snap) == set()  # no snapshot yet
+    snap.write_text(cur.read_text())
+    assert changed_polls(cur, snap) == set()
+
+
+def test_changed_polls_detects_edits_removals_and_added_rows(tmp_path):
+    from paper_watch.groundtruth import changed_polls
+
+    cur = tmp_path / "gt.csv"
+    snap = tmp_path / "gt.csv.imported"
+    snap.write_text(_rows(
+        "2026-W27,111.0,1,one,3,https://x/a,A",
+        "2026-W27,111.0,2,two,3,https://x/b,B",
+        "2026-W28,222.0,1,one,4,https://x/c,C",
+        "2026-W29,333.0,1,one,2,https://x/d,D",
+    ))
+    cur.write_text(_rows(
+        "2026-W27,111.0,1,one,5,https://x/a,A",       # vote hand-corrected
+        "2026-W27,111.0,2,two,3,https://x/b,B",
+        "2026-W28,222.0,1,one,4,https://x/c,C",        # untouched
+        "2026-W28,222.0,2,two,1,https://x/c2,C2",      # row hand-added
+        "2026-W30,444.0,1,one,6,https://x/e,E",        # new poll (normal append)
+    ))
+    # 333.0 deleted, 111.0 edited, 222.0 gained a row; 444.0 is new, not a change
+    assert changed_polls(cur, snap) == {"111.0", "222.0", "333.0"}

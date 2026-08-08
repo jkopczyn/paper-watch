@@ -20,13 +20,14 @@ from __future__ import annotations
 import html
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 
 from paper_watch.config import Config
 from paper_watch.dates import since_to_iso
 from paper_watch.feedback import VoteImportResult, import_votes
-from paper_watch.groundtruth import export_groundtruth
+from paper_watch.groundtruth import changed_polls, export_groundtruth
 from paper_watch.schedule import is_delivery_due, last_delivery_at_or_before
 from paper_watch.sources.slack import iso_to_ts
 from paper_watch.store import FEEDBACK_FAILURE_NOTICED_KEY, Store
@@ -97,6 +98,12 @@ def render_notice(
         f"<p>Recorded {result.readings_recorded} reading(s); backfilled "
         f"{result.resolutions_backfilled} earlier resolution(s).</p>",
     ]
+    if result.reimported:
+        parts.append(
+            f"<p>Re-imported {result.reimported} row(s) from hand-edited "
+            "poll(s); their feedback rows and ledger winners were re-derived "
+            "(the prior weight nudge decays rather than being unwound).</p>"
+        )
     if result.ties:
         parts.append(
             "<p>Tie(s) awaiting a human call: "
@@ -139,7 +146,12 @@ def run_feedback_refresh(
     appended = 0
     imported: VoteImportResult | None = None
     error: str | None = None
+    # Hand edits since the last import are detected against a snapshot copy of
+    # the CSV, taken below after each successful import — checked BEFORE the
+    # export appends anything, so only human changes register.
+    snapshot = str(fr.groundtruth_path) + ".imported"
     try:
+        forced = changed_polls(fr.groundtruth_path, snapshot)
         token, channel_ids = _workspace_token(config, fr.workspace)
         appended = export(
             token,
@@ -148,7 +160,11 @@ def run_feedback_refresh(
             path=fr.groundtruth_path,
             append=True,
         )
-        imported = importer(store, path=fr.groundtruth_path, config=config)
+        imported = importer(
+            store, path=fr.groundtruth_path, config=config, force_ts=forced
+        )
+        if os.path.exists(fr.groundtruth_path):
+            shutil.copyfile(fr.groundtruth_path, snapshot)
     except Exception as exc:
         error = str(exc)
         _log.warning("feedback refresh failed: %s", exc)

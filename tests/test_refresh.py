@@ -113,7 +113,7 @@ def test_refresh_runs_export_then_import_and_mails(tmp_path, monkeypatch, tz):
         calls.append("export")
         return 4
 
-    def fake_import(store_arg, *, path, config):
+    def fake_import(store_arg, *, path, config, force_ts=frozenset()):
         assert store_arg is store
         calls.append("import")
         return VoteImportResult(
@@ -150,7 +150,7 @@ def test_refresh_export_failure_mails_once_and_stays_owed(tmp_path, monkeypatch,
     def bad_export(token, channel_ids, *, oldest, path, append=False):
         raise RuntimeError("slack down")
 
-    def never_import(store_arg, *, path, config):  # pragma: no cover
+    def never_import(store_arg, *, path, config, force_ts=frozenset()):  # pragma: no cover
         raise AssertionError("import must not run after a failed export")
 
     result = run_feedback_refresh(
@@ -176,7 +176,7 @@ def test_refresh_export_failure_mails_once_and_stays_owed(tmp_path, monkeypatch,
     result = run_feedback_refresh(
         store, cfg, sender, now=utc(2026, 8, 6, 20, 5),
         export=lambda token, channel_ids, *, oldest, path, append=False: 0,
-        importer=lambda store_arg, *, path, config: VoteImportResult(),
+        importer=lambda store_arg, *, path, config, force_ts=frozenset(): VoteImportResult(),
     )
     assert result.ok and result.notice_sent
     assert len(sender.sent) == 2
@@ -215,7 +215,7 @@ def test_refresh_notice_lists_ties_and_unresolved(tmp_path, monkeypatch, tz):
     store = Store(cfg.db_path)
     sender = CapturingSender()
 
-    def fake_import(store_arg, *, path, config):
+    def fake_import(store_arg, *, path, config, force_ts=frozenset()):
         return VoteImportResult(
             imported=1,
             skipped_zero=2,
@@ -234,3 +234,54 @@ def test_refresh_notice_lists_ties_and_unresolved(tmp_path, monkeypatch, tz):
     assert "2026-W30" in html  # the tie awaiting a human call
     assert "https://example.test/unknown-paper" in html
     assert "2 zero-vote" in html
+
+
+def test_refresh_detects_hand_edits_and_snapshots_on_success(tmp_path, monkeypatch, tz):
+    tz("UTC")
+    monkeypatch.setenv("SLACK_TOKEN_FAR", "xoxp-test")
+    cfg = _config(tmp_path)
+    store = Store(cfg.db_path)
+    hdr = "week,message_ts,option,emoji,votes,url,context\n"
+    csv_path = tmp_path / "gt.csv"
+    snap_path = tmp_path / "gt.csv.imported"
+    # Snapshot from the last refresh; the CSV has since been hand-corrected.
+    snap_path.write_text(hdr + "2026-W27,111.0,1,one,1,https://x/a,A\n")
+    csv_path.write_text(hdr + "2026-W27,111.0,1,one,5,https://x/a,A\n")
+
+    seen = {}
+
+    def fake_export(token, channel_ids, *, oldest, path, append=False):
+        return 0
+
+    def fake_import(store_arg, *, path, config, force_ts=frozenset()):
+        seen["force_ts"] = set(force_ts)
+        return VoteImportResult(reimported=1)
+
+    sender = CapturingSender()
+    result = run_feedback_refresh(
+        store, cfg, sender, now=utc(2026, 8, 6, 12, 5),
+        export=fake_export, importer=fake_import,
+    )
+    assert result.ok
+    assert seen["force_ts"] == {"111.0"}
+    # Snapshot refreshed to match the CSV, so the edit is not re-detected.
+    assert snap_path.read_text() == csv_path.read_text()
+    assert "hand-edited" in sender.sent[0][1]
+
+
+def test_refresh_failure_leaves_snapshot_untouched(tmp_path, monkeypatch, tz):
+    tz("UTC")
+    monkeypatch.setenv("SLACK_TOKEN_FAR", "xoxp-test")
+    cfg = _config(tmp_path)
+    store = Store(cfg.db_path)
+    (tmp_path / "gt.csv").write_text("week,message_ts,option,emoji,votes,url,context\n")
+
+    def bad_export(token, channel_ids, *, oldest, path, append=False):
+        raise RuntimeError("slack down")
+
+    sender = CapturingSender()
+    result = run_feedback_refresh(
+        store, cfg, sender, now=utc(2026, 8, 6, 12, 5), export=bad_export,
+    )
+    assert not result.ok
+    assert not (tmp_path / "gt.csv.imported").exists()

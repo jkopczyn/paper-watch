@@ -294,3 +294,49 @@ def test_score_scale_is_prediction_error_bounded():
     # scores outside [0,10] are clamped
     assert _score_scale(1.0, 12.0) == pytest.approx(0.0)
     assert _score_scale(1.0, -3.0) == pytest.approx(2.0)
+
+
+def test_import_votes_force_ts_reimports_a_hand_edited_poll(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    a, b = _seed_all(store)
+    path = _votes_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+
+    # Hand-fix W27: "Meh" actually won with 6 votes, not 1.
+    path.write_text(path.read_text().replace(
+        f"2026-W27,{TS1},2,two,1,", f"2026-W27,{TS1},2,two,6,"
+    ))
+    res = import_votes(store, path=path, config=_cfg(), force_ts={TS1})
+
+    fb = {(r["entry_id"], r["week"]): r for r in store.conn.execute(
+        "SELECT entry_id, week, picked, notes FROM feedback"
+    ).fetchall()}
+    assert fb[(b, "2026-W27")]["picked"] == 1  # winner corrected
+    assert fb[(a, "2026-W27")]["picked"] == 0
+    assert "6/" in fb[(b, "2026-W27")]["notes"]
+    readings = store.conn.execute(
+        "SELECT url FROM readings WHERE message_ts = ?", (TS1,)
+    ).fetchall()
+    assert [r["url"] for r in readings] == ["https://arxiv.org/abs/2605.00002"]
+    assert res.reimported == 2  # both resolvable W27 rows re-ran
+    assert res.imported == 0  # W28 untouched
+    store.close()
+
+
+def test_import_votes_force_ts_of_a_deleted_poll_clears_its_ledger_row(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = _votes_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+    assert store.conn.execute(
+        "SELECT COUNT(*) AS n FROM readings WHERE message_ts = ?", (TS1,)
+    ).fetchone()["n"] == 1
+
+    # Hand-prune the whole W27 poll (it was a misdetected non-poll).
+    kept = [l for l in path.read_text().splitlines() if TS1 not in l]
+    path.write_text("\n".join(kept) + "\n")
+    import_votes(store, path=path, config=_cfg(), force_ts={TS1})
+    assert store.conn.execute(
+        "SELECT COUNT(*) AS n FROM readings WHERE message_ts = ?", (TS1,)
+    ).fetchone()["n"] == 0
+    store.close()

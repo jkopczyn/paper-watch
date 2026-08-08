@@ -176,6 +176,7 @@ class VoteImportResult:
     ties: list[str] = field(default_factory=list)  # week labels awaiting a call
     readings_recorded: int = 0
     resolutions_backfilled: int = 0
+    reimported: int = 0  # rows of hand-edited polls re-run past the gate
 
 
 def _poll_window(message_ts: str, window_days: int) -> tuple[str, str]:
@@ -214,6 +215,7 @@ def import_votes(
     config: "Config",
     week_filter: str | None = None,
     alpha: float = 0.3,
+    force_ts: frozenset[str] | set[str] = frozenset(),
 ) -> VoteImportResult:
     """Import a ground-truth votes CSV into the learning loop.
 
@@ -229,6 +231,13 @@ def import_votes(
     unresolved ledger rows are re-resolved at the start of every later import.
     A poll whose top vote count is shared marks nobody picked and enters no
     ledger row; the tie is reported for a human call.
+
+    `force_ts` (polls hand-edited since their import — see
+    `groundtruth.changed_polls`) bypasses the gate for those polls: feedback
+    rows are re-recorded from the corrected data, the ledger winner re-derived,
+    and a poll deleted from the CSV loses its ledger row. One caveat: the EMA
+    is order-dependent, so the original nudge is not unwound — the corrected
+    target is blended on top and the stale contribution decays.
     """
     from paper_watch.eval import load_groundtruth, match_entry, score_entry
     from paper_watch.identity import (
@@ -249,6 +258,12 @@ def import_votes(
         if eid is not None:
             store.set_reading_entry(reading["id"], eid)
             result.resolutions_backfilled += 1
+
+    # Hand-edited polls: the old ledger rows describe superseded data (a
+    # deleted poll's row would otherwise linger forever); the correct winner,
+    # if any, is re-recorded below from the fixed rows.
+    for ts in force_ts:
+        store.delete_readings_for_poll(ts)
 
     rows = load_groundtruth(path)
     if week_filter is not None:
@@ -312,7 +327,8 @@ def import_votes(
         if base is None:
             result.skipped_zero += 1
             continue
-        if store.has_feedback(r.entry_id, r.week):
+        forced = r.message_ts in force_ts
+        if store.has_feedback(r.entry_id, r.week) and not forced:
             result.skipped_existing += 1
             continue
         start, end = _poll_window(r.message_ts, window)
@@ -337,7 +353,10 @@ def import_votes(
             imported_at=now,
         )
         keys_touched |= _apply_target(store, r.entry_id, target, alpha)
-        result.imported += 1
+        if forced:
+            result.reimported += 1
+        else:
+            result.imported += 1
         weeks.add(r.week)
     result.weeks = sorted(weeks)
     result.weight_keys_touched = len(keys_touched)
