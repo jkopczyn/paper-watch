@@ -1629,3 +1629,86 @@ def test_openreview_fallback_flags_medium_high(tmp_path):
 
     assert _passes_gate(row, {"rss:Import AI"}, trusted=False)
     store.close()
+
+
+# -- historical replay ------------------------------------------------------
+def _replayable_store(tmp_path):
+    """A: shown 08-02; B: new before the 08-06 digest, shown in it; C: after."""
+    from paper_watch.enrich import ENRICH_VERSION
+
+    store = Store(tmp_path / "pw.db")
+    ids = {}
+    for key, title, mentioned in (
+        ("A", "Old Paper", "2026-08-01T00:00:00Z"),
+        ("B", "Fresh Paper", "2026-08-05T00:00:00Z"),
+        ("C", "Future Paper", "2026-08-07T00:00:00Z"),
+    ):
+        eid = store.insert_entry(
+            title=title, title_norm=title.lower(), first_seen_at=mentioned
+        )
+        store.add_mention(
+            entry_id=eid, source="rss:AF", fetched_at=mentioned,
+            source_item_url=f"https://ex.com/{key}",
+        )
+        store.set_enrichment(
+            eid, tldr="t", why="w", tags=[], relevance=6, version=ENRICH_VERSION
+        )
+        ids[key] = eid
+    store.record_shown(
+        entry_id=ids["A"], digest_at="2026-08-02T12:00:00Z", rank=1, score=1.0, resurfaced=False
+    )
+    store.record_shown(
+        entry_id=ids["B"], digest_at="2026-08-06T12:00:00Z", rank=1, score=1.0, resurfaced=False
+    )
+    return store, ids
+
+
+def test_replay_reconstructs_a_past_digest_from_current_data(tmp_path):
+    from paper_watch.store import AsOfStoreView
+
+    store, ids = _replayable_store(tmp_path)
+    at = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+    view = AsOfStoreView(store, "2026-08-06T12:00:00Z")
+
+    result = run_pipeline(
+        view, sources=[], enricher=None, sender=None,
+        weights=ScoringWeights(), top_n=20, since=None,
+        candidate_window_days=7, resurface_window_days=21, new_window="4d",
+        now=at, max_enrich=0, dry_run=True, deliver=True, out_dir=tmp_path / "out",
+    )
+
+    # B leads as new (its own 08-06 digest doesn't suppress it); A was shown
+    # on 08-02 and isn't surging; C hadn't been fetched yet.
+    assert result.chosen_ids == [ids["B"]]
+    assert result.digest_path is not None
+    assert "Fresh Paper" in result.digest_path.read_text()
+    store.close()
+
+
+def test_replay_entrypoint_reads_config_and_writes_the_digest(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    store, ids = _replayable_store(tmp_path)
+    store.close()
+    (tmp_path / "config.yaml").write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runtime.replay("config.yaml", at="2026-08-06T12:00:00Z")
+
+    assert result.chosen_ids == [ids["B"]]
+    assert result.digest_path is not None and result.digest_path.exists()
+    assert result.sent is False
+
+
+def test_replay_accepts_a_bare_date_as_end_of_day(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    store, ids = _replayable_store(tmp_path)
+    store.close()
+    (tmp_path / "config.yaml").write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    monkeypatch.chdir(tmp_path)
+
+    # end of 08-05: B is new (mentioned that morning), its 08-06 digest hasn't
+    # happened, C hasn't been fetched
+    result = runtime.replay("config.yaml", at="2026-08-05")
+    assert result.chosen_ids == [ids["B"]]

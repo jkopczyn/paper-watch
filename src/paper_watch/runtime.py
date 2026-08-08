@@ -828,6 +828,63 @@ def run_pipeline(
     return result
 
 
+# -- historical replay (wired by the CLI) ----------------------------------
+def _parse_replay_at(at: str) -> datetime:
+    """`--at` as an aware UTC datetime; a bare date means the end of that day."""
+    dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if len(at.strip()) == 10:  # date only
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return dt
+
+
+def replay(config_path: str, *, at: str) -> RunResult:
+    """Rebuild the digest as it would have looked at `at`, without polling.
+
+    Runs the selection/render half of the pipeline over an `AsOfStoreView`:
+    no sources, no enrichment, no send, no state written. Mentions and digest
+    history are read as of `at`; enrichment, metrics and feedback weights are
+    read as they stand today (they aren't versioned, so they can't be rewound).
+    Source-health warnings are suppressed — today's outages say nothing about
+    that date's digest.
+    """
+    from paper_watch.store import AsOfStoreView, Store
+
+    config = Config.load(config_path)
+    store = Store(config.db_path)
+    try:
+        now = _parse_replay_at(at)
+        view = AsOfStoreView(store, now.strftime(_ISO))
+        return run_pipeline(
+            view,
+            sources=[],
+            enricher=None,
+            sender=None,
+            source_priors=config.source_priors,
+            tracked_authors=normalize_tracked_authors(config.authors),
+            weights=config.scoring,
+            top_n=config.top_n,
+            since=None,
+            candidate_window_days=config.candidate_window_days,
+            resurface_window_days=config.resurface_window_days,
+            new_window=config.new_window,
+            max_new=config.max_new,
+            max_resurface=config.max_resurface,
+            old_after_days=config.old_after_days,
+            alert_after_failures=None,
+            recent_window=config.recent_window,
+            resurface_min_mentions=config.resurface_min_mentions,
+            now=now,
+            max_enrich=0,
+            dry_run=True,
+            deliver=True,
+            out_dir=Path("out"),
+        )
+    finally:
+        store.close()
+
+
 # -- real entrypoint (wired by the CLI) ------------------------------------
 def build_sources(
     config: Config,

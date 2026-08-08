@@ -787,9 +787,81 @@ class Store:
         ).fetchone()
         return int(row["n"])
 
+    def count_mention_occasions_between(self, entry_id: int, start: str, end: str) -> int:
+        """`count_mention_occasions_since`, bounded above (inclusive) for replays."""
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT source || '|' || substr(fetched_at, 1, 10)) AS n "
+            "FROM mentions WHERE entry_id = ? AND fetched_at >= ? AND fetched_at <= ?",
+            (entry_id, start, end),
+        ).fetchone()
+        return int(row["n"])
+
+    def count_shown_between(self, entry_id: int, start: str, end: str) -> int:
+        """Digests surfacing this entry in [start, end). Strict above: a replay
+        anchored at a digest's own timestamp must not count that digest."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM shown "
+            "WHERE entry_id = ? AND digest_at >= ? AND digest_at < ?",
+            (entry_id, start, end),
+        ).fetchone()
+        return int(row["n"])
+
+    def was_shown_before(self, entry_id: int, before: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM shown WHERE entry_id = ? AND digest_at < ? LIMIT 1",
+            (entry_id, before),
+        ).fetchone()
+        return row is not None
+
+    def last_digest_before(self, before: str) -> str | None:
+        """When the last digest strictly before `before` went out, if any."""
+        row = self.conn.execute(
+            "SELECT MAX(digest_at) AS at FROM shown WHERE digest_at < ?", (before,)
+        ).fetchone()
+        return row["at"]
+
     def get_entry_id_by_mention_url(self, url: str) -> int | None:
         row = self.conn.execute(
             "SELECT entry_id FROM mentions WHERE source_item_url = ? LIMIT 1",
             (url,),
         ).fetchone()
         return int(row["entry_id"]) if row else None
+
+
+class AsOfStoreView:
+    """Store facade that freezes the mention/shown clock at `at`, for replays.
+
+    Time-anchored reads see only mentions fetched by `at` (inclusive — the
+    digest built at an instant sees that instant's ingest) and digests
+    delivered strictly before it (a replay anchored on a past digest's own
+    timestamp must reconstruct that digest, not be suppressed by it).
+    Everything else — enrichment, metrics, feedback weights — reads through as
+    today's state: a replay re-ranks current knowledge under a past clock, it
+    does not rewind the database. Read-only by intent; only hand it to code
+    that doesn't write (`run_pipeline` with no sources and dry_run).
+    """
+
+    def __init__(self, store: Store, at: str):
+        self._store = store
+        self._at = at
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def active_entry_ids_since(self, since: str) -> list[int]:
+        return self._store.entry_ids_mentioned_between(since, self._at)
+
+    def count_mentions_since(self, entry_id: int, since: str) -> int:
+        return self._store.count_mentions_between(entry_id, since, self._at)
+
+    def count_mention_occasions_since(self, entry_id: int, since: str) -> int:
+        return self._store.count_mention_occasions_between(entry_id, since, self._at)
+
+    def count_shown_since(self, entry_id: int, since: str) -> int:
+        return self._store.count_shown_between(entry_id, since, self._at)
+
+    def was_shown(self, entry_id: int) -> bool:
+        return self._store.was_shown_before(entry_id, self._at)
+
+    def get_last_sent_at(self) -> str | None:
+        return self._store.last_digest_before(self._at)

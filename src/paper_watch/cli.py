@@ -139,6 +139,27 @@ def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) ->
 
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--at",
+    required=True,
+    help="Rebuild the digest as of this UTC instant (ISO datetime, or a bare "
+    "date meaning end of that day). No polling, no send, no state written.",
+)
+def replay(config_path: str, at: str) -> None:
+    """Render the digest as it would have looked at a past date.
+
+    Uses only what the store had gathered by then (mentions, digest history);
+    enrichment and feedback weights are read as they stand today.
+    """
+    from paper_watch import runtime
+
+    result = runtime.replay(config_path, at=at)
+    click.echo(f"Replay at {at}: {len(result.chosen_ids)} paper(s).")
+    click.echo(f"Wrote {result.digest_path}")
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
 def sources(config_path: str) -> None:
     """List configured sources."""
     from paper_watch.config import Config
