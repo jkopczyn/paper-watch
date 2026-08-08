@@ -163,6 +163,14 @@ SCHEMA: list[str] = [
 # by the machine being powered off. See runtime.effective_since.
 LAST_RUN_KEY = "last_run_at"
 
+# Key under which the ISO timestamp of the last source poll (ingest) is stored.
+# Ticks now outnumber polls: sources are fetched about once a day (see
+# schedule.is_poll_due), so gap-widening must measure from the last *poll* —
+# a gated tick covered nothing. Advanced whenever ingest runs, even when the
+# send that follows fails, so retry ticks rebuild from the unchanged DB
+# instead of re-fetching.
+LAST_POLLED_KEY = "last_polled_at"
+
 # Key under which the ISO timestamp of the last *delivered* digest is stored.
 # Distinct from LAST_RUN_KEY because the pipeline now ingests far more often
 # than it mails: this watermark is what decides whether a delivery is still owed
@@ -238,6 +246,12 @@ class Store:
 
     def set_last_run_at(self, iso: str) -> None:
         self.set_meta(LAST_RUN_KEY, iso)
+
+    def get_last_polled_at(self) -> str | None:
+        return self.get_meta(LAST_POLLED_KEY)
+
+    def set_last_polled_at(self, iso: str) -> None:
+        self.set_meta(LAST_POLLED_KEY, iso)
 
     def get_last_sent_at(self) -> str | None:
         return self.get_meta(LAST_SENT_KEY)

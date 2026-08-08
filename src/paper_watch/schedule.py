@@ -16,6 +16,15 @@ own beyond the `last_sent_at` watermark:
   emails. One send moves the watermark past all of them, and each digest covers
   everything since the previous *successful* send.
 
+A tick also asks a second question — should this tick poll the sources at all?
+Ingest needs nowhere near the 4-hourly cadence (the timer stays short only for
+same-day send retries), so `is_poll_due` gates fetching to roughly once a day
+against its own `last_polled_at` watermark, with one coupling to the delivery
+schedule: a delivery-due tick polls first when no poll has covered the owed
+point yet, so a digest never goes out describing yesterday. A failed send needs
+no snapshot machinery — its retries fall inside the gate and rebuild the same
+digest from the unchanged DB.
+
 Delivery times are local (noon means noon where the machine is), which is why
 every comparison here goes through `astimezone()` rather than fixed offsets —
 that keeps noon at noon across a DST change.
@@ -101,6 +110,40 @@ def next_delivery_after(now: datetime, *, days: set[int], at: time) -> datetime 
         if point > local:
             return point
     return None
+
+
+# Sources are fetched at most this often on off-schedule ticks; the 4-hourly
+# timer exists for send retries, not for ingest cadence.
+_POLL_INTERVAL = timedelta(hours=24)
+
+
+def is_poll_due(
+    now: datetime,
+    last_polled_at: str | None,
+    *,
+    delivery_due: bool,
+    days: set[int],
+    at: time,
+) -> bool:
+    """Should this tick fetch the sources?
+
+    True when no poll is on record, when the last one is at least 24h old, or
+    when a delivery is owed and no poll has happened at/after the owed point —
+    the digest should describe the world as of its own delivery time, not
+    yesterday's poll. A delivery-due tick whose point *is* covered does not
+    re-poll: that is the failed-send retry, which rebuilds the same digest from
+    the unchanged DB until either a send succeeds or the 24h gate lapses.
+    """
+    if not last_polled_at:
+        return True
+    polled = datetime.strptime(last_polled_at, _ISO).replace(tzinfo=timezone.utc)
+    if now - polled >= _POLL_INTERVAL:
+        return True
+    if delivery_due:
+        point = last_delivery_at_or_before(now, days=days, at=at)
+        if point is not None and polled < point:
+            return True
+    return False
 
 
 def is_delivery_due(

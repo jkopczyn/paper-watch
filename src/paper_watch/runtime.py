@@ -19,7 +19,7 @@ from paper_watch.digest import (
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
-from paper_watch.schedule import is_delivery_due, next_delivery_after
+from paper_watch.schedule import is_delivery_due, is_poll_due, next_delivery_after
 from paper_watch.sources.slack import iso_to_ts
 from paper_watch.score import (
     ScoreFeatures,
@@ -51,23 +51,30 @@ class RunResult:
     # Whether a due weekly feedback refresh ran on this tick (see
     # paper_watch.refresh; its own notice email carries the details).
     refreshed: bool = False
+    # Whether this tick fetched the sources at all — most ticks are gated (last
+    # poll <24h old, see schedule.is_poll_due). Defaults True so a hand-built
+    # result reads as an ordinary polled tick.
+    polled: bool = True
 
 
-def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
-    """Fetch cutoff for this run, widened to cover any gap since the last run.
+def effective_since(
+    last_polled: str | None, since: str | None, lookback: str, now: datetime
+) -> str:
+    """Fetch cutoff for this run, widened to cover any gap since the last poll.
 
     Normally this is the configured `lookback` window (e.g. 7d). But if the
-    machine was powered off across one or more scheduled runs, the last recorded
-    run can be further in the past than `lookback` — in that case we fetch from
-    the last run so the gap is fully covered and nothing is missed. An explicit
-    `--since` always wins and is passed through unchanged.
+    machine was powered off (or every tick gated) across more than that, the
+    last *poll* can be further in the past than `lookback` — in that case we
+    fetch from the last poll so the gap is fully covered and nothing is missed.
+    The watermark is the poll, not the tick: a gated tick fetched nothing, so
+    it must not count as coverage. An explicit `--since` always wins and is
+    passed through unchanged.
     """
     since_iso = since_to_iso(since or lookback, now=now)
     if since is None:
-        last_run = store.get_last_run_at()
         # ISO-8601 'Z' strings compare lexicographically == chronologically.
-        if last_run and last_run < since_iso:
-            since_iso = last_run
+        if last_polled and last_polled < since_iso:
+            since_iso = last_polled
     return since_iso
 
 
@@ -771,6 +778,7 @@ def run_pipeline(
     max_enrich: int,
     dry_run: bool,
     deliver: bool = True,
+    do_ingest: bool = True,
     out_dir: Path,
     metadata_fetch=None,
     source_priors: dict[str, float] | None = None,
@@ -799,14 +807,25 @@ def run_pipeline(
         else (now - timedelta(weeks=exclude_read_weeks)).strftime(_ISO)
     )
 
-    new_ids = ingest(
-        store,
-        sources,
-        since,
-        now_iso,
-        tweet_resolver=tweet_resolver,
-        newsletter_extractor=newsletter_extractor,
-    )
+    new_ids: list[int] = []
+    if do_ingest:
+        new_ids = ingest(
+            store,
+            sources,
+            since,
+            now_iso,
+            tweet_resolver=tweet_resolver,
+            newsletter_extractor=newsletter_extractor,
+        )
+        # The poll watermark moves as soon as the fetch has happened, not once
+        # the tick succeeds: a noon poll whose send then blows up must stay on
+        # record, so the 16:00 retry rebuilds from the DB instead of re-polling.
+        if not dry_run:
+            store.set_last_polled_at(now_iso)
+    # else: a gated tick — the last poll is <24h old and covers any owed
+    # delivery point, so there is nothing new to fetch. Enrichment still runs
+    # below: a previously polled backlog may be waiting on it.
+
     # Fill in real paper metadata BEFORE enrichment so the LLM judges the
     # paper's abstract, not a tweet fragment. None (tests) skips the arXiv fetch;
     # the OpenReview/PDF resolvers are independent and also default off.
@@ -836,11 +855,12 @@ def run_pipeline(
         new_count=len(new_ids),
         enriched_count=enriched,
         warnings=source_warnings(store, alert_after_failures),
+        polled=do_ingest,
     )
     if not deliver:
-        # An off-schedule tick: keep the sources polled (page-watch diffs and
-        # Slack history are lossy if we only look every few days) and stop
-        # before selection, so nothing is marked shown ahead of its digest.
+        # An off-schedule tick: stop before selection, so nothing is marked
+        # shown ahead of its digest. (How often the sources get polled is the
+        # gate's business — schedule.is_poll_due — not this branch's.)
         return result
 
     chosen = select_digest(
@@ -1072,19 +1092,38 @@ def run(
     store = Store(config.db_path)
     try:
         now = datetime.now(timezone.utc)
-        # Most ticks only ingest. A dry run always builds a digest (that is what
-        # it is for) and never delivers one, so it can preview off-schedule.
-        deliver = (
+        # Two gates per tick: mail only when the schedule owes a digest, and
+        # poll the sources at most daily. A dry run always polls and builds a
+        # digest (that is what it is for) and never delivers one, so it can
+        # preview off-schedule.
+        scheduled_due = is_delivery_due(
+            now,
+            store.get_last_sent_at(),
+            days=config.schedule.weekdays,
+            at=config.schedule.at_time,
+        )
+        deliver = dry_run or force_send or scheduled_due
+        # An explicit --since is a manual ask to poll. --force-send is a manual
+        # send with no owed schedule point, so it does not force one.
+        do_ingest = (
             dry_run
-            or force_send
-            or is_delivery_due(
+            or since is not None
+            or is_poll_due(
                 now,
-                store.get_last_sent_at(),
+                store.get_last_polled_at(),
+                delivery_due=scheduled_due,
                 days=config.schedule.weekdays,
                 at=config.schedule.at_time,
             )
         )
-        since_iso = effective_since(store, since, config.lookback, now)
+        # Gap-widening measures from the last poll (a gated tick covered
+        # nothing); last_run_at is the migration fallback from before the gate.
+        since_iso = effective_since(
+            store.get_last_polled_at() or store.get_last_run_at(),
+            since,
+            config.lookback,
+            now,
+        )
         nitter_instances = config.nitter_instances
         if config.handles:
             from paper_watch.nitter_local import ensure_local_nitter
@@ -1149,6 +1188,7 @@ def run(
             max_enrich=config.llm.max_enrich_per_run,
             dry_run=dry_run,
             deliver=deliver,
+            do_ingest=do_ingest,
             out_dir=Path("out"),
         )
         # Record the watermark only for real runs, so the next run covers the
@@ -1172,6 +1212,7 @@ def run(
                 refresh.run_feedback_refresh(store, config, sender, now=now)
                 result.refreshed = True
         result.attempted_delivery = deliver
+        result.polled = do_ingest
         result.next_delivery = next_delivery_after(
             now, days=config.schedule.weekdays, at=config.schedule.at_time
         )

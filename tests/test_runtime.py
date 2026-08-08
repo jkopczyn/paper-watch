@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -36,6 +36,20 @@ class ListSource:
 
     def fetch(self, since=None):
         return list(self._items)
+
+
+class QueueSource:
+    """Items queued between ticks; each fetch drains the queue and is counted,
+    so a test can see exactly which ticks actually polled."""
+
+    def __init__(self):
+        self.pending = []
+        self.fetches = 0
+
+    def fetch(self, since=None):
+        self.fetches += 1
+        items, self.pending = self.pending, []
+        return items
 
 
 class FakeEnricher:
@@ -256,36 +270,25 @@ def test_resolve_paper_metadata_skips_entries_with_abstract(tmp_path):
 _NOW = datetime(2026, 6, 19, 9, tzinfo=timezone.utc)
 
 
-def test_effective_since_uses_lookback_when_no_prior_run(tmp_path):
-    store = Store(tmp_path / "pw.db")
-    # No last run recorded -> plain lookback window.
-    assert effective_since(store, None, "7d", _NOW) == "2026-06-12T09:00:00Z"
-    store.close()
+def test_effective_since_uses_lookback_when_never_polled():
+    # No poll on record -> plain lookback window.
+    assert effective_since(None, None, "7d", _NOW) == "2026-06-12T09:00:00Z"
 
 
-def test_effective_since_widens_to_cover_gap_when_off(tmp_path):
-    store = Store(tmp_path / "pw.db")
-    # Last real run was 20 days ago -> further back than the 7d lookback, so the
-    # window widens to the last run to cover the gap left by being powered off.
-    store.set_last_run_at("2026-05-30T09:00:00Z")
-    assert effective_since(store, None, "7d", _NOW) == "2026-05-30T09:00:00Z"
-    store.close()
+def test_effective_since_widens_to_cover_gap_when_off():
+    # Last poll was 20 days ago -> further back than the 7d lookback, so the
+    # window widens to the last poll to cover the gap left by being powered off.
+    assert effective_since("2026-05-30T09:00:00Z", None, "7d", _NOW) == "2026-05-30T09:00:00Z"
 
 
-def test_effective_since_keeps_lookback_when_recent_run(tmp_path):
-    store = Store(tmp_path / "pw.db")
-    # A run 12h ago is more recent than the 7d lookback; don't shrink the window.
-    store.set_last_run_at("2026-06-18T21:00:00Z")
-    assert effective_since(store, None, "7d", _NOW) == "2026-06-12T09:00:00Z"
-    store.close()
+def test_effective_since_keeps_lookback_when_recent_poll():
+    # A poll 12h ago is more recent than the 7d lookback; don't shrink the window.
+    assert effective_since("2026-06-18T21:00:00Z", None, "7d", _NOW) == "2026-06-12T09:00:00Z"
 
 
-def test_effective_since_explicit_override_ignores_last_run(tmp_path):
-    store = Store(tmp_path / "pw.db")
-    store.set_last_run_at("2026-05-30T09:00:00Z")
+def test_effective_since_explicit_override_ignores_last_poll():
     # An explicit --since wins over gap coverage.
-    assert effective_since(store, "2026-06-15T00:00:00Z", "7d", _NOW) == "2026-06-15T00:00:00Z"
-    store.close()
+    assert effective_since("2026-05-30T09:00:00Z", "2026-06-15T00:00:00Z", "7d", _NOW) == "2026-06-15T00:00:00Z"
 
 
 def test_run_pipeline_dry_run_writes_digest(tmp_path):
@@ -524,6 +527,86 @@ def test_a_failed_send_leaves_the_delivery_owed(tmp_path):
     # the paper would never be shown.
     assert store.get_last_sent_at() is None
     assert not store.was_shown(1)
+    store.close()
+
+
+def test_gated_tick_skips_ingest_but_still_delivers(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    sender = CapturingSender()
+    # Friday morning's poll put the paper in the DB (and moved the watermark).
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00030", "Polled Earlier", when="2026-08-07T07:00:00Z")])],
+        CapturingSender(),
+        now=datetime(2026, 8, 7, 8, tzinfo=timezone.utc),
+        deliver=False,
+    )
+    assert store.get_last_polled_at() == "2026-08-07T08:00:00Z"
+
+    source = QueueSource()
+    result = _pipeline(store, [source], sender, deliver=True, do_ingest=False)
+    assert source.fetches == 0
+    assert result.polled is False
+    assert len(sender.sent) == 1 and "Polled Earlier" in sender.sent[0][1]
+    # A gated tick fetched nothing, so it must not move the poll watermark.
+    assert store.get_last_polled_at() == "2026-08-07T08:00:00Z"
+    store.close()
+
+
+def test_failed_send_retry_reuses_db_content(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    with pytest.raises(RuntimeError):
+        _pipeline(
+            store,
+            [ListSource("arxiv", [_arxiv_item("2408.00012", "Undelivered Paper")])],
+            ExplodingSender(),
+            deliver=True,
+        )
+    # The noon poll is on record even though the send blew up: that is what
+    # lets the 16:00 retry rebuild from the DB instead of re-fetching.
+    assert store.get_last_polled_at() == "2026-08-07T12:00:00Z"
+
+    sender = CapturingSender()
+    source = QueueSource()
+    result = _pipeline(
+        store, [source], sender,
+        now=datetime(2026, 8, 7, 16, tzinfo=timezone.utc),
+        deliver=True, do_ingest=False,
+    )
+    assert source.fetches == 0
+    assert result.sent and result.chosen_ids == [1]
+    assert "Undelivered Paper" in sender.sent[0][1]
+    store.close()
+
+
+def test_gated_tick_still_enriches_the_backlog(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    # A previously-polled entry that never got enriched (e.g. max_enrich hit).
+    eid = store.insert_entry(
+        title="Backlog Paper", title_norm="backlog paper",
+        first_seen_at="2026-08-07T08:00:00Z",
+    )
+    store.add_mention(
+        entry_id=eid, source="rss:Blog", fetched_at="2026-08-07T08:00:00Z",
+        source_item_url="https://blog/backlog",
+    )
+    result = _pipeline(store, [QueueSource()], CapturingSender(), deliver=False, do_ingest=False)
+    assert result.enriched_count == 1
+    assert store.get_entry(eid)["relevance"] is not None
+    store.close()
+
+
+def test_dry_run_never_moves_the_poll_watermark(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _pipeline(
+        store,
+        [ListSource("arxiv", [_arxiv_item("2408.00031", "Previewed Poll")])],
+        CapturingSender(),
+        deliver=True,
+        dry_run=True,
+        out_dir=tmp_path / "out",
+    )
+    assert store.get_last_polled_at() is None
     store.close()
 
 
@@ -1808,3 +1891,187 @@ feedback_refresh:
     result = runtime.run(str(cfg_file))
     assert len(refreshed_with) == 1
     assert not result.refreshed
+
+
+def test_run_gates_ingest_and_widens_from_last_poll(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.runtime import RunResult
+
+    # Keep the repo's .env (and its API keys) out of the run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+
+    captured = {}
+
+    def fake_pipeline(store, **kwargs):
+        captured.update(kwargs)
+        return RunResult()
+
+    monkeypatch.setattr(runtime, "run_pipeline", fake_pipeline)
+
+    iso = "%Y-%m-%dT%H:%M:%SZ"
+    now = datetime.now(timezone.utc)
+    old_poll = (now - timedelta(days=20)).strftime(iso)
+    store = Store(tmp_path / "pw.db")
+    # No delivery owed, so the gate is judged on poll age alone.
+    store.set_last_sent_at(now.strftime(iso))
+    # Ticked five minutes ago, but last actually POLLED 20 days ago: the fetch
+    # window must widen from the poll — the gated ticks covered nothing.
+    store.set_last_run_at((now - timedelta(minutes=5)).strftime(iso))
+    store.set_last_polled_at(old_poll)
+    store.close()
+
+    runtime.run(str(cfg_file))
+    assert captured["do_ingest"] is True  # 20 days is well past the 24h gate
+    assert captured["since"] == old_poll  # widened past the 7d lookback
+
+    store = Store(tmp_path / "pw.db")
+    store.set_last_polled_at((now - timedelta(hours=1)).strftime(iso))
+    store.close()
+    result = runtime.run(str(cfg_file))
+    assert captured["do_ingest"] is False  # fresh poll: gated
+    assert not result.polled
+
+
+# -- a fake week of 4-hourly ticks, end to end ------------------------------
+@pytest.fixture
+def tz(monkeypatch):
+    """Pin the process timezone; delivery/poll points are local wall-clock."""
+    import time as _time
+
+    def _set(name):
+        monkeypatch.setenv("TZ", name)
+        _time.tzset()
+
+    yield _set
+    monkeypatch.undo()
+    _time.tzset()
+
+
+def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
+    """Drive Mon–Sun of 4-hourly ticks through the pieces run() composes:
+    poll gate -> pipeline -> feedback refresh. Polls land ~daily, Tue/Fri
+    digests send, Thursday's refresh runs once, and a paper the group read
+    before it was ever ingested stays out of Friday's digest."""
+    tz("UTC")
+    from paper_watch import refresh
+    from paper_watch.feedback import VoteImportResult
+    from paper_watch.runtime import effective_since
+    from paper_watch.schedule import is_delivery_due, is_poll_due
+
+    monkeypatch.setenv("SLACK_TOKEN_FAR", "xoxp-test")
+    cfg = Config.model_validate(
+        {
+            "db_path": str(tmp_path / "pw.db"),
+            "schedule": {"deliver_days": ["tue", "fri"], "deliver_at": "12:00"},
+            "slack": {
+                "workspaces": [
+                    {
+                        "name": "far",
+                        "token_env": "SLACK_TOKEN_FAR",
+                        "voting_channels": [{"id": "C05", "name": "polls"}],
+                    }
+                ]
+            },
+            "feedback_refresh": {
+                "days": ["thu"],
+                "at": "12:00",
+                "workspace": "far",
+                "groundtruth_path": str(tmp_path / "gt.csv"),
+            },
+        }
+    )
+    fr = cfg.feedback_refresh
+    store = Store(cfg.db_path)
+    # Sunday baseline: nothing owed until Tuesday noon / Thursday noon.
+    store.set_last_sent_at("2026-08-02T12:00:00Z")
+    store.set_last_feedback_refresh_at("2026-08-02T12:00:00Z")
+
+    source = QueueSource()
+    sender = CapturingSender()
+    # Papers appear in the feed at these moments (between polls).
+    arrivals = {
+        "2026-08-03T08:00": _arxiv_item("2408.10001", "Monday Paper", when="2026-08-03T07:00:00Z"),
+        "2026-08-06T08:00": _arxiv_item("2408.10002", "Thursday Paper", when="2026-08-06T07:00:00Z"),
+        # Read at Thursday's meeting, first seen by us only on Friday.
+        "2026-08-07T08:00": _arxiv_item("2408.10003", "Read Before Ingest", when="2026-08-06T07:00:00Z"),
+    }
+
+    def refresh_importer(store_arg, *, path, config):
+        # Thursday's poll winner enters the readings ledger; the paper is not
+        # in the DB yet, so the reading lands with entry_id NULL.
+        row = store_arg.get_entry_by_arxiv_id("2408.10003")
+        store_arg.record_reading(
+            week="2026-W32", message_ts=_epoch("2026-08-06T11:00:00Z"),
+            url="https://arxiv.org/abs/2408.10003", arxiv_id="2408.10003",
+            title_norm=None, entry_id=row["id"] if row else None,
+            recorded_at="2026-08-06T12:00:00Z",
+        )
+        return VoteImportResult(imported=1, weeks=["2026-W32"], readings_recorded=1)
+
+    polls, refreshes = [], []
+    now = datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc)  # Monday 00:00
+    end = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
+    while now < end:
+        key = now.strftime("%Y-%m-%dT%H:%M")
+        if key in arrivals:
+            source.pending.append(arrivals[key])
+        scheduled = is_delivery_due(
+            now, store.get_last_sent_at(),
+            days=cfg.schedule.weekdays, at=cfg.schedule.at_time,
+        )
+        do_ingest = is_poll_due(
+            now, store.get_last_polled_at(), delivery_due=scheduled,
+            days=cfg.schedule.weekdays, at=cfg.schedule.at_time,
+        )
+        if do_ingest:
+            polls.append(now.strftime("%a %H:%M"))
+        run_pipeline(
+            store,
+            sources=[source],
+            enricher=FakeEnricher(),
+            sender=sender,
+            weights=ScoringWeights(),
+            top_n=10,
+            since=effective_since(store.get_last_polled_at(), None, "7d", now),
+            candidate_window_days=7,
+            resurface_window_days=21,
+            exclude_read_weeks=fr.exclude_read_weeks,
+            now=now,
+            max_enrich=50,
+            dry_run=False,
+            deliver=scheduled,
+            do_ingest=do_ingest,
+            out_dir=tmp_path / "out",
+        )
+        if refresh.is_refresh_due(
+            now, store.get_last_feedback_refresh_at(), days=fr.weekdays, at=fr.at_time
+        ):
+            refreshes.append(now.strftime("%a %H:%M"))
+            refresh.run_feedback_refresh(
+                store, cfg, sender, now=now,
+                export=lambda token, channel_ids, *, oldest, path, append=False: 0,
+                importer=refresh_importer,
+            )
+        now += timedelta(hours=4)
+
+    # Polls happen roughly daily, not on all 42 ticks — with the delivery-due
+    # Tuesday noon tick polling early because its midnight poll was stale.
+    assert polls == [
+        "Mon 00:00", "Tue 00:00", "Tue 12:00", "Wed 12:00",
+        "Thu 12:00", "Fri 12:00", "Sat 12:00", "Sun 12:00",
+    ]
+    assert source.fetches == len(polls)
+    assert refreshes == ["Thu 12:00"]
+
+    digests = [(s, h) for s, h in sender.sent if s.startswith("paper-watch digest")]
+    assert len(digests) == 2  # Tuesday and Friday
+    assert "Monday Paper" in digests[0][1]
+    assert "Thursday Paper" in digests[1][1]
+    # Fresh to the pipeline, but the group already read it: excluded.
+    assert "Read Before Ingest" not in digests[1][1]
+    # The refresh's own notice email went out too.
+    assert any(s.startswith("paper-watch feedback refresh") for s, _ in sender.sent)
+    store.close()

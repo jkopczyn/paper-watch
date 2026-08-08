@@ -7,6 +7,7 @@ import pytest
 
 from paper_watch.schedule import (
     is_delivery_due,
+    is_poll_due,
     last_delivery_at_or_before,
     next_delivery_after,
     parse_deliver_at,
@@ -153,6 +154,66 @@ def test_delivery_is_local_noon_not_utc_noon(tz):
     )
     assert is_delivery_due(
         utc(2026, 8, 7, 16), "2026-08-04T16:00:00Z", days=DAYS, at=NOON
+    )
+
+
+# -- the daily poll gate ---------------------------------------------------
+# Ticks stay 4-hourly (that is what buys same-day send retries), but sources
+# are only fetched about once a day; a tick where a delivery is owed polls
+# first unless a poll already covered the owed point.
+
+
+def test_poll_due_when_never_polled(tz):
+    tz("UTC")
+    assert is_poll_due(
+        utc(2026, 8, 5, 8), None, delivery_due=False, days=DAYS, at=NOON
+    )
+
+
+def test_poll_skipped_within_24h_off_schedule(tz):
+    tz("UTC")
+    # Wednesday 16:00, polled at 08:00: nothing owed, nothing worth fetching yet.
+    assert not is_poll_due(
+        utc(2026, 8, 5, 16), "2026-08-05T08:00:00Z", delivery_due=False,
+        days=DAYS, at=NOON,
+    )
+
+
+def test_poll_due_after_24h(tz):
+    tz("UTC")
+    assert is_poll_due(
+        utc(2026, 8, 6, 9), "2026-08-05T08:00:00Z", delivery_due=False,
+        days=DAYS, at=NOON,
+    )
+
+
+def test_delivery_due_tick_forces_poll_when_owed_point_uncovered(tz):
+    tz("UTC")
+    # Friday 13:00 with the noon digest owed: the midnight poll predates the
+    # owed point, so the digest must not go out on stale content.
+    assert is_poll_due(
+        utc(2026, 8, 7, 13), "2026-08-07T00:00:00Z", delivery_due=True,
+        days=DAYS, at=NOON,
+    )
+
+
+def test_delivery_due_tick_does_not_repoll_when_point_covered(tz):
+    tz("UTC")
+    # The noon tick polled at 12:05 and its send failed: the 16:00 retry
+    # rebuilds the digest from the unchanged DB rather than fetching again.
+    assert not is_poll_due(
+        utc(2026, 8, 7, 16), "2026-08-07T12:05:00Z", delivery_due=True,
+        days=DAYS, at=NOON,
+    )
+
+
+def test_persistent_failure_past_24h_repolls(tz):
+    tz("UTC")
+    # Still failing by Saturday afternoon: the gate has lapsed, send fresher
+    # content rather than yesterday's.
+    assert is_poll_due(
+        utc(2026, 8, 8, 13), "2026-08-07T12:05:00Z", delivery_due=True,
+        days=DAYS, at=NOON,
     )
 
 

@@ -25,7 +25,7 @@ candidate_window_days: 7
 resurface_window_days: 21
 resurface_min_mentions: 2
 
-schedule:        # run every few hours; mail on these days at this local time
+schedule:        # tick every few hours (sources poll ~daily); mail on these days at this local time
   deliver_days: [tue, fri]
   deliver_at: "12:00"
 
@@ -115,16 +115,21 @@ def init(path: Path, force: bool) -> None:
 def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) -> None:
     """Fetch and enrich; deliver the digest when the schedule says one is due.
 
-    Meant to be run on a short interval (see deploy/systemd). Most ticks only
-    ingest; a tick where a delivery is owed builds and mails the digest, and
-    retries on the following ticks until one gets through.
+    Meant to be run on a short interval (see deploy/systemd). Sources are only
+    polled about once a day; most ticks are gated and do nothing. A tick where
+    a delivery is owed polls first (if the owed point isn't covered), mails the
+    digest, and retries on the following ticks — from the already-polled DB —
+    until one gets through.
     """
     from paper_watch import runtime
 
     result = runtime.run(
         config_path, dry_run=dry_run, since=since, force_send=force_send
     )
-    click.echo(f"Ingested {result.new_count} new, enriched {result.enriched_count}.")
+    if result.polled:
+        click.echo(f"Ingested {result.new_count} new, enriched {result.enriched_count}.")
+    else:
+        click.echo(f"Poll skipped (last < 24h ago); enriched {result.enriched_count}.")
     for w in result.warnings:
         plural = "" if w.consecutive_failures == 1 else "s"
         click.echo(

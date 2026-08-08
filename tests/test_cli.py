@@ -166,6 +166,23 @@ def test_run_reports_an_ingest_only_tick(tmp_path, monkeypatch):
     assert "No digest due; next delivery Fri 2026-08-07 12:00." in result.output
 
 
+def test_run_reports_a_gated_tick(tmp_path, monkeypatch):
+    import paper_watch.runtime as runtime_mod
+
+    cfg = _write_config(tmp_path)
+    monkeypatch.setattr(
+        runtime_mod,
+        "run",
+        lambda *a, **kw: runtime_mod.RunResult(
+            enriched_count=1, polled=False, attempted_delivery=False
+        ),
+    )
+    result = CliRunner().invoke(cli, ["run", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "Poll skipped (last < 24h ago); enriched 1." in result.output
+    assert "Ingested" not in result.output
+
+
 def test_run_reports_a_due_digest_that_could_not_be_filled(tmp_path, monkeypatch):
     import paper_watch.runtime as runtime_mod
 
