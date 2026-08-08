@@ -268,3 +268,44 @@ def test_changed_polls_detects_edits_removals_and_added_rows(tmp_path):
     ))
     # 333.0 deleted, 111.0 edited, 222.0 gained a row; 444.0 is new, not a change
     assert changed_polls(cur, snap) == {"111.0", "222.0", "333.0"}
+
+
+def test_export_append_migrates_an_old_seven_column_file(tmp_path):
+    """A pre-attendance CSV gains the attendance column on first append, so
+    appended 8-field rows don't shift under the old 7-name header."""
+    from paper_watch.eval import load_groundtruth
+    from paper_watch.groundtruth import export_groundtruth
+
+    path = tmp_path / "gt.csv"
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        "2026-W29,111.0,1,one,3,https://x/old,Old\n"
+    )
+
+    def fetch(token, channel_id, oldest, cursor):
+        return {
+            "ok": True,
+            "messages": [{
+                "ts": "222.0",
+                "text": ":one: <https://x/new|New A>\n:two: <https://x/new2|New B>",
+                "reactions": [
+                    {"name": "one", "count": 3, "users": ["u1", "u2", "u3"]},
+                    {"name": "two", "count": 1, "users": ["u1"]},
+                ],
+            }],
+        }
+
+    n = export_groundtruth("tok", "C1", oldest=None, path=path, fetch=fetch, append=True)
+    assert n == 2
+    rows = load_groundtruth(path)
+    by_url = {r.url: r for r in rows}
+    assert by_url["https://x/old"].votes == 3
+    assert by_url["https://x/old"].attendance is None
+    assert by_url["https://x/new"].votes == 3
+    assert by_url["https://x/new"].attendance is not None
+    # single header line, new-format
+    text = path.read_text()
+    assert text.count("week,message_ts") == 1
+    assert text.splitlines()[0].split(",") == [
+        "week", "message_ts", "option", "emoji", "votes", "attendance", "url", "context"
+    ]

@@ -204,6 +204,20 @@ def export_groundtruth(
     rows.sort(key=lambda r: (r.message_ts, r.option))
     mode = "a" if append else "w"
     file_has_content = path.exists() and path.stat().st_size > 0
+    # A file from before a column was added (e.g. pre-attendance) must be
+    # migrated before rows in the current shape are appended, or every value
+    # after the new column would shift under the old header. Values are
+    # untouched: same rows, missing columns filled with "".
+    if append and file_has_content:
+        with path.open(newline="") as f:
+            header = next(csv.reader(f), [])
+        if header != _FIELDNAMES:
+            old_rows, _ = _existing_rows(path)
+            with path.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
+                writer.writeheader()
+                for r in old_rows:
+                    writer.writerow({k: r.get(k) or "" for k in _FIELDNAMES})
     write_header = not (append and file_has_content)
     # Hand edits can strip the final newline; repair before appending so the
     # first new row doesn't glue onto the last existing one.
