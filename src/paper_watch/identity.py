@@ -68,14 +68,18 @@ def canonicalize_url(url: str | None) -> str | None:
     except ValueError:
         return url
     host = (parts.hostname or "").lower()
+    # A trailing path slash is presentation, not identity (/science vs
+    # /science/); an empty query ("/science?") likewise dies in urlunsplit,
+    # since parts.query comes back "" for it.
+    path = (parts.path or "").rstrip("/")
     m = _TWEET_PATH.match(parts.path or "")
     if m and (
         host in _TWITTER_HOSTS or "nitter" in host or host in ("localhost", "127.0.0.1")
     ):
         return f"https://twitter.com/{m.group(1)}/status/{m.group(2)}"
-    if host in _LESSWRONG_MIRROR_HOSTS and (parts.path or "").startswith("/posts/"):
-        return urlunsplit(("https", "www.lesswrong.com", parts.path, parts.query, ""))
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+    if host in _LESSWRONG_MIRROR_HOSTS and path.startswith("/posts/"):
+        return urlunsplit(("https", "www.lesswrong.com", path, parts.query, ""))
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
 def extract_arxiv_id(text: str | None) -> str | None:

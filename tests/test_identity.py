@@ -83,6 +83,25 @@ def test_canonicalize_passthrough():
     )
 
 
+def test_canonicalize_strips_trailing_slash_and_empty_query():
+    # Apollo's Webflow rebuild showed the same page circulating as /science,
+    # /science/, and /science? — one identity, not three.
+    assert (
+        canonicalize_url("https://www.apolloresearch.ai/science/")
+        == "https://www.apolloresearch.ai/science"
+    )
+    assert (
+        canonicalize_url("https://www.apolloresearch.ai/science?")
+        == "https://www.apolloresearch.ai/science"
+    )
+    assert canonicalize_url("https://example.com/") == "https://example.com"
+    # a non-empty query survives, even alongside a trailing slash
+    assert (
+        canonicalize_url("https://example.com/b/?page=2")
+        == "https://example.com/b?page=2"
+    )
+
+
 def test_canonicalize_forum_mirrors_to_lesswrong():
     # alignmentforum.org is a filtered view of lesswrong.com: same post ids,
     # same slugs. The AF feed emits both hosts for one post, which showed up
