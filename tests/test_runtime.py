@@ -2241,3 +2241,41 @@ def test_lw_only_post_keeps_the_lw_link(tmp_path):
     links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
     assert links["abstract"] == "https://www.lesswrong.com/posts/xyz9/an-lw-only-post"
     store.close()
+
+
+def test_af_display_is_constructed_not_picked_from_aliases(tmp_path):
+    # The AF alias is an existence proof only: display must host-swap the
+    # canonical abstract link, never echo whichever alias happened to be
+    # stored first (a shared ?commentId= variant, a stale slug).
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    ingest(store, [ListSource("rss:Alignment Forum", [
+        _af_item("https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game?commentId=abc"),
+    ])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == (
+        "https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game?commentId=abc"
+    )
+    store.close()
+
+
+def test_af_alias_for_a_different_post_does_not_relabel(tmp_path):
+    # An entry can own AF URLs from other contexts; only an alias for THIS
+    # post id proves the post is on AF.
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="graphql:LessWrong AI",
+                   url="https://www.lesswrong.com/posts/xyz9/an-lw-only-post",
+                   title="An LW-only post", authors=[], abstract="abs",
+                   published_at="2026-08-06T00:00:00Z")
+    ingest(store, [ListSource("graphql:LessWrong AI", [item])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    store.add_entry_url(eid, "https://www.alignmentforum.org/posts/other1/some-other-post")
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == "https://www.lesswrong.com/posts/xyz9/an-lw-only-post"
+    store.close()

@@ -743,22 +743,30 @@ def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str
     return links
 
 
+_LW_POST_PREFIX = "https://www.lesswrong.com/posts/"
+
+
 def _prefer_alignmentforum(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
-    """Show the alignmentforum.org spelling of a lesswrong.com post when we
-    have one. Identity canonicalizes AF post URLs to LW (every AF post is an
-    LW post, not vice versa), but AF is the curated venue the reader prefers
-    to land on; the as-published AF URL survives as an entry_urls alias, so
-    its presence is proof the post exists there."""
+    """Show the alignmentforum.org spelling of a lesswrong.com post when the
+    post exists there. Identity canonicalizes AF post URLs to LW (every AF
+    post is an LW post, not vice versa), but AF is the curated venue the
+    reader prefers to land on. The shown URL is a host swap of the canonical
+    link; the entry's aliases only *prove* the post is on AF (an as-published
+    alignmentforum URL carrying this post id), so slug drift or ?commentId=
+    variants among them never leak into display, and their storage order is
+    irrelevant."""
     abstract = links.get("abstract") or ""
-    if "://www.lesswrong.com/posts/" not in abstract:
+    if not abstract.startswith(_LW_POST_PREFIX):
         return links
-    af = next(
-        (u for u in store.get_entry_urls(entry_id) if "alignmentforum.org/posts/" in u),
-        None,
+    rest = abstract[len(_LW_POST_PREFIX):]
+    post_id = rest.split("/")[0].split("?")[0]
+    on_af = post_id and any(
+        f"alignmentforum.org/posts/{post_id}" in u
+        for u in store.get_entry_urls(entry_id)
     )
-    if af is None:
+    if not on_af:
         return links
-    return {**links, "abstract": af}
+    return {**links, "abstract": "https://www.alignmentforum.org/posts/" + rest}
 
 
 def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
