@@ -83,6 +83,34 @@ def test_canonicalize_passthrough():
     )
 
 
+def test_canonicalize_forum_mirrors_to_lesswrong():
+    # alignmentforum.org is a filtered view of lesswrong.com: same post ids,
+    # same slugs. The AF feed emits both hosts for one post, which showed up
+    # twice in the 2026-08-07 digest.
+    lw = "https://www.lesswrong.com/posts/HACauvWhEdC6QhdS4/why-do-models-task-game"
+    assert canonicalize_url("https://www.alignmentforum.org/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url("https://alignmentforum.org/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url("https://www.greaterwrong.com/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url(lw) == lw
+    # bare-host LW normalizes to www too, so the two spellings dedup
+    assert canonicalize_url("https://lesswrong.com/posts/abc123/slug") == (
+        "https://www.lesswrong.com/posts/abc123/slug"
+    )
+
+
+def test_canonicalize_forum_mirrors_only_touch_post_paths():
+    # the EA forum is a separate ForumMagnum instance (different post ids) and
+    # AF non-post pages (tags, users) are left alone
+    assert (
+        canonicalize_url("https://forum.effectivealtruism.org/posts/abc/def")
+        == "https://forum.effectivealtruism.org/posts/abc/def"
+    )
+    assert (
+        canonicalize_url("https://www.alignmentforum.org/tag/ai")
+        == "https://www.alignmentforum.org/tag/ai"
+    )
+
+
 # -- DOI extraction --------------------------------------------------------
 def test_extract_doi_plain():
     assert extract_doi("10.1145/1234567.8901234") == "10.1145/1234567.8901234"
