@@ -405,4 +405,70 @@ def test_has_feedback(tmp_path: Path):
     )
     assert store.has_feedback(eid, "2026-W31") is True
     assert store.has_feedback(eid, "2026-W32") is False
+
+
+# -- as-of view (historical replay) ----------------------------------------
+def _replay_fixture(tmp_path: Path):
+    """One entry mentioned and shown across three days, for clock-freeze tests."""
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="A Paper", title_norm="a paper", first_seen_at="2026-08-01T00:00:00Z"
+    )
+    for day, n in (("01", 1), ("03", 2), ("07", 3)):
+        for i in range(n):
+            store.add_mention(
+                entry_id=eid,
+                source=f"rss:S{i}",
+                source_item_url=f"https://ex.com/p{day}{i}",
+                fetched_at=f"2026-08-{day}T0{i}:00:00Z",
+            )
+    store.record_shown(entry_id=eid, digest_at="2026-08-02T12:00:00Z", rank=1, score=1.0, resurfaced=False)
+    store.record_shown(entry_id=eid, digest_at="2026-08-06T12:00:00Z", rank=1, score=1.0, resurfaced=True)
+    return store, eid
+
+
+def test_between_counts_exclude_what_came_after_the_bound(tmp_path: Path):
+    store, eid = _replay_fixture(tmp_path)
+    assert store.count_mentions_between(eid, "2026-08-01T00:00:00Z", "2026-08-05T00:00:00Z") == 3
+    assert store.count_mention_occasions_between(eid, "2026-08-01T00:00:00Z", "2026-08-05T00:00:00Z") == 3
+    # the 08-07 mentions exist in the store but are after the bound
+    assert store.count_mentions_between(eid, "2026-08-02T00:00:00Z", "2026-08-05T00:00:00Z") == 2
+    store.close()
+
+
+def test_shown_state_before_a_bound(tmp_path: Path):
+    store, eid = _replay_fixture(tmp_path)
+    assert store.was_shown_before(eid, "2026-08-02T12:00:00Z") is False  # strict: not its own digest
+    assert store.was_shown_before(eid, "2026-08-03T00:00:00Z") is True
+    # count_shown_between is strict at the upper bound too (the replayed digest
+    # must not count itself)
+    assert store.count_shown_between(eid, "2026-08-01T00:00:00Z", "2026-08-06T12:00:00Z") == 1
+    assert store.count_shown_between(eid, "2026-08-01T00:00:00Z", "2026-08-07T00:00:00Z") == 2
+    store.close()
+
+
+def test_last_digest_before(tmp_path: Path):
+    store, _ = _replay_fixture(tmp_path)
+    assert store.last_digest_before("2026-08-01T00:00:00Z") is None
+    assert store.last_digest_before("2026-08-06T12:00:00Z") == "2026-08-02T12:00:00Z"  # strict
+    assert store.last_digest_before("2026-08-08T00:00:00Z") == "2026-08-06T12:00:00Z"
+    store.close()
+
+
+def test_as_of_view_freezes_the_clock_and_reads_the_rest_through(tmp_path: Path):
+    from paper_watch.store import AsOfStoreView
+
+    store, eid = _replay_fixture(tmp_path)
+    view = AsOfStoreView(store, "2026-08-06T12:00:00Z")
+
+    assert view.count_mentions_since(eid, "2026-08-01T00:00:00Z") == 3
+    assert view.count_mention_occasions_since(eid, "2026-08-01T00:00:00Z") == 3
+    assert view.active_entry_ids_since("2026-08-01T00:00:00Z") == [eid]
+    assert view.active_entry_ids_since("2026-08-05T00:00:00Z") == []
+    # the 08-06 digest is the one being replayed: not "shown", not the watermark
+    assert view.was_shown(eid) is True   # 08-02 was
+    assert view.count_shown_since(eid, "2026-08-01T00:00:00Z") == 1
+    assert view.get_last_sent_at() == "2026-08-02T12:00:00Z"
+    # non-time-anchored reads pass through to the real store
+    assert view.get_entry(eid)["title"] == "A Paper"
     store.close()

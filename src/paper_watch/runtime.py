@@ -113,6 +113,7 @@ def fresh_start(store, new_window: str, now: datetime) -> str:
 
 # -- ingest ----------------------------------------------------------------
 def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) -> None:
+    original_url = raw.url
     canonical = canonicalize_url(raw.url)
     if canonical != raw.url:
         raw = replace(raw, url=canonical)
@@ -123,6 +124,12 @@ def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) ->
     entry_id, created = resolve_or_create(store, fields)
     if created:
         new_ids.append(entry_id)
+    # Keep the as-published spelling as an alias alongside the canonical form:
+    # it is the only record of which mirror actually carried the item (e.g. an
+    # alignmentforum.org URL canonicalized to lesswrong.com), and display
+    # prefers the curated venue when it knows one (_display_links).
+    if original_url and original_url != raw.url:
+        store.add_entry_url(entry_id, original_url)
     store.add_mention(
         entry_id=entry_id,
         source=raw.source,
@@ -498,15 +505,21 @@ def _primary_source(store, entry_id: int) -> str:
 
 
 def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
-    """Trusted items bypass the gate; others need LLM relevance >= 4.
+    """Trusted items bypass the fit bar; others need LLM relevance >= 4.
 
-    arXiv author-feed items are a trusted whitelist (bypass), as is any mention
-    flagged trusted at ingest (a trusted Slack channel, or a Slack link to a
-    known paper domain). Entries not yet re-enriched under v2 fall back to the
-    old boolean safety_relevant flag.
+    arXiv author-feed items are a whitelist (unconditional bypass — tracked
+    authors' papers are wanted even when the LLM shrugs). A mention flagged
+    trusted at ingest (a trusted page or Slack channel, or a Slack link to a
+    known paper domain) skips the fit bar but not the artifact bar: relevance
+    0 means "not a research artifact" — trusted pages still carry footer/legal
+    links and hiring posts, which is what 0 exists to name. Unenriched trusted
+    items pass (a no-LLM setup has no scores to consult). Entries not yet
+    re-enriched under v2 fall back to the old boolean safety_relevant flag.
     """
-    if trusted or "arxiv" in sources:
+    if "arxiv" in sources:
         return True
+    if trusted:
+        return row["relevance"] != 0
     if row["relevance"] is not None:
         return row["relevance"] >= 4
     return bool(row["safety_relevant"])
@@ -723,11 +736,29 @@ def _pub_display(store, row) -> tuple[str, bool]:
 def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
     """The links to show; fall back to a URL the entry owns when it has none."""
     if links:
-        return links
+        return _prefer_alignmentforum(store, entry_id, links)
     for mention in store.get_mentions(entry_id):
         if mention["source_item_url"]:
             return {"link": mention["source_item_url"]}
     return links
+
+
+def _prefer_alignmentforum(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
+    """Show the alignmentforum.org spelling of a lesswrong.com post when we
+    have one. Identity canonicalizes AF post URLs to LW (every AF post is an
+    LW post, not vice versa), but AF is the curated venue the reader prefers
+    to land on; the as-published AF URL survives as an entry_urls alias, so
+    its presence is proof the post exists there."""
+    abstract = links.get("abstract") or ""
+    if "://www.lesswrong.com/posts/" not in abstract:
+        return links
+    af = next(
+        (u for u in store.get_entry_urls(entry_id) if "alignmentforum.org/posts/" in u),
+        None,
+    )
+    if af is None:
+        return links
+    return {**links, "abstract": af}
 
 
 def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:
@@ -910,6 +941,63 @@ def run_pipeline(
             resurfaced=c["resurfaced"],
         )
     return result
+
+
+# -- historical replay (wired by the CLI) ----------------------------------
+def _parse_replay_at(at: str) -> datetime:
+    """`--at` as an aware UTC datetime; a bare date means the end of that day."""
+    dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if len(at.strip()) == 10:  # date only
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return dt
+
+
+def replay(config_path: str, *, at: str) -> RunResult:
+    """Rebuild the digest as it would have looked at `at`, without polling.
+
+    Runs the selection/render half of the pipeline over an `AsOfStoreView`:
+    no sources, no enrichment, no send, no state written. Mentions and digest
+    history are read as of `at`; enrichment, metrics and feedback weights are
+    read as they stand today (they aren't versioned, so they can't be rewound).
+    Source-health warnings are suppressed — today's outages say nothing about
+    that date's digest.
+    """
+    from paper_watch.store import AsOfStoreView, Store
+
+    config = Config.load(config_path)
+    store = Store(config.db_path)
+    try:
+        now = _parse_replay_at(at)
+        view = AsOfStoreView(store, now.strftime(_ISO))
+        return run_pipeline(
+            view,
+            sources=[],
+            enricher=None,
+            sender=None,
+            source_priors=config.source_priors,
+            tracked_authors=normalize_tracked_authors(config.authors),
+            weights=config.scoring,
+            top_n=config.top_n,
+            since=None,
+            candidate_window_days=config.candidate_window_days,
+            resurface_window_days=config.resurface_window_days,
+            new_window=config.new_window,
+            max_new=config.max_new,
+            max_resurface=config.max_resurface,
+            old_after_days=config.old_after_days,
+            alert_after_failures=None,
+            recent_window=config.recent_window,
+            resurface_min_mentions=config.resurface_min_mentions,
+            now=now,
+            max_enrich=0,
+            dry_run=True,
+            deliver=True,
+            out_dir=Path("out"),
+        )
+    finally:
+        store.close()
 
 
 # -- real entrypoint (wired by the CLI) ------------------------------------

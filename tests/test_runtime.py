@@ -57,11 +57,14 @@ class FakeEnricher:
         self.relevant = relevant
 
     def enrich(self, *, title, abstract, source, mentions):
+        # "Irrelevant" is a weak fit (2, under the >=4 bar), not a non-artifact
+        # (0): trust bypasses the fit bar only, so 0 would gate even trusted
+        # items — see test_trusted_does_not_rescue_a_non_artifact.
         return EnrichmentResult(
             tldr=f"tldr:{title}",
             why="why",
             tags=["interp"],
-            relevance=8 if self.relevant else 0,
+            relevance=8 if self.relevant else 2,
         )
 
 
@@ -2074,4 +2077,167 @@ def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
     assert "Read Before Ingest" not in digests[1][1]
     # The refresh's own notice email went out too.
     assert any(s.startswith("paper-watch feedback refresh") for s, _ in sender.sent)
+
+
+# -- historical replay ------------------------------------------------------
+def _replayable_store(tmp_path):
+    """A: shown 08-02; B: new before the 08-06 digest, shown in it; C: after."""
+    from paper_watch.enrich import ENRICH_VERSION
+
+    store = Store(tmp_path / "pw.db")
+    ids = {}
+    for key, title, mentioned in (
+        ("A", "Old Paper", "2026-08-01T00:00:00Z"),
+        ("B", "Fresh Paper", "2026-08-05T00:00:00Z"),
+        ("C", "Future Paper", "2026-08-07T00:00:00Z"),
+    ):
+        eid = store.insert_entry(
+            title=title, title_norm=title.lower(), first_seen_at=mentioned
+        )
+        store.add_mention(
+            entry_id=eid, source="rss:AF", fetched_at=mentioned,
+            source_item_url=f"https://ex.com/{key}",
+        )
+        store.set_enrichment(
+            eid, tldr="t", why="w", tags=[], relevance=6, version=ENRICH_VERSION
+        )
+        ids[key] = eid
+    store.record_shown(
+        entry_id=ids["A"], digest_at="2026-08-02T12:00:00Z", rank=1, score=1.0, resurfaced=False
+    )
+    store.record_shown(
+        entry_id=ids["B"], digest_at="2026-08-06T12:00:00Z", rank=1, score=1.0, resurfaced=False
+    )
+    return store, ids
+
+
+def test_replay_reconstructs_a_past_digest_from_current_data(tmp_path):
+    from paper_watch.store import AsOfStoreView
+
+    store, ids = _replayable_store(tmp_path)
+    at = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+    view = AsOfStoreView(store, "2026-08-06T12:00:00Z")
+
+    result = run_pipeline(
+        view, sources=[], enricher=None, sender=None,
+        weights=ScoringWeights(), top_n=20, since=None,
+        candidate_window_days=7, resurface_window_days=21, new_window="4d",
+        now=at, max_enrich=0, dry_run=True, deliver=True, out_dir=tmp_path / "out",
+    )
+
+    # B leads as new (its own 08-06 digest doesn't suppress it); A was shown
+    # on 08-02 and isn't surging; C hadn't been fetched yet.
+    assert result.chosen_ids == [ids["B"]]
+    assert result.digest_path is not None
+    assert "Fresh Paper" in result.digest_path.read_text()
+    store.close()
+
+
+def test_replay_entrypoint_reads_config_and_writes_the_digest(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    store, ids = _replayable_store(tmp_path)
+    store.close()
+    (tmp_path / "config.yaml").write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runtime.replay("config.yaml", at="2026-08-06T12:00:00Z")
+
+    assert result.chosen_ids == [ids["B"]]
+    assert result.digest_path is not None and result.digest_path.exists()
+    assert result.sent is False
+
+
+def test_replay_accepts_a_bare_date_as_end_of_day(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    store, ids = _replayable_store(tmp_path)
+    store.close()
+    (tmp_path / "config.yaml").write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    monkeypatch.chdir(tmp_path)
+
+    # end of 08-05: B is new (mentioned that morning), its 08-06 digest hasn't
+    # happened, C hasn't been fetched
+    result = runtime.replay("config.yaml", at="2026-08-05")
+    assert result.chosen_ids == [ids["B"]]
+
+
+def test_trusted_does_not_rescue_a_non_artifact():
+    # Goodfire's trusted research page grew /legal/tos footer links (2026-08-06):
+    # trusted page, real diff, but the enricher rightly scored them 0 = "not a
+    # research artifact". Trusted skips the fit bar, not the artifact bar.
+    from paper_watch.runtime import _passes_gate
+
+    def row(relevance):
+        return {"relevance": relevance, "safety_relevant": None}
+
+    assert _passes_gate(row(0), {"page:Goodfire Research"}, trusted=True) is False
+    # a weak-fit but real artifact on a trusted page still bypasses the fit bar
+    assert _passes_gate(row(1), {"page:Goodfire Research"}, trusted=True) is True
+    # not yet enriched: keep trusting the page (no-LLM setups have no scores)
+    assert _passes_gate(row(None), {"page:Goodfire Research"}, trusted=True) is True
+    # the arXiv author whitelist stays unconditional (tracked authors' papers
+    # are wanted even when the LLM shrugs)
+    assert _passes_gate(row(0), {"arxiv"}, trusted=False) is True
+
+
+# -- AF/LW mirror presentation ----------------------------------------------
+def _af_item(url):
+    return RawItem(source="rss:Alignment Forum", url=url, title="Why do models task game?",
+                   authors=[], abstract="abs", published_at="2026-08-06T00:00:00Z")
+
+
+def test_af_feed_dual_hosts_collapse_and_flag_as_af(tmp_path):
+    # The AF feed emits the same post under both hosts; it must land as ONE
+    # entry whose source chip says rss:Alignment Forum.
+    from paper_watch.runtime import _entry_sources
+
+    store = Store(tmp_path / "pw.db")
+    ingest(store, [ListSource("rss:Alignment Forum", [
+        _af_item("https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"),
+        _af_item("https://www.lesswrong.com/posts/HACa4/why-do-models-task-game"),
+    ])], None, "2026-08-06T12:00:00Z")
+
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert len(ids) == 1
+    assert _entry_sources(store, ids[0]) == {"rss:Alignment Forum"}
+    store.close()
+
+
+def test_af_post_displays_the_af_link(tmp_path):
+    # Identity canonicalizes to lesswrong.com, but AF is the curated venue:
+    # when the AF feed emitted the post, display its alignmentforum.org URL.
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    ingest(store, [ListSource("rss:Alignment Forum", [
+        _af_item("https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"),
+    ])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == (
+        "https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"
+    )
+    # ...while identity still answers to the canonical LW spelling
+    assert store.get_entry_by_source_url(
+        "https://www.lesswrong.com/posts/HACa4/why-do-models-task-game"
+    ) is not None
+    store.close()
+
+
+def test_lw_only_post_keeps_the_lw_link(tmp_path):
+    # A post that only ever appeared on LW has no AF page to point at.
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="graphql:LessWrong AI",
+                   url="https://www.lesswrong.com/posts/xyz9/an-lw-only-post",
+                   title="An LW-only post", authors=[], abstract="abs",
+                   published_at="2026-08-06T00:00:00Z")
+    ingest(store, [ListSource("graphql:LessWrong AI", [item])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == "https://www.lesswrong.com/posts/xyz9/an-lw-only-post"
     store.close()

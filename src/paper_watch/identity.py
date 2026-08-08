@@ -40,6 +40,19 @@ _SITE_SUFFIX_MIN_REMAINDER = 20
 _TWEET_PATH = re.compile(r"^/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d+)")
 _TWITTER_HOSTS = {"twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com"}
 
+# alignmentforum.org is a filtered view of lesswrong.com — every AF post is the
+# LW post with the same id and slug — and greaterwrong.com mirrors LW read-only.
+# Post URLs collapse to the LW host so a crosspost seen under both is one entry.
+# The reverse mapping would break: most LW posts have no AF page. The EA forum
+# is a separate ForumMagnum database and must NOT be folded in.
+_LESSWRONG_MIRROR_HOSTS = {
+    "alignmentforum.org",
+    "www.alignmentforum.org",
+    "greaterwrong.com",
+    "www.greaterwrong.com",
+    "lesswrong.com",  # bare host, so both LW spellings dedup too
+}
+
 
 def canonicalize_url(url: str | None) -> str | None:
     """Normalize a mention URL so the same item dedups across fetch routes.
@@ -55,12 +68,18 @@ def canonicalize_url(url: str | None) -> str | None:
     except ValueError:
         return url
     host = (parts.hostname or "").lower()
+    # A trailing path slash is presentation, not identity (/science vs
+    # /science/); an empty query ("/science?") likewise dies in urlunsplit,
+    # since parts.query comes back "" for it.
+    path = (parts.path or "").rstrip("/")
     m = _TWEET_PATH.match(parts.path or "")
     if m and (
         host in _TWITTER_HOSTS or "nitter" in host or host in ("localhost", "127.0.0.1")
     ):
         return f"https://twitter.com/{m.group(1)}/status/{m.group(2)}"
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+    if host in _LESSWRONG_MIRROR_HOSTS and path.startswith("/posts/"):
+        return urlunsplit(("https", "www.lesswrong.com", path, parts.query, ""))
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
 def extract_arxiv_id(text: str | None) -> str | None:
@@ -132,6 +151,14 @@ _GENERIC_TITLES = frozenset(
         "introduction",
         "appendix",
         "supplementary material",
+        # Link-anchor boilerplate: index pages label many different documents
+        # with the same anchor text (Apollo's Science page links every post's
+        # underlying report as "Primary source" — 14 system cards fused into
+        # one entry), and site footers title legal pages this way.
+        "primary source",
+        "terms of use",
+        "privacy policy",
+        "cookie policy",
     }
 )
 

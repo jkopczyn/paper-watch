@@ -83,6 +83,53 @@ def test_canonicalize_passthrough():
     )
 
 
+def test_canonicalize_strips_trailing_slash_and_empty_query():
+    # Apollo's Webflow rebuild showed the same page circulating as /science,
+    # /science/, and /science? — one identity, not three.
+    assert (
+        canonicalize_url("https://www.apolloresearch.ai/science/")
+        == "https://www.apolloresearch.ai/science"
+    )
+    assert (
+        canonicalize_url("https://www.apolloresearch.ai/science?")
+        == "https://www.apolloresearch.ai/science"
+    )
+    assert canonicalize_url("https://example.com/") == "https://example.com"
+    # a non-empty query survives, even alongside a trailing slash
+    assert (
+        canonicalize_url("https://example.com/b/?page=2")
+        == "https://example.com/b?page=2"
+    )
+
+
+def test_canonicalize_forum_mirrors_to_lesswrong():
+    # alignmentforum.org is a filtered view of lesswrong.com: same post ids,
+    # same slugs. The AF feed emits both hosts for one post, which showed up
+    # twice in the 2026-08-07 digest.
+    lw = "https://www.lesswrong.com/posts/HACauvWhEdC6QhdS4/why-do-models-task-game"
+    assert canonicalize_url("https://www.alignmentforum.org/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url("https://alignmentforum.org/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url("https://www.greaterwrong.com/posts/HACauvWhEdC6QhdS4/why-do-models-task-game") == lw
+    assert canonicalize_url(lw) == lw
+    # bare-host LW normalizes to www too, so the two spellings dedup
+    assert canonicalize_url("https://lesswrong.com/posts/abc123/slug") == (
+        "https://www.lesswrong.com/posts/abc123/slug"
+    )
+
+
+def test_canonicalize_forum_mirrors_only_touch_post_paths():
+    # the EA forum is a separate ForumMagnum instance (different post ids) and
+    # AF non-post pages (tags, users) are left alone
+    assert (
+        canonicalize_url("https://forum.effectivealtruism.org/posts/abc/def")
+        == "https://forum.effectivealtruism.org/posts/abc/def"
+    )
+    assert (
+        canonicalize_url("https://www.alignmentforum.org/tag/ai")
+        == "https://www.alignmentforum.org/tag/ai"
+    )
+
+
 # -- DOI extraction --------------------------------------------------------
 def test_extract_doi_plain():
     assert extract_doi("10.1145/1234567.8901234") == "10.1145/1234567.8901234"
@@ -216,3 +263,15 @@ def test_two_links_sharing_generic_anchor_text_stay_separate(tmp_path):
         ids.add(entry_id)
     assert len(ids) == 2, "two unrelated papers were fused by their anchor text"
     store.close()
+
+
+def test_link_boilerplate_titles_are_not_distinctive():
+    # Apollo's Science index links every post's underlying report with the
+    # anchor text "Primary source" — 14 distinct system cards fused into one
+    # entry by title match (2026-08-06).
+    from paper_watch.identity import is_distinctive_title
+
+    assert is_distinctive_title("primary source") is False
+    assert is_distinctive_title("terms of use") is False
+    assert is_distinctive_title("privacy policy") is False
+    assert is_distinctive_title("cookie policy") is False

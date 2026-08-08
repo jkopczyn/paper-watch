@@ -140,8 +140,10 @@ def _poll_iso(message_ts: str) -> str:
 
 def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     # Mirrors runtime._passes_gate (kept in sync; runtime owns the semantics).
-    if trusted or "arxiv" in sources:
+    if "arxiv" in sources:
         return True
+    if trusted:
+        return row["relevance"] != 0
     if row["relevance"] is not None:
         return row["relevance"] >= 4
     return bool(row["safety_relevant"])
