@@ -20,6 +20,7 @@ from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
 from paper_watch.schedule import is_delivery_due, next_delivery_after
+from paper_watch.sources.slack import iso_to_ts
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
@@ -501,6 +502,46 @@ def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
     return bool(row["safety_relevant"])
 
 
+def _read_exclusion_index(
+    store, message_ts_min: str
+) -> tuple[set[int], set[str], set[str], set[str]]:
+    """(entry_ids, arxiv_ids, title_norms, urls) read within the horizon.
+
+    Built from the readings ledger; a reading recorded before its paper was
+    ever ingested (entry_id NULL) still contributes its arxiv_id / title_norm /
+    URL keys, so the paper stays excluded once it does arrive.
+    """
+    entry_ids: set[int] = set()
+    arxiv_ids: set[str] = set()
+    title_norms: set[str] = set()
+    urls: set[str] = set()
+    for r in store.readings_since(message_ts_min):
+        if r["entry_id"] is not None:
+            entry_ids.add(r["entry_id"])
+        if r["arxiv_id"]:
+            arxiv_ids.add(r["arxiv_id"])
+        if r["title_norm"]:
+            title_norms.add(r["title_norm"])
+        if r["url"]:
+            urls.add(canonicalize_url(r["url"]))
+    return entry_ids, arxiv_ids, title_norms, urls
+
+
+def _entry_was_read(store, entry_id: int, row, index) -> bool:
+    entry_ids, arxiv_ids, title_norms, urls = index
+    if entry_id in entry_ids:
+        return True
+    if row["arxiv_id"] and row["arxiv_id"] in arxiv_ids:
+        return True
+    if row["title_norm"] and row["title_norm"] in title_norms:
+        return True
+    # entry_urls lookups only when the cheaper tiers miss and there is
+    # anything to match against -- keeps the common path query-free.
+    if urls:
+        return any(canonicalize_url(u) in urls for u in store.get_entry_urls(entry_id))
+    return False
+
+
 def select_digest(
     store,
     weights: ScoringWeights,
@@ -515,6 +556,7 @@ def select_digest(
     resurface_min_mentions: int = 2,
     source_priors: dict[str, float] | None = None,
     tracked_authors: set[str] | None = None,
+    exclude_read_since: str | None = None,
 ) -> list[dict]:
     """Assemble the digest: lead with fresh papers, pad with resurfacing ones.
 
@@ -534,6 +576,11 @@ def select_digest(
 
     `new_start` defaults to `candidate_start`, and `old_before` / `max_new` /
     `max_resurface` to unbounded, which reproduces a single ranked pool.
+
+    `exclude_read_since` (an ISO instant) drops any candidate the group has
+    already read -- a readings-ledger row at/after that moment matching by
+    entry_id, else arxiv_id, else title_norm, else exact URL among the entry's
+    URLs. Display-only: read papers keep their feedback rows and weight nudges.
     """
     source_priors = source_priors or {}
     tracked_authors = tracked_authors or set()
@@ -542,6 +589,11 @@ def select_digest(
     weights = weights.model_copy(
         update={"feedback": dynamic_feedback_weight(store.count_feedback_weeks())}
     )
+    read_index = None
+    if exclude_read_since is not None:
+        ts_min = iso_to_ts(exclude_read_since)
+        if ts_min is not None:
+            read_index = _read_exclusion_index(store, ts_min)
     new_items: list[dict] = []
     padding_items: list[dict] = []
 
@@ -550,6 +602,8 @@ def select_digest(
         sources = _entry_sources(store, entry_id)
         trusted = store.entry_has_trusted_mention(entry_id)
         if not _passes_gate(row, sources, trusted):
+            continue
+        if read_index is not None and _entry_was_read(store, entry_id, row, read_index):
             continue
 
         metrics = store.latest_metrics(entry_id)
@@ -706,6 +760,7 @@ def run_pipeline(
     max_new: int = 10,
     max_resurface: int | None = None,
     old_after_days: int | None = None,
+    exclude_read_weeks: int | None = None,
     alert_after_failures: int | None = None,
     recent_window: str = "48h",
     resurface_min_mentions: int = 2,
@@ -734,6 +789,11 @@ def run_pipeline(
         None
         if old_after_days is None
         else (now - timedelta(days=old_after_days)).strftime(_ISO)
+    )
+    exclude_read_since = (
+        None
+        if exclude_read_weeks is None
+        else (now - timedelta(weeks=exclude_read_weeks)).strftime(_ISO)
     )
 
     new_ids = ingest(
@@ -793,6 +853,7 @@ def run_pipeline(
         resurface_min_mentions=resurface_min_mentions,
         source_priors=source_priors,
         tracked_authors=tracked_authors,
+        exclude_read_since=exclude_read_since,
     )
     items = [_to_item(store, c, recent_start=recent_start) for c in chosen]
     html = render_html(items, generated_at=now_iso, warnings=result.warnings)

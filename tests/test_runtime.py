@@ -1629,3 +1629,131 @@ def test_openreview_fallback_flags_medium_high(tmp_path):
 
     assert _passes_gate(row, {"rss:Import AI"}, trusted=False)
     store.close()
+
+
+# -- readings-ledger exclusion (read papers stay out of the digest) --------
+def _record_reading(store, *, message_ts, url="https://example.com/read",
+                    arxiv_id=None, title_norm=None, entry_id=None):
+    store.record_reading(
+        week="2026-W28", message_ts=message_ts, url=url, arxiv_id=arxiv_id,
+        title_norm=title_norm, entry_id=entry_id,
+        recorded_at="2026-07-10T00:00:00Z",
+    )
+
+
+def _epoch(iso: str) -> str:
+    dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return str(dt.timestamp())
+
+
+# a horizon comfortably before the July mentions the _new_entry helper seeds
+_READ_SINCE = "2026-01-12T00:00:00Z"
+_READ_TS = _epoch("2026-07-07T12:00:00Z")
+
+
+def test_a_read_paper_is_excluded_by_entry_id(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "read")
+    _record_reading(store, message_ts=_READ_TS, entry_id=eid)
+    # exclusion is opt-in: without the kwarg the paper is still selected
+    assert [c["entry_id"] for c in _select(store)] == [eid]
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    store.close()
+
+
+def test_a_read_paper_is_excluded_by_arxiv_id(tmp_path):
+    # The 2607.28607 case: the reading lands first (entry_id NULL), the paper
+    # is only ingested later -- the arxiv_id recorded from the poll option must
+    # still keep it out.
+    store = Store(tmp_path / "pw.db")
+    _record_reading(
+        store, message_ts=_READ_TS,
+        url="https://arxiv.org/abs/2607.28607", arxiv_id="2607.28607",
+    )
+    eid = store.insert_entry(
+        title="Read Before Ingest", title_norm="read before ingest",
+        first_seen_at="2026-07-10T00:00:00Z", arxiv_id="2607.28607",
+    )
+    store.add_mention(
+        entry_id=eid, source="rss:Blog", fetched_at="2026-07-10T00:00:00Z",
+        source_item_url="https://arxiv.org/abs/2607.28607",
+    )
+    store.set_enrichment(eid, tldr="t", why="w", tags=[], relevance=8, version=2)
+    assert [c["entry_id"] for c in _select(store)] == [eid]
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    store.close()
+
+
+def test_a_read_paper_is_excluded_by_title_norm(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "tn")  # title_norm "new paper tn"
+    _record_reading(store, message_ts=_READ_TS, title_norm="new paper tn")
+    assert [c["entry_id"] for c in _select(store)] == [eid]
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    store.close()
+
+
+def test_a_read_paper_is_excluded_by_url(tmp_path):
+    # No id/arxiv/title tie -- only an entry_urls row matches the reading's
+    # URL (canonicalized: the poll link's fragment must not defeat the match).
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "u")
+    store.add_entry_url(eid, "https://example.org/paper")
+    _record_reading(store, message_ts=_READ_TS, url="https://example.org/paper#abstract")
+    assert [c["entry_id"] for c in _select(store)] == [eid]
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    store.close()
+
+
+def test_a_reading_older_than_the_horizon_does_not_exclude(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "old-read")
+    # one second before the cutoff: outside the horizon, paper is selected
+    before = str(float(_epoch(_READ_SINCE)) - 1.0)
+    _record_reading(store, message_ts=before, entry_id=eid)
+    assert [c["entry_id"] for c in _select(store, exclude_read_since=_READ_SINCE)] == [eid]
+    # exactly at the cutoff: inclusive (>=), paper is excluded
+    _record_reading(
+        store, message_ts=_epoch(_READ_SINCE), url="https://example.com/read2",
+        entry_id=eid,
+    )
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    store.close()
+
+
+def test_exclusion_is_display_only(tmp_path):
+    # Dropping a read paper from the digest must not touch its feedback rows
+    # or learned weights -- the group's votes keep steering scores.
+    store = Store(tmp_path / "pw.db")
+    eid = _new_entry(store, "fbk")
+    store.record_feedback(entry_id=eid, week="2026-W28", picked=True,
+                          group_rating=None, notes=None,
+                          imported_at="2026-07-10T00:00:00Z")
+    store.set_feedback_weight("source", "rss:Blog", 0.7)
+    _record_reading(store, message_ts=_READ_TS, entry_id=eid)
+    assert _select(store, exclude_read_since=_READ_SINCE) == []
+    assert store.has_feedback(eid, "2026-W28")
+    assert store.get_feedback_weight("source", "rss:Blog") == pytest.approx(0.7)
+    store.close()
+
+
+def test_run_pipeline_passes_exclude_read_weeks_through(tmp_path):
+    # An entry read 2 weeks ago is dropped at a 26-week horizon but not at 1.
+    store = Store(tmp_path / "pw.db")
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    eid = _new_entry(store, "wired", fetched_at="2026-07-13T00:00:00Z")
+    _record_reading(store, message_ts=_epoch("2026-06-30T12:00:00Z"), entry_id=eid)
+
+    def pipeline(**kw):
+        return run_pipeline(
+            store, sources=[], enricher=None, sender=CapturingSender(),
+            weights=ScoringWeights(), top_n=10, since=None,
+            candidate_window_days=7, resurface_window_days=30,
+            new_window="7d", now=now, max_enrich=0, dry_run=True,
+            out_dir=tmp_path / "out", **kw,
+        )
+
+    assert pipeline(exclude_read_weeks=1).chosen_ids == [eid]
+    assert pipeline(exclude_read_weeks=26).chosen_ids == []
+    assert pipeline().chosen_ids == [eid]  # default: feature off
+    store.close()
