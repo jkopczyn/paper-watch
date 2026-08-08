@@ -84,6 +84,128 @@ def test_export_groundtruth_writes_csv(tmp_path):
     assert rows[0]["url"] == "https://arxiv.org/abs/2605.01642"
 
 
+POLL_MSG_T2 = {
+    "ts": "1783468800.000200",  # a week after POLL_MSG
+    "text": (
+        "next week:\n"
+        "• :one:<https://a.example/x|First>\n"
+        "• :two:<https://b.example/y|Second>\n"
+    ),
+    "reactions": [{"name": "one", "count": 3}, {"name": "two", "count": 1}],
+}
+
+
+def _fetch_returning(*msgs, captured=None):
+    def fetch(token, channel_id, oldest, cursor):
+        if captured is not None:
+            captured["oldest"] = oldest
+        return {
+            "ok": True,
+            "messages": list(msgs),
+            "response_metadata": {"next_cursor": ""},
+        }
+
+    return fetch
+
+
+def test_export_append_only_adds_new_polls(tmp_path):
+    out = tmp_path / "gt.csv"
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out, fetch=_fetch_returning(POLL_MSG)
+    )
+    original_lines = out.read_text().splitlines()
+
+    n = export_groundtruth(
+        "t",
+        "C1",
+        oldest=None,
+        path=out,
+        fetch=_fetch_returning(POLL_MSG, POLL_MSG_T2),
+        append=True,
+    )
+    assert n == 2  # only T2's options count
+    lines = out.read_text().splitlines()
+    assert lines[: len(original_lines)] == original_lines  # untouched, in place
+    rows = list(csv.DictReader(out.open()))
+    assert [r["message_ts"] for r in rows] == [
+        POLL_MSG["ts"]] * 3 + [POLL_MSG_T2["ts"]] * 2
+    assert [r["votes"] for r in rows[3:]] == ["3", "1"]
+
+
+def test_export_append_dedups_by_message_ts(tmp_path):
+    out = tmp_path / "gt.csv"
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out, fetch=_fetch_returning(POLL_MSG)
+    )
+    before = out.read_text()
+    n = export_groundtruth(
+        "t", "C1", oldest=None, path=out, fetch=_fetch_returning(POLL_MSG), append=True
+    )
+    assert n == 0
+    assert out.read_text() == before
+
+
+def test_export_append_uses_max_ts_as_oldest(tmp_path):
+    out = tmp_path / "gt.csv"
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out,
+        fetch=_fetch_returning(POLL_MSG, POLL_MSG_T2),
+    )
+    captured = {}
+    export_groundtruth(
+        "t", "C1", oldest="ignored", path=out,
+        fetch=_fetch_returning(captured=captured), append=True,
+    )
+    assert captured["oldest"] == POLL_MSG_T2["ts"]
+
+
+def test_export_append_falls_back_when_file_missing(tmp_path):
+    out = tmp_path / "gt.csv"
+    captured = {}
+    n = export_groundtruth(
+        "t", "C1", oldest="1234567890.0", path=out,
+        fetch=_fetch_returning(POLL_MSG, captured=captured), append=True,
+    )
+    assert captured["oldest"] == "1234567890.0"
+    assert n == 3
+    rows = list(csv.DictReader(out.open()))
+    assert len(rows) == 3 and rows[0]["week"]  # header written, rows land
+
+
+def test_export_append_preserves_hand_deletions(tmp_path):
+    # File holds only T2 (T1 hand-pruned); oldest becomes T2's ts, so T1 is
+    # never re-fetched and stays absent.
+    out = tmp_path / "gt.csv"
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out, fetch=_fetch_returning(POLL_MSG_T2)
+    )
+    captured = {}
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out,
+        fetch=_fetch_returning(captured=captured), append=True,
+    )
+    assert captured["oldest"] == POLL_MSG_T2["ts"]
+    rows = list(csv.DictReader(out.open()))
+    assert POLL_MSG["ts"] not in {r["message_ts"] for r in rows}
+
+
+def test_export_append_repairs_missing_trailing_newline(tmp_path):
+    # Hand edits in some editors strip the final newline; appending must not
+    # glue the first new row onto the last existing one.
+    out = tmp_path / "gt.csv"
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out, fetch=_fetch_returning(POLL_MSG)
+    )
+    out.write_text(out.read_text().rstrip("\n"))
+    export_groundtruth(
+        "t", "C1", oldest=None, path=out,
+        fetch=_fetch_returning(POLL_MSG_T2), append=True,
+    )
+    rows = list(csv.DictReader(out.open()))
+    assert len(rows) == 5
+    assert {r["message_ts"] for r in rows} == {POLL_MSG["ts"], POLL_MSG_T2["ts"]}
+
+
 def test_parse_poll_message_captures_attendance_from_reactors():
     msg = {
         "ts": "1.0",

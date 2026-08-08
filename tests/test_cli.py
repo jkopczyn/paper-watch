@@ -102,6 +102,28 @@ def test_groundtruth_channel_flag_overrides_config(tmp_path, monkeypatch):
     assert captured["channel_ids"] == ["COVERRIDE"]
 
 
+def test_groundtruth_append_flag_passes_through(tmp_path, monkeypatch):
+    cfg = _write_config(tmp_path)
+    monkeypatch.setenv("SLACK_TOKEN_MATS", "xoxp-test")
+    captured = {}
+
+    def fake_export(token, channel_ids, *, oldest, path, append=False, **kw):
+        captured["oldest"] = oldest
+        captured["append"] = append
+        return 2
+
+    monkeypatch.setattr(groundtruth_mod, "export_groundtruth", fake_export)
+    result = CliRunner().invoke(
+        cli,
+        ["groundtruth", "--config", str(cfg), "--workspace", "mats",
+         "--append", "--out", str(tmp_path / "gt.csv")],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["append"] is True
+    assert captured["oldest"]  # --since-derived fallback still computed
+    assert "Appended 2 new poll option(s)" in result.output
+
+
 def test_groundtruth_errors_without_voting_channels(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(

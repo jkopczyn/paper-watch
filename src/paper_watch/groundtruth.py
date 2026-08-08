@@ -114,6 +114,21 @@ def parse_poll_message(msg: dict, *, min_options: int = 2) -> list[PollOption]:
     return options
 
 
+_FIELDNAMES = [
+    "week", "message_ts", "option", "emoji", "votes",
+    "attendance", "url", "context",
+]
+
+
+def _existing_rows(path: Path) -> tuple[list[dict], set[str]]:
+    """Rows already in the CSV and their message_ts set; ([], set()) if none."""
+    if not path.exists() or path.stat().st_size == 0:
+        return [], set()
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    return rows, {r["message_ts"] for r in rows if r.get("message_ts")}
+
+
 def export_groundtruth(
     token: str,
     channel_ids: str | list[str],
@@ -122,14 +137,27 @@ def export_groundtruth(
     path: str | Path,
     fetch=slack_history,
     min_options: int = 2,
+    append: bool = False,
 ) -> int:
     """Scan channels' history for poll messages and write the CSV. Returns rows.
 
     Accepts one channel id or a list; rows from all channels are merged into a
     single CSV.
+
+    `append` never rewrites existing rows — hand-deletions of misdetected polls
+    stick, because covered ranges are not re-fetched: `oldest` becomes the max
+    `message_ts` already captured (caller's `oldest` when the file is
+    empty/missing), and any fetched poll whose ts is already present is dropped.
+    Returns the count of *new* rows only.
     """
     if isinstance(channel_ids, str):
         channel_ids = [channel_ids]
+    path = Path(path)
+    existing_ts: set[str] = set()
+    if append:
+        _, existing_ts = _existing_rows(path)
+        if existing_ts:
+            oldest = max(existing_ts, key=float)
     rows: list[PollOption] = []
     for channel_id in channel_ids:
         cursor: str | None = None
@@ -143,17 +171,25 @@ def export_groundtruth(
             if not cursor:
                 break
 
+    if append:
+        # Belt and braces: Slack's `oldest` is exclusive by default, but the
+        # dedup keeps behavior independent of that.
+        rows = [r for r in rows if r.message_ts not in existing_ts]
     rows.sort(key=lambda r: (r.message_ts, r.option))
-    path = Path(path)
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "week", "message_ts", "option", "emoji", "votes",
-                "attendance", "url", "context",
-            ],
-        )
-        writer.writeheader()
+    mode = "a" if append else "w"
+    file_has_content = path.exists() and path.stat().st_size > 0
+    write_header = not (append and file_has_content)
+    # Hand edits can strip the final newline; repair before appending so the
+    # first new row doesn't glue onto the last existing one.
+    if append and file_has_content:
+        with path.open("rb+") as fb:
+            fb.seek(-1, 2)
+            if fb.read(1) not in (b"\n", b"\r"):
+                fb.write(b"\r\n")
+    with path.open(mode, newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
         for r in rows:
             writer.writerow(
                 {

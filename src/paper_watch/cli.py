@@ -270,7 +270,21 @@ def feedback_import(config_path: str, in_file: Path, week: str | None) -> None:
     default="groundtruth.csv",
     show_default=True,
 )
-def groundtruth_cmd(config_path: str, workspace: str, channel_id: str | None, since: str, out: Path) -> None:
+@click.option(
+    "--append",
+    is_flag=True,
+    help="Add only new polls after the newest already captured; never rewrites "
+    "existing rows (hand-pruned history sticks). --since applies only when the "
+    "file is empty/missing.",
+)
+def groundtruth_cmd(
+    config_path: str,
+    workspace: str,
+    channel_id: str | None,
+    since: str,
+    out: Path,
+    append: bool,
+) -> None:
     """Export reading-group poll messages + emoji votes to a ground-truth CSV.
 
     Detects poll-shaped messages (>= 2 links); votes come from number-emoji
@@ -312,9 +326,13 @@ def groundtruth_cmd(config_path: str, workspace: str, channel_id: str | None, si
         )
 
     n = export_groundtruth(
-        token, channel_ids, oldest=iso_to_ts(since_to_iso(since)), path=out
+        token, channel_ids, oldest=iso_to_ts(since_to_iso(since)), path=out,
+        append=append,
     )
-    click.echo(f"Wrote {n} poll option(s) to {out} — review/prune before eval.")
+    if append:
+        click.echo(f"Appended {n} new poll option(s) to {out} — review/prune before eval.")
+    else:
+        click.echo(f"Wrote {n} poll option(s) to {out} — review/prune before eval.")
 
 
 @cli.command("eval")
