@@ -20,7 +20,7 @@ news are not relevant no matter how AI-flavored.
 
 **Secondary interests** — worth surfacing when strong: value learning and
 pluralistic alignment, multi-agent safety, AI forecasting and compute/scaling
-analysis, well-argued conceptual alignment work.
+analysis, well-argued conceptual alignment work, model system cards.
 
 **Peripheral** — usually relevance ≤ 1 unless exceptional: AI policy and
 governance work of any kind, capability results with no safety angle, ML
