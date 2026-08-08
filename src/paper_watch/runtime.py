@@ -48,6 +48,9 @@ class RunResult:
     next_delivery: datetime | None = None
     # Sources that have failed enough runs in a row to be worth reporting.
     warnings: list = field(default_factory=list)
+    # Whether a due weekly feedback refresh ran on this tick (see
+    # paper_watch.refresh; its own notice email carries the details).
+    refreshed: bool = False
 
 
 def effective_since(store, since: str | None, lookback: str, now: datetime) -> str:
@@ -1132,6 +1135,11 @@ def run(
             resurface_window_days=config.resurface_window_days,
             new_window=config.new_window,
             max_new=config.max_new,
+            exclude_read_weeks=(
+                config.feedback_refresh.exclude_read_weeks
+                if config.feedback_refresh
+                else None
+            ),
             max_resurface=config.max_resurface,
             old_after_days=config.old_after_days,
             alert_after_failures=config.alert_after_failures,
@@ -1149,6 +1157,20 @@ def run(
         # delivery watermark is moved by run_pipeline, and only on a real send.
         if not dry_run:
             store.set_last_run_at(now.strftime(_ISO))
+        # The weekly feedback refresh runs after the pipeline so its failure
+        # can never block a digest; its own machinery keeps it owed on failure.
+        if config.feedback_refresh is not None and not dry_run:
+            from paper_watch import refresh
+
+            fr = config.feedback_refresh
+            if refresh.is_refresh_due(
+                now,
+                store.get_last_feedback_refresh_at(),
+                days=fr.weekdays,
+                at=fr.at_time,
+            ):
+                refresh.run_feedback_refresh(store, config, sender, now=now)
+                result.refreshed = True
         result.attempted_delivery = deliver
         result.next_delivery = next_delivery_after(
             now, days=config.schedule.weekdays, at=config.schedule.at_time

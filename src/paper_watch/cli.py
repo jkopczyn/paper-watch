@@ -29,6 +29,13 @@ schedule:        # run every few hours; mail on these days at this local time
   deliver_days: [tue, fri]
   deliver_at: "12:00"
 
+#feedback_refresh:  # weekly Slack poll export→import; omit to keep it manual
+#  days: [thu]
+#  at: "12:00"
+#  workspace: far            # slack.workspaces name whose voting_channels hold the polls
+#  groundtruth_path: groundtruth.csv
+#  exclude_read_weeks: 26    # papers read this recently stay out of digests
+
 authors: []      # arXiv author names (replaces Google Scholar alerts)
 feeds: []        # - {name: ML Safety, url: https://newsletter.mlsafety.org/feed}
 handles: []      # Twitter usernames (seeded via `paper-watch seed-handles`)
@@ -125,6 +132,8 @@ def run(config_path: str, dry_run: bool, since: str | None, force_send: bool) ->
             f"({w.since}) — {w.error} [{w.url}]",
             err=True,
         )
+    if result.refreshed:
+        click.echo("Feedback refresh ran (details in its notice email).")
     if result.digest_path is not None:
         click.echo(f"Dry run: wrote {result.digest_path}")
     elif not result.attempted_delivery:

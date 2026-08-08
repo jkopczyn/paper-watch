@@ -54,6 +54,44 @@ class ScheduleConfig(BaseModel):
         return value
 
 
+class FeedbackRefreshConfig(BaseModel):
+    """Weekly export→import of the reading group's poll votes, run as a second
+    scheduled duty inside the ordinary tick (no extra systemd unit).
+
+    `days`/`at` use the delivery schedule's grammar, and dueness has the same
+    owed/collapse semantics against its own watermark — see `paper_watch.refresh`.
+    """
+
+    days: list[str] = Field(default_factory=lambda: ["thu"])
+    at: str = "12:00"
+    # slack.workspaces name whose voting_channels hold the reading-group polls.
+    workspace: str = "far"
+    groundtruth_path: str = "groundtruth.csv"
+    # Papers the group read within this many weeks are dropped from digests
+    # (display-only: their feedback still moves the weights).
+    exclude_read_weeks: int = 26
+
+    @property
+    def weekdays(self) -> set[int]:
+        return parse_weekdays(self.days)
+
+    @property
+    def at_time(self) -> time:
+        return parse_deliver_at(self.at)
+
+    @field_validator("days")
+    @classmethod
+    def _check_days(cls, value: list[str]) -> list[str]:
+        parse_weekdays(value)  # raises on an unknown or empty day list
+        return value
+
+    @field_validator("at")
+    @classmethod
+    def _check_at(cls, value: str) -> str:
+        parse_deliver_at(value)
+        return value
+
+
 class GraphqlFeedConfig(BaseModel):
     """A ForumMagnum GraphQL feed (LessWrong / Alignment Forum), filtered by tag.
 
@@ -196,6 +234,9 @@ class Config(BaseModel):
     # Delivery days and local delivery time. The runner ticks every few hours
     # and only mails when one of these moments is uncovered.
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    # Weekly export→import of the reading group's poll votes; absent means the
+    # feedback loop stays manual (`paper-watch groundtruth` / `feedback import`).
+    feedback_refresh: FeedbackRefreshConfig | None = None
     top_n: int = 20
     # The digest leads with up to `max_new` genuinely new papers (never shown
     # before, first mentioned within `new_window`); the remaining slots up to

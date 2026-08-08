@@ -170,3 +170,56 @@ slack:
     )
     cfg = Config.load(cfg_file)
     assert cfg.slack.paper_link_domains == ["example.org"]
+
+
+def test_feedback_refresh_block_parses(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+feedback_refresh:
+  days: [thu]
+  at: "16:30"
+  workspace: far
+  groundtruth_path: gt.csv
+  exclude_read_weeks: 12
+"""
+    )
+    cfg = Config.load(cfg_file)
+    assert cfg.feedback_refresh is not None
+    assert cfg.feedback_refresh.weekdays == {3}
+    at = cfg.feedback_refresh.at_time
+    assert (at.hour, at.minute) == (16, 30)
+    assert cfg.feedback_refresh.workspace == "far"
+    assert cfg.feedback_refresh.groundtruth_path == "gt.csv"
+    assert cfg.feedback_refresh.exclude_read_weeks == 12
+
+
+def test_feedback_refresh_defaults(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("")
+    # Absent block: the feature stays off.
+    assert Config.load(cfg_file).feedback_refresh is None
+    # Empty block: Thursday noon, the FAR polls, a 26-week horizon.
+    cfg_file.write_text("feedback_refresh: {}\n")
+    fr = Config.load(cfg_file).feedback_refresh
+    assert fr is not None
+    assert fr.weekdays == {3}
+    assert fr.at_time.hour == 12
+    assert fr.workspace == "far"
+    assert fr.groundtruth_path == "groundtruth.csv"
+    assert fr.exclude_read_weeks == 26
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "feedback_refresh:\n  days: [funday]\n",
+        'feedback_refresh:\n  at: "noon"\n',
+        "feedback_refresh:\n  days: []\n",
+    ],
+)
+def test_feedback_refresh_rejects_bad_day(tmp_path: Path, body: str):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(body)
+    with pytest.raises(ValueError):
+        Config.load(cfg_file)

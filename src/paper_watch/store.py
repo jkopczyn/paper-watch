@@ -170,6 +170,17 @@ LAST_RUN_KEY = "last_run_at"
 # only when an email actually went out.
 LAST_SENT_KEY = "last_sent_at"
 
+# Key under which the ISO timestamp of the last *successful* weekly feedback
+# refresh (groundtruth export → vote import) is stored. A failed refresh leaves
+# it untouched so later ticks retry, exactly like an undelivered digest — see
+# paper_watch.refresh.
+LAST_FEEDBACK_REFRESH_KEY = "last_feedback_refresh_at"
+
+# Key holding the ISO of the owed refresh point whose failure has already been
+# mailed, so the 4-hourly retries of a stuck refresh send one failure notice
+# per owed point rather than a drumbeat. Plain get_meta/set_meta suffices.
+FEEDBACK_FAILURE_NOTICED_KEY = "feedback_failure_noticed_for"
+
 
 class Store:
     def __init__(self, path: str | Path):
@@ -233,6 +244,12 @@ class Store:
 
     def set_last_sent_at(self, iso: str) -> None:
         self.set_meta(LAST_SENT_KEY, iso)
+
+    def get_last_feedback_refresh_at(self) -> str | None:
+        return self.get_meta(LAST_FEEDBACK_REFRESH_KEY)
+
+    def set_last_feedback_refresh_at(self, iso: str) -> None:
+        self.set_meta(LAST_FEEDBACK_REFRESH_KEY, iso)
 
     # -- source health -----------------------------------------------------
     def record_source_ok(self, source: str, *, label: str, at: str) -> None:

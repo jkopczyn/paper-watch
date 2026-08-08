@@ -1757,3 +1757,54 @@ def test_run_pipeline_passes_exclude_read_weeks_through(tmp_path):
     assert pipeline(exclude_read_weeks=26).chosen_ids == []
     assert pipeline().chosen_ids == [eid]  # default: feature off
     store.close()
+
+
+def test_run_wires_feedback_refresh_on_a_due_tick(tmp_path, monkeypatch):
+    from paper_watch import refresh, runtime
+    from paper_watch.refresh import RefreshResult
+    from paper_watch.runtime import RunResult
+
+    # Keep the repo's .env (and its API keys) out of the run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        f"""
+db_path: {tmp_path / "pw.db"}
+feedback_refresh:
+  workspace: far
+  groundtruth_path: {tmp_path / "gt.csv"}
+  exclude_read_weeks: 9
+"""
+    )
+
+    captured = {}
+
+    def fake_pipeline(store, **kwargs):
+        captured.update(kwargs)
+        return RunResult()
+
+    refreshed_with = []
+
+    def fake_refresh(store, config, sender, *, now):
+        refreshed_with.append(now)
+        return RefreshResult(performed=True, ok=True)
+
+    monkeypatch.setattr(runtime, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(refresh, "run_feedback_refresh", fake_refresh)
+
+    # No refresh watermark yet: the first tick refreshes, whatever the day.
+    result = runtime.run(str(cfg_file))
+    assert captured["exclude_read_weeks"] == 9
+    assert len(refreshed_with) == 1
+    assert result.refreshed
+
+    # Watermark fresh (set to now by hand): nothing owed, no refresh.
+    store = Store(tmp_path / "pw.db")
+    store.set_last_feedback_refresh_at(
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    store.close()
+    result = runtime.run(str(cfg_file))
+    assert len(refreshed_with) == 1
+    assert not result.refreshed
