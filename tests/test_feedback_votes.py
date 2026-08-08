@@ -340,3 +340,101 @@ def test_import_votes_force_ts_of_a_deleted_poll_clears_its_ledger_row(tmp_path)
         "SELECT COUNT(*) AS n FROM readings WHERE message_ts = ?", (TS1,)
     ).fetchone()["n"] == 0
     store.close()
+
+
+# -- tie resolution (resolve-ties) --------------------------------------------
+
+
+def _tied_csv(path):
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{TS1},1,one,3,https://arxiv.org/abs/2605.01642,Winner\n"
+        f"2026-W27,{TS1},2,two,3,https://arxiv.org/abs/2605.00002,Meh\n"
+        f"2026-W27,{TS1},3,three,1,https://arxiv.org/abs/2605.00003,ZeroVote\n"
+    )
+    return path
+
+
+def test_outstanding_ties_lists_tied_options_and_skips_resolved(tmp_path):
+    from paper_watch.feedback import outstanding_ties, resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = _tied_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+
+    ties = outstanding_ties(store, path)
+    assert len(ties) == 1
+    tie = ties[0]
+    assert (tie.week, tie.message_ts) == ("2026-W27", TS1)
+    # Only the tied-top options are choices; the 1-vote option is not.
+    assert [o.title for o in tie.options] == ["Winner", "Meh"]
+    assert all(o.source == "arxiv.org" for o in tie.options)
+    assert tie.options[0].authors == ["Alice"]
+
+    resolve_tie(store, tie, 1, recorded_at="2026-08-08T00:00:00Z")
+    assert outstanding_ties(store, path) == []
+    store.close()
+
+
+def test_resolve_tie_single_choice_marks_read_and_picked(tmp_path):
+    from paper_watch.feedback import outstanding_ties, resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    a, b = _seed_all(store)
+    path = _tied_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+
+    tie = outstanding_ties(store, path)[0]
+    n = resolve_tie(store, tie, 2, recorded_at="2026-08-08T00:00:00Z")
+    assert n == 1
+    readings = store.conn.execute(
+        "SELECT url, entry_id FROM readings WHERE message_ts = ?", (TS1,)
+    ).fetchall()
+    assert [(r["url"], r["entry_id"]) for r in readings] == [
+        ("https://arxiv.org/abs/2605.00002", b)
+    ]
+    picked = {r["entry_id"]: r["picked"] for r in store.conn.execute(
+        "SELECT entry_id, picked FROM feedback WHERE week = '2026-W27'"
+    )}
+    assert picked[b] == 1 and picked[a] == 0
+    store.close()
+
+
+def test_resolve_tie_zero_marks_all_tied_options_read(tmp_path):
+    from paper_watch.feedback import outstanding_ties, resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = _tied_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+
+    tie = outstanding_ties(store, path)[0]
+    n = resolve_tie(store, tie, 0, recorded_at="2026-08-08T00:00:00Z")
+    assert n == 2
+    urls = [r["url"] for r in store.conn.execute(
+        "SELECT url FROM readings WHERE message_ts = ? ORDER BY url", (TS1,)
+    )]
+    assert urls == [
+        "https://arxiv.org/abs/2605.00002", "https://arxiv.org/abs/2605.01642"
+    ]
+    # Nobody picked: "all/none/don't remember" is exclusion, not endorsement.
+    assert all(r["picked"] == 0 for r in store.conn.execute(
+        "SELECT picked FROM feedback"
+    ))
+    store.close()
+
+
+def test_import_votes_omits_resolved_ties_from_result(tmp_path):
+    from paper_watch.feedback import outstanding_ties, resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = _tied_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+    tie = outstanding_ties(store, path)[0]
+    resolve_tie(store, tie, 0, recorded_at="2026-08-08T00:00:00Z")
+
+    res = import_votes(store, path=path, config=_cfg())
+    assert res.ties == []
+    store.close()

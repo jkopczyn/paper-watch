@@ -242,3 +242,43 @@ def test_run_reports_unhealthy_sources(tmp_path, monkeypatch):
     assert "Transluce: 18 consecutive failures" in result.output
     assert "since 2026-08-04" in result.output
     assert "404 Not Found" in result.output
+
+
+def test_resolve_ties_prompts_and_records(tmp_path):
+    from datetime import datetime, timezone
+
+    from paper_watch.store import Store
+
+    ts = str(datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc).timestamp())
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    gt = tmp_path / "gt.csv"
+    gt.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{ts},1,one,3,https://arxiv.org/abs/2605.01642,Paper A\n"
+        f"2026-W27,{ts},2,two,3,https://blog.example/b,Paper B\n"
+    )
+    store = Store(tmp_path / "pw.db")
+    store.close()
+
+    result = CliRunner().invoke(
+        cli,
+        ["resolve-ties", "--config", str(cfg), "--groundtruth", str(gt)],
+        input="1\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "2026-W27" in result.output
+    assert "Paper A" in result.output and "arxiv.org" in result.output
+    assert "0: all / none / don't remember" in result.output
+
+    store = Store(tmp_path / "pw.db")
+    urls = [r["url"] for r in store.conn.execute("SELECT url FROM readings")]
+    assert urls == ["https://arxiv.org/abs/2605.01642"]
+    store.close()
+
+    # Settled: a second run finds nothing outstanding.
+    result = CliRunner().invoke(
+        cli, ["resolve-ties", "--config", str(cfg), "--groundtruth", str(gt)]
+    )
+    assert result.exit_code == 0
+    assert "No outstanding ties" in result.output

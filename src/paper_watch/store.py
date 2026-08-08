@@ -818,6 +818,21 @@ class Store:
         )
         self.conn.commit()
 
+    def has_reading_for_poll(self, message_ts: str) -> bool:
+        """Any ledger row for this poll — i.e. its outcome has been settled,
+        whether by a clear winner at import or a human tie resolution."""
+        row = self.conn.execute(
+            "SELECT 1 FROM readings WHERE message_ts = ? LIMIT 1", (message_ts,)
+        ).fetchone()
+        return row is not None
+
+    def set_feedback_picked(self, entry_id: int, week: str) -> None:
+        self.conn.execute(
+            "UPDATE feedback SET picked = 1 WHERE entry_id = ? AND week = ?",
+            (entry_id, week),
+        )
+        self.conn.commit()
+
     def delete_readings_for_poll(self, message_ts: str) -> None:
         """Drop a poll's ledger rows — its CSV data was hand-corrected, so the
         winner (if any) is about to be re-derived from the fixed rows."""

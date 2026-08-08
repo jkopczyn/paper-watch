@@ -370,6 +370,57 @@ def groundtruth_cmd(
         click.echo(f"Wrote {n} poll option(s) to {out} — review/prune before eval.")
 
 
+@cli.command("resolve-ties")
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--groundtruth",
+    "groundtruth_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Votes CSV holding the polls (default: config feedback_refresh path).",
+)
+def resolve_ties_cmd(config_path: str, groundtruth_path: Path | None) -> None:
+    """Settle tied polls by hand: pick what the group actually read.
+
+    For each poll whose top vote count is shared, the tied options are shown
+    by title/author/source and one keypress decides: N marks that option read
+    (and picked); 0 — all, none, or you don't remember — marks every tied
+    option read, since exclusion is cheap whichever it was. Settled ties stop
+    appearing in the weekly refresh notice.
+    """
+    from datetime import datetime, timezone
+
+    from paper_watch.config import Config
+    from paper_watch.feedback import outstanding_ties, resolve_tie
+    from paper_watch.store import Store
+
+    cfg = Config.load(config_path)
+    if groundtruth_path is None:
+        fr = cfg.feedback_refresh
+        groundtruth_path = Path(fr.groundtruth_path if fr else "groundtruth.csv")
+
+    store = Store(cfg.db_path)
+    try:
+        ties = outstanding_ties(store, groundtruth_path)
+        if not ties:
+            click.echo("No outstanding ties.")
+            return
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for tie in ties:
+            click.echo(f"\n{tie.week} — tie between {len(tie.options)} option(s):")
+            click.echo("  0: all / none / don't remember (mark every option read)")
+            for i, opt in enumerate(tie.options, start=1):
+                by = f" — {', '.join(opt.authors)}" if opt.authors else ""
+                click.echo(f"  {i}: {opt.title}{by} [{opt.source}]")
+            choice = click.prompt(
+                "Which was read", type=click.IntRange(0, len(tie.options))
+            )
+            n = resolve_tie(store, tie, choice, recorded_at=now)
+            click.echo(f"Recorded {n} reading(s).")
+    finally:
+        store.close()
+
+
 @cli.command("eval")
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
 @click.option(

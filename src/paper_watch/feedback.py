@@ -208,6 +208,100 @@ def _resolve_reading(
     return None
 
 
+def _record_reading_for(store: Store, option, *, recorded_at: str) -> None:
+    """Ledger a poll option as read, deriving its identity keys from the row."""
+    from paper_watch.identity import (
+        extract_arxiv_id,
+        is_distinctive_title,
+        normalize_title,
+    )
+
+    title_norm = normalize_title(option.context)
+    store.record_reading(
+        week=option.week,
+        message_ts=option.message_ts,
+        url=option.url,
+        arxiv_id=extract_arxiv_id(f"{option.url} {option.context}"),
+        title_norm=title_norm if is_distinctive_title(title_norm) else None,
+        entry_id=option.entry_id,
+        recorded_at=recorded_at,
+    )
+
+
+@dataclass
+class TieOption:
+    """One tied-top poll option, carrying enough to show a human a choice."""
+
+    title: str
+    authors: list[str]
+    source: str  # the option URL's host, e.g. "arxiv.org"
+    row: object  # the underlying GroundTruthRow (entry_id resolved if possible)
+
+
+@dataclass
+class TiePoll:
+    week: str
+    message_ts: str
+    options: list[TieOption]
+
+
+def outstanding_ties(store: Store, path: str | Path) -> list[TiePoll]:
+    """Tied polls still awaiting a human call, oldest first.
+
+    A poll is outstanding when its top vote count is shared and no readings
+    row exists for it yet — resolve_tie writes those rows, so a settled tie
+    drops out of this list (and out of the refresh notice).
+    """
+    from urllib.parse import urlparse
+
+    from paper_watch.eval import load_groundtruth, match_entry
+
+    polls: dict[str, list] = {}
+    for r in load_groundtruth(path):
+        polls.setdefault(r.message_ts, []).append(r)
+
+    ties: list[TiePoll] = []
+    for ts in sorted(polls, key=float):
+        opts = polls[ts]
+        top = max(o.votes for o in opts)
+        if sum(o.votes == top for o in opts) < 2 or store.has_reading_for_poll(ts):
+            continue
+        options: list[TieOption] = []
+        for o in opts:
+            if o.votes != top:
+                continue
+            o.entry_id = match_entry(store, o)
+            entry = store.get_entry(o.entry_id) if o.entry_id is not None else None
+            options.append(
+                TieOption(
+                    title=entry["title"] if entry is not None else o.context,
+                    authors=json.loads(entry["authors_json"]) if entry is not None else [],
+                    source=urlparse(o.url).netloc,
+                    row=o,
+                )
+            )
+        ties.append(TiePoll(week=opts[0].week, message_ts=ts, options=options))
+    return ties
+
+
+def resolve_tie(store: Store, tie: TiePoll, choice: int, *, recorded_at: str) -> int:
+    """Apply a human call on a tie; returns the readings recorded.
+
+    `choice` N (1-based) marks that option read and picked; 0 means
+    "all/none/don't remember" — every tied option is marked read (exclusion is
+    cheap and safe whichever of those it was) but none is picked. Either way
+    the poll gains ledger rows, so it stops counting as outstanding.
+    """
+    chosen = tie.options if choice == 0 else [tie.options[choice - 1]]
+    for opt in chosen:
+        _record_reading_for(store, opt.row, recorded_at=recorded_at)
+    if choice != 0:
+        picked = tie.options[choice - 1].row
+        if picked.entry_id is not None:
+            store.set_feedback_picked(picked.entry_id, tie.week)
+    return len(chosen)
+
+
 def import_votes(
     store: Store,
     *,
@@ -240,11 +334,6 @@ def import_votes(
     target is blended on top and the stale contribution decays.
     """
     from paper_watch.eval import load_groundtruth, match_entry, score_entry
-    from paper_watch.identity import (
-        extract_arxiv_id,
-        is_distinctive_title,
-        normalize_title,
-    )
     from paper_watch.score import normalize_tracked_authors
 
     result = VoteImportResult()
@@ -298,21 +387,15 @@ def import_votes(
     # Readings ledger: each non-tied poll's winner, resolved or not.
     for ts in sorted(polls, key=float):
         if tied[ts]:
-            result.ties.append(polls[ts][0].week)
+            # A tie a human has since settled (resolve-ties wrote its ledger
+            # rows) no longer needs a call; only open ones are reported.
+            if not store.has_reading_for_poll(ts):
+                result.ties.append(polls[ts][0].week)
             continue
         winner = max(polls[ts], key=lambda o: o.votes)
         if winner.votes <= 0:  # a zero-vote "winner" is a detection error
             continue
-        title_norm = normalize_title(winner.context)
-        store.record_reading(
-            week=winner.week,
-            message_ts=ts,
-            url=winner.url,
-            arxiv_id=extract_arxiv_id(f"{winner.url} {winner.context}"),
-            title_norm=title_norm if is_distinctive_title(title_norm) else None,
-            entry_id=winner.entry_id,
-            recorded_at=now,
-        )
+        _record_reading_for(store, winner, recorded_at=now)
         result.readings_recorded += 1
 
     weights = config.scoring
