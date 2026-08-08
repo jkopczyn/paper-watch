@@ -263,3 +263,15 @@ def test_two_links_sharing_generic_anchor_text_stay_separate(tmp_path):
         ids.add(entry_id)
     assert len(ids) == 2, "two unrelated papers were fused by their anchor text"
     store.close()
+
+
+def test_link_boilerplate_titles_are_not_distinctive():
+    # Apollo's Science index links every post's underlying report with the
+    # anchor text "Primary source" — 14 distinct system cards fused into one
+    # entry by title match (2026-08-06).
+    from paper_watch.identity import is_distinctive_title
+
+    assert is_distinctive_title("primary source") is False
+    assert is_distinctive_title("terms of use") is False
+    assert is_distinctive_title("privacy policy") is False
+    assert is_distinctive_title("cookie policy") is False

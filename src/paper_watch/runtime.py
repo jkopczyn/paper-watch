@@ -487,15 +487,21 @@ def _primary_source(store, entry_id: int) -> str:
 
 
 def _passes_gate(row, sources: set[str], trusted: bool) -> bool:
-    """Trusted items bypass the gate; others need LLM relevance >= 4.
+    """Trusted items bypass the fit bar; others need LLM relevance >= 4.
 
-    arXiv author-feed items are a trusted whitelist (bypass), as is any mention
-    flagged trusted at ingest (a trusted Slack channel, or a Slack link to a
-    known paper domain). Entries not yet re-enriched under v2 fall back to the
-    old boolean safety_relevant flag.
+    arXiv author-feed items are a whitelist (unconditional bypass — tracked
+    authors' papers are wanted even when the LLM shrugs). A mention flagged
+    trusted at ingest (a trusted page or Slack channel, or a Slack link to a
+    known paper domain) skips the fit bar but not the artifact bar: relevance
+    0 means "not a research artifact" — trusted pages still carry footer/legal
+    links and hiring posts, which is what 0 exists to name. Unenriched trusted
+    items pass (a no-LLM setup has no scores to consult). Entries not yet
+    re-enriched under v2 fall back to the old boolean safety_relevant flag.
     """
-    if trusted or "arxiv" in sources:
+    if "arxiv" in sources:
         return True
+    if trusted:
+        return row["relevance"] != 0
     if row["relevance"] is not None:
         return row["relevance"] >= 4
     return bool(row["safety_relevant"])

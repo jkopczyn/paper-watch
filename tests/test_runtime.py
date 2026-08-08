@@ -43,11 +43,14 @@ class FakeEnricher:
         self.relevant = relevant
 
     def enrich(self, *, title, abstract, source, mentions):
+        # "Irrelevant" is a weak fit (2, under the >=4 bar), not a non-artifact
+        # (0): trust bypasses the fit bar only, so 0 would gate even trusted
+        # items — see test_trusted_does_not_rescue_a_non_artifact.
         return EnrichmentResult(
             tldr=f"tldr:{title}",
             why="why",
             tags=["interp"],
-            relevance=8 if self.relevant else 0,
+            relevance=8 if self.relevant else 2,
         )
 
 
@@ -1712,3 +1715,22 @@ def test_replay_accepts_a_bare_date_as_end_of_day(tmp_path, monkeypatch):
     # happened, C hasn't been fetched
     result = runtime.replay("config.yaml", at="2026-08-05")
     assert result.chosen_ids == [ids["B"]]
+
+
+def test_trusted_does_not_rescue_a_non_artifact():
+    # Goodfire's trusted research page grew /legal/tos footer links (2026-08-06):
+    # trusted page, real diff, but the enricher rightly scored them 0 = "not a
+    # research artifact". Trusted skips the fit bar, not the artifact bar.
+    from paper_watch.runtime import _passes_gate
+
+    def row(relevance):
+        return {"relevance": relevance, "safety_relevant": None}
+
+    assert _passes_gate(row(0), {"page:Goodfire Research"}, trusted=True) is False
+    # a weak-fit but real artifact on a trusted page still bypasses the fit bar
+    assert _passes_gate(row(1), {"page:Goodfire Research"}, trusted=True) is True
+    # not yet enriched: keep trusting the page (no-LLM setups have no scores)
+    assert _passes_gate(row(None), {"page:Goodfire Research"}, trusted=True) is True
+    # the arXiv author whitelist stays unconditional (tracked authors' papers
+    # are wanted even when the LLM shrugs)
+    assert _passes_gate(row(0), {"arxiv"}, trusted=False) is True

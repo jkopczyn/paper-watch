@@ -151,6 +151,14 @@ _GENERIC_TITLES = frozenset(
         "introduction",
         "appendix",
         "supplementary material",
+        # Link-anchor boilerplate: index pages label many different documents
+        # with the same anchor text (Apollo's Science page links every post's
+        # underlying report as "Primary source" — 14 system cards fused into
+        # one entry), and site footers title legal pages this way.
+        "primary source",
+        "terms of use",
+        "privacy policy",
+        "cookie policy",
     }
 )
 
