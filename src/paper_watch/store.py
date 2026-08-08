@@ -98,6 +98,26 @@ SCHEMA: list[str] = [
         PRIMARY KEY (key_type, key_value)
     )
     """,
+    # What the group actually read, one row per poll winner. Keyed by the poll
+    # message, not by entry: the 2607.28607 case — a paper read on 08-05 and only
+    # ingested on 08-06 — means a reading can predate its entry, so entry_id is
+    # nullable and backfilled by later imports. Not CASCADE either: a reading is
+    # a historical fact that must survive an entry delete (merges repoint it).
+    # arxiv_id/title_norm are fallback identity keys for digest exclusion while
+    # (or in case) entry_id is missing.
+    """
+    CREATE TABLE IF NOT EXISTS readings (
+        id          INTEGER PRIMARY KEY,
+        week        TEXT NOT NULL,
+        message_ts  TEXT NOT NULL,
+        url         TEXT NOT NULL,
+        arxiv_id    TEXT,
+        title_norm  TEXT,
+        entry_id    INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+        recorded_at TEXT NOT NULL,
+        UNIQUE(message_ts, url)
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS source_state (
         source          TEXT PRIMARY KEY,
@@ -438,8 +458,9 @@ class Store:
 
         # entry_urls included: the survivor must keep answering to the loser's
         # URLs, or the next run re-creates it from one of them and merges it away
-        # again, every run.
-        for table in ("mentions", "metrics", "shown", "feedback", "entry_urls"):
+        # again, every run. readings too: the ledger must keep pointing at the
+        # surviving entry, or the read paper stops being excluded from digests.
+        for table in ("mentions", "metrics", "shown", "feedback", "entry_urls", "readings"):
             self.conn.execute(
                 f"UPDATE OR IGNORE {table} SET entry_id = ? WHERE entry_id = ?",
                 (winner_id, loser_id),
@@ -685,6 +706,18 @@ class Store:
         )
         self.conn.commit()
 
+    def has_feedback(self, entry_id: int, week: str) -> bool:
+        """Whether this (entry, week) already has an imported feedback row.
+
+        The votes importer uses this to skip re-imports, so a week's votes move
+        the EMA weights at most once.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM feedback WHERE entry_id = ? AND week = ? LIMIT 1",
+            (entry_id, week),
+        ).fetchone()
+        return row is not None
+
     def get_feedback_weight(self, key_type: str, key_value: str) -> float:
         row = self.conn.execute(
             "SELECT weight FROM feedback_weights WHERE key_type = ? AND key_value = ?",
@@ -717,6 +750,59 @@ class Store:
             "SELECT COUNT(DISTINCT week) AS n FROM feedback"
         ).fetchone()
         return int(row["n"]) if row else 0
+
+    # -- readings ledger ---------------------------------------------------
+    def record_reading(
+        self,
+        *,
+        week: str,
+        message_ts: str,
+        url: str,
+        arxiv_id: str | None,
+        title_norm: str | None,
+        entry_id: int | None,
+        recorded_at: str,
+    ) -> None:
+        """Record a poll winner as read. Idempotent on (message_ts, url).
+
+        A re-import that has since resolved the entry backfills `entry_id`;
+        one that hasn't (excluded.entry_id NULL) leaves a resolved id alone.
+        """
+        self.conn.execute(
+            """
+            INSERT INTO readings
+                (week, message_ts, url, arxiv_id, title_norm, entry_id, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_ts, url) DO UPDATE SET
+                entry_id = COALESCE(excluded.entry_id, readings.entry_id)
+            """,
+            (week, message_ts, url, arxiv_id, title_norm, entry_id, recorded_at),
+        )
+        self.conn.commit()
+
+    def unresolved_readings(self) -> list[sqlite3.Row]:
+        """Readings whose paper had not been ingested when they were recorded."""
+        return self.conn.execute(
+            "SELECT * FROM readings WHERE entry_id IS NULL ORDER BY id"
+        ).fetchall()
+
+    def set_reading_entry(self, reading_id: int, entry_id: int) -> None:
+        self.conn.execute(
+            "UPDATE readings SET entry_id = ? WHERE id = ?", (entry_id, reading_id)
+        )
+        self.conn.commit()
+
+    def readings_since(self, message_ts_min: str) -> list[sqlite3.Row]:
+        """Readings whose poll time is at/after the cutoff (epoch-seconds string).
+
+        Compared numerically: message_ts strings vary in length, so a
+        lexicographic compare would put a 9-digit epoch after a 10-digit one.
+        """
+        return self.conn.execute(
+            "SELECT * FROM readings WHERE CAST(message_ts AS REAL) >= ? "
+            "ORDER BY CAST(message_ts AS REAL)",
+            (float(message_ts_min),),
+        ).fetchall()
 
     # -- metrics / windows (for velocity & candidacy) ----------------------
     def record_metrics(self, entry_id: int, citation_count: int, measured_at: str) -> None:

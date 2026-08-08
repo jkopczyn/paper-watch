@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -81,20 +81,26 @@ def _apply_rating(store: Store, entry_id: int, rating: int, alpha: float) -> Non
     _apply_target(store, entry_id, (rating - 3) / 2.0, alpha)  # 1->-1, 3->0, 5->+1
 
 
-def _apply_target(store: Store, entry_id: int, target: float, alpha: float) -> None:
-    """Blend `target` (in [-1, 1]) into each of the paper's feedback keys via EMA."""
+def _apply_target(
+    store: Store, entry_id: int, target: float, alpha: float
+) -> set[tuple[str, str]]:
+    """Blend `target` (in [-1, 1]) into each of the paper's feedback keys via
+    EMA. Returns the (key_type, key_value) pairs touched."""
     entry = store.get_entry(entry_id)
     if entry is None:
-        return
+        return set()
     authors = json.loads(entry["authors_json"])
     tags = json.loads(entry["tags_json"])
     mentions = store.get_mentions(entry_id)
     source = mentions[0]["source"] if mentions else "unknown"
 
+    touched: set[tuple[str, str]] = set()
     for key_type, key_value in derive_feedback_keys(authors, tags, source):
         current = store.get_feedback_weight(key_type, key_value)
         updated = (1 - alpha) * current + alpha * target
         store.set_feedback_weight(key_type, key_value, updated)
+        touched.add((key_type, key_value))
+    return touched
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -162,13 +168,43 @@ def _score_scale(target: float, score: float) -> float:
 class VoteImportResult:
     imported: int = 0
     skipped_zero: int = 0
+    skipped_existing: int = 0
     unresolved: int = 0
+    weeks: list[str] = field(default_factory=list)
+    weight_keys_touched: int = 0
+    unresolved_urls: list[str] = field(default_factory=list)
+    ties: list[str] = field(default_factory=list)  # week labels awaiting a call
+    readings_recorded: int = 0
+    resolutions_backfilled: int = 0
 
 
 def _poll_window(message_ts: str, window_days: int) -> tuple[str, str]:
     """(start, end) ISO strings for the candidate window ending at a poll."""
     end = datetime.fromtimestamp(float(message_ts), tz=timezone.utc)
     return (end - timedelta(days=window_days)).strftime(_ISO), end.strftime(_ISO)
+
+
+def _resolve_reading(
+    store: Store, url: str, arxiv_id: str | None, title_norm: str | None
+) -> int | None:
+    """Find the entry a readings-ledger row refers to, by any identity key."""
+    from paper_watch.identity import canonicalize_url
+
+    if arxiv_id:
+        entry = store.get_entry_by_arxiv_id(arxiv_id)
+        if entry is not None:
+            return int(entry["id"])
+    hit = store.get_entry_id_by_mention_url(canonicalize_url(url))
+    if hit is not None:
+        return hit
+    entry = store.get_entry_by_source_url(canonicalize_url(url))
+    if entry is not None:
+        return int(entry["id"])
+    if title_norm:
+        entry = store.get_entry_by_title_norm(title_norm)
+        if entry is not None:
+            return int(entry["id"])
+    return None
 
 
 def import_votes(
@@ -185,48 +221,99 @@ def import_votes(
     votes -- given the poll's turnout -- into a target scaled by the paper's
     current score (prediction-error), and nudges the feedback weights. Weeks are
     processed chronologically so each update reflects feedback learned earlier.
+
+    Idempotent: a (entry, week) pair already in `feedback` is skipped entirely,
+    so re-running an import (the weekly refresh does) never double-moves the EMA
+    weights. Each non-tied poll's winner also enters the readings ledger — even
+    when its URL resolves to no entry yet (read before first ingest); those
+    unresolved ledger rows are re-resolved at the start of every later import.
+    A poll whose top vote count is shared marks nobody picked and enters no
+    ledger row; the tie is reported for a human call.
     """
     from paper_watch.eval import load_groundtruth, match_entry, score_entry
+    from paper_watch.identity import (
+        extract_arxiv_id,
+        is_distinctive_title,
+        normalize_title,
+    )
     from paper_watch.score import normalize_tracked_authors
+
+    result = VoteImportResult()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Backfill first: papers read before their first ingest may exist by now.
+    for reading in store.unresolved_readings():
+        eid = _resolve_reading(
+            store, reading["url"], reading["arxiv_id"], reading["title_norm"]
+        )
+        if eid is not None:
+            store.set_reading_entry(reading["id"], eid)
+            result.resolutions_backfilled += 1
 
     rows = load_groundtruth(path)
     if week_filter is not None:
         rows = [r for r in rows if r.week == week_filter]
 
-    # Per-poll turnout (captured, else proxy) and winner (for `picked`).
+    # Per-poll turnout (captured, else proxy), winner (for `picked`), ties.
     polls: dict[str, list] = {}
     for r in rows:
         polls.setdefault(r.message_ts, []).append(r)
     attendance: dict[str, float] = {}
     winner_votes: dict[str, int] = {}
+    tied: dict[str, bool] = {}
     for ts, opts in polls.items():
         counts = [o.votes for o in opts]
         captured = [o.attendance for o in opts if o.attendance]
         attendance[ts] = float(captured[0]) if captured else poll_attendance(counts)
         winner_votes[ts] = max(counts) if counts else 0
+        tied[ts] = sum(c == winner_votes[ts] for c in counts) > 1
 
-    result = VoteImportResult()
     # One row per (entry_id, week): keep the highest-vote occurrence.
     best: dict[tuple[int, str], object] = {}
     for r in rows:
         r.entry_id = match_entry(store, r)
         if r.entry_id is None:
             result.unresolved += 1
+            result.unresolved_urls.append(r.url)
             continue
         key = (r.entry_id, r.week)
         if key not in best or r.votes > best[key].votes:
             best[key] = r
 
+    # Readings ledger: each non-tied poll's winner, resolved or not.
+    for ts in sorted(polls, key=float):
+        if tied[ts]:
+            result.ties.append(polls[ts][0].week)
+            continue
+        winner = max(polls[ts], key=lambda o: o.votes)
+        if winner.votes <= 0:  # a zero-vote "winner" is a detection error
+            continue
+        title_norm = normalize_title(winner.context)
+        store.record_reading(
+            week=winner.week,
+            message_ts=ts,
+            url=winner.url,
+            arxiv_id=extract_arxiv_id(f"{winner.url} {winner.context}"),
+            title_norm=title_norm if is_distinctive_title(title_norm) else None,
+            entry_id=winner.entry_id,
+            recorded_at=now,
+        )
+        result.readings_recorded += 1
+
     weights = config.scoring
     priors = config.source_priors
     tracked = normalize_tracked_authors(config.authors)
     window = config.candidate_window_days
-    now = datetime.now(timezone.utc).isoformat()
 
+    weeks: set[str] = set()
+    keys_touched: set[tuple[str, str]] = set()
     for r in sorted(best.values(), key=lambda r: float(r.message_ts)):
         base = votes_to_target(r.votes, attendance[r.message_ts])
         if base is None:
             result.skipped_zero += 1
+            continue
+        if store.has_feedback(r.entry_id, r.week):
+            result.skipped_existing += 1
             continue
         start, end = _poll_window(r.message_ts, window)
         w = weights.model_copy(
@@ -242,13 +329,18 @@ def import_votes(
         store.record_feedback(
             entry_id=r.entry_id,
             week=r.week,
-            picked=(r.votes == winner_votes[r.message_ts]),
+            picked=(
+                not tied[r.message_ts] and r.votes == winner_votes[r.message_ts]
+            ),
             group_rating=rating,
             notes=f"{r.votes}/{attendance[r.message_ts]:.0f} votes (auto)",
             imported_at=now,
         )
-        _apply_target(store, r.entry_id, target, alpha)
+        keys_touched |= _apply_target(store, r.entry_id, target, alpha)
         result.imported += 1
+        weeks.add(r.week)
+    result.weeks = sorted(weeks)
+    result.weight_keys_touched = len(keys_touched)
     return result
 
 
@@ -274,6 +366,7 @@ def import_file(
         res = import_votes(store, path=path, config=config, week_filter=week, alpha=alpha)
         return (
             f"Imported {res.imported} vote row(s); skipped {res.skipped_zero} "
-            f"(zero votes), {res.unresolved} unresolved"
+            f"(zero votes) + {res.skipped_existing} (already imported), "
+            f"{res.unresolved} unresolved, {len(res.ties)} tie(s)"
         )
     raise ValueError(f"unrecognized feedback CSV header: {header}")

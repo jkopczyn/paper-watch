@@ -10,6 +10,7 @@ EXPECTED_TABLES = {
     "shown",
     "feedback",
     "feedback_weights",
+    "readings",
     "source_state",
     "meta",
 }
@@ -314,4 +315,94 @@ def test_source_health_reports_a_source_that_never_worked(tmp_path: Path):
     (row,) = store.unhealthy_sources(1)
     # Never succeeded, so there is no "healthy since" date to show.
     assert row["last_ok_at"] is None
+    store.close()
+
+
+def test_record_reading_upsert_backfills_entry_id(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    ts, url = "1754395200.000100", "https://arxiv.org/abs/2607.28607"
+    # Read before the paper was ever ingested: no entry to point at yet.
+    store.record_reading(
+        week="2026-W32", message_ts=ts, url=url, arxiv_id="2607.28607",
+        title_norm=None, entry_id=None, recorded_at="2026-08-08T12:00:00Z",
+    )
+    (unresolved,) = store.unresolved_readings()
+    assert unresolved["url"] == url
+
+    eid = store.insert_entry(
+        title="T", title_norm="t", arxiv_id="2607.28607",
+        first_seen_at="2026-08-06T00:00:00Z",
+    )
+    store.record_reading(
+        week="2026-W32", message_ts=ts, url=url, arxiv_id="2607.28607",
+        title_norm=None, entry_id=eid, recorded_at="2026-08-08T13:00:00Z",
+    )
+    rows = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["entry_id"] == eid
+    assert store.unresolved_readings() == []
+
+    # A later re-import carrying None must not wipe the resolved id.
+    store.record_reading(
+        week="2026-W32", message_ts=ts, url=url, arxiv_id="2607.28607",
+        title_norm=None, entry_id=None, recorded_at="2026-08-08T14:00:00Z",
+    )
+    (row,) = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert row["entry_id"] == eid
+    store.close()
+
+
+def test_readings_since_compares_ts_numerically(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    # A 9-digit ts sorts *after* a 10-digit one lexicographically; the cutoff
+    # must compare epoch values, not strings.
+    store.record_reading(
+        week="2001-W37", message_ts="999999999.0", url="https://a.example/1",
+        arxiv_id=None, title_norm=None, entry_id=None,
+        recorded_at="2026-08-08T12:00:00Z",
+    )
+    store.record_reading(
+        week="2026-W32", message_ts="1754395200.0", url="https://a.example/2",
+        arxiv_id=None, title_norm=None, entry_id=None,
+        recorded_at="2026-08-08T12:00:00Z",
+    )
+    got = store.readings_since("1000000000")
+    assert [r["url"] for r in got] == ["https://a.example/2"]
+    # boundary: exactly at the cutoff is included
+    assert len(store.readings_since("1754395200.0")) == 1
+    assert len(store.readings_since("999999999.0")) == 2
+    store.close()
+
+
+def test_merge_entries_repoints_readings(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    winner = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-01T00:00:00Z"
+    )
+    loser = store.insert_entry(
+        title="P", title_norm="p", first_seen_at="2026-07-02T00:00:00Z"
+    )
+    store.record_reading(
+        week="2026-W31", message_ts="1753876800.0", url="https://a.example/p",
+        arxiv_id=None, title_norm="p", entry_id=loser,
+        recorded_at="2026-08-08T12:00:00Z",
+    )
+    store.merge_entries(winner_id=winner, loser_id=loser)
+    (row,) = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert row["entry_id"] == winner
+    store.close()
+
+
+def test_has_feedback(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="T", title_norm="t", first_seen_at="2026-07-01T00:00:00Z"
+    )
+    assert store.has_feedback(eid, "2026-W31") is False
+    store.record_feedback(
+        entry_id=eid, week="2026-W31", picked=True, group_rating=4,
+        notes=None, imported_at="2026-08-08T12:00:00Z",
+    )
+    assert store.has_feedback(eid, "2026-W31") is True
+    assert store.has_feedback(eid, "2026-W32") is False
     store.close()

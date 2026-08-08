@@ -124,6 +124,105 @@ def test_import_file_routes_by_header(tmp_path):
     store.close()
 
 
+def test_import_votes_is_idempotent(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = _votes_csv(tmp_path / "gt.csv")
+    import_votes(store, path=path, config=_cfg())
+    weights_after_first = store.get_feedback_weights()
+
+    res = import_votes(store, path=path, config=_cfg())
+    assert res.imported == 0
+    assert res.skipped_existing > 0
+    assert store.get_feedback_weights() == weights_after_first
+    store.close()
+
+
+def test_import_votes_tie_no_pick_no_ledger(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    a, b = _seed_all(store)
+    path = tmp_path / "gt.csv"
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{TS1},1,one,3,https://arxiv.org/abs/2605.01642,Winner\n"
+        f"2026-W27,{TS1},2,two,3,https://arxiv.org/abs/2605.00002,Meh\n"
+    )
+    res = import_votes(store, path=path, config=_cfg())
+
+    picks = [r["picked"] for r in store.conn.execute("SELECT picked FROM feedback")]
+    assert picks == [0, 0]  # nobody picked
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM readings").fetchone()["n"] == 0
+    assert res.ties == ["2026-W27"]
+    # votes are still real signal: both rows imported, weights nudged
+    assert res.imported == 2
+    assert store.get_feedback_weights() != {}
+    store.close()
+
+
+def test_import_votes_winner_enters_ledger(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    a, _ = _seed_all(store)
+    res = import_votes(store, path=_votes_csv(tmp_path / "gt.csv"), config=_cfg())
+
+    rows = store.conn.execute("SELECT * FROM readings ORDER BY id").fetchall()
+    # one reading per non-tied poll (W27 and W28, same winner both times)
+    assert [r["week"] for r in rows] == ["2026-W27", "2026-W28"]
+    assert all(r["entry_id"] == a for r in rows)
+    assert all(r["arxiv_id"] == "2605.01642" for r in rows)
+    assert res.readings_recorded == 2
+    store.close()
+
+
+def test_import_votes_unresolved_winner_still_ledgered(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = tmp_path / "gt.csv"
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{TS1},1,one,5,https://unknown.example/x,A Distinctive Unknown Paper\n"
+        f"2026-W27,{TS1},2,two,1,https://arxiv.org/abs/2605.00002,Meh\n"
+    )
+    res = import_votes(store, path=path, config=_cfg())
+
+    (row,) = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert row["entry_id"] is None
+    assert row["title_norm"] == "a distinctive unknown paper"
+    assert "https://unknown.example/x" in res.unresolved_urls
+    store.close()
+
+
+def test_import_votes_backfills_resolution_on_next_run(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    path = tmp_path / "gt.csv"
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{TS1},1,one,5,https://arxiv.org/abs/2607.28607,Read Before Ingest\n"
+        f"2026-W27,{TS1},2,two,1,https://arxiv.org/abs/2605.00002,Meh\n"
+    )
+    import_votes(store, path=path, config=_cfg())
+    (row,) = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert row["entry_id"] is None
+
+    # the paper finally arrives via a later ingest
+    late = _seed(store, "Read Before Ingest", arxiv_id="2607.28607", authors=["Dan"])
+    res = import_votes(store, path=path, config=_cfg())
+    (row,) = store.conn.execute("SELECT * FROM readings").fetchall()
+    assert row["entry_id"] == late
+    assert res.resolutions_backfilled == 1
+    store.close()
+
+
+def test_import_votes_reports_weeks_and_weight_keys(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    res = import_votes(store, path=_votes_csv(tmp_path / "gt.csv"), config=_cfg())
+    assert res.weeks == ["2026-W27", "2026-W28"]
+    assert res.weight_keys_touched == len(store.get_feedback_weights())
+    assert res.weight_keys_touched > 0
+    store.close()
+
+
 def test_poll_attendance_proxy_top_plus_runner_third():
     assert poll_attendance([3, 1, 0]) == pytest.approx(3 + 1 / 3)
     assert poll_attendance([7, 5, 2]) == pytest.approx(7 + 5 / 3)
