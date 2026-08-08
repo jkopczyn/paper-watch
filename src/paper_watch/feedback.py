@@ -109,13 +109,13 @@ def _parse_int(value: str | None) -> int | None:
         return None
 
 
-# -- votes -> learning signal (see PLAN sketch; constants are tunable) --------
-# Target is ~linear in votes with an attendance-dependent slope and neutral
-# point (each vote counts for more in a smaller poll; a full sweep of a bigger
-# poll is a stronger signal), plus a harsher floor for a lone (single) vote.
-_VT_AMP = 1.8  # per-vote slope ~ amp / attendance
-_VT_V0_SLOPE = 0.3  # neutral vote-count grows with attendance ...
-_VT_V0_BASE = 0.9  # ... as 0.3*attendance + 0.9
+# -- votes -> learning signal (constants are tunable) -------------------------
+# A nomination that draws at least one other vote is always positive, starting
+# from a base bonus B(a) that grows with attendance (drawing a peer's vote in a
+# bigger room means more) and interpolating linearly up to +1.0 for a full
+# sweep. A lone vote (nominator only) is negative, deepening with attendance.
+_VT_NOM_BASE = 0.125  # base bonus B(a) = 0.125 + 0.0375*a ...
+_VT_NOM_SLOPE = 0.0375  # ... anchored at B(2)=+0.2, B(10)=+0.5
 _VT_LONE_BASE = -0.5  # single-vote floor at attendance 3 ...
 _VT_LONE_SLOPE = -0.125  # ... deepening toward -1.0 as attendance rises
 
@@ -139,9 +139,14 @@ def votes_to_target(votes: int, attendance: float) -> float | None:
     if votes <= 0:
         return None
     a = max(float(attendance), float(votes))  # an option can't outpoll turnout
-    target = (_VT_AMP / a) * (votes - (_VT_V0_SLOPE * a + _VT_V0_BASE))
-    if votes == 1:  # a lone vote is minimal engagement; penalize harder
-        target = min(target, _VT_LONE_BASE + _VT_LONE_SLOPE * (a - 3))
+    if votes == 1:  # a lone vote is the nominator alone; a negative signal
+        target = _VT_LONE_BASE + _VT_LONE_SLOPE * (a - 3)
+    else:
+        b = _VT_NOM_BASE + _VT_NOM_SLOPE * a
+        if a <= 2:  # only votes == 2 == a after the max() clamp
+            target = b
+        else:
+            target = b + (1 - b) * (votes - 2) / (a - 2)
     return max(-1.0, min(1.0, target))
 
 

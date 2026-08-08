@@ -136,29 +136,50 @@ def test_votes_to_target_zero_is_none():
     assert votes_to_target(-1, 5) is None
 
 
-def test_votes_to_target_matches_brisk_week_sketch():
-    # attendance 7: v=1 floored to -1, then ~+0.25/vote crossing 0 at v=3.
-    a = 7
-    assert votes_to_target(1, a) == pytest.approx(-1.0, abs=0.03)
-    assert votes_to_target(2, a) == pytest.approx(-0.25, abs=0.03)
-    assert votes_to_target(3, a) == pytest.approx(0.0, abs=0.03)
-    assert votes_to_target(4, a) == pytest.approx(0.25, abs=0.03)
-    assert votes_to_target(5, a) == pytest.approx(0.50, abs=0.03)
-    assert votes_to_target(7, a) == pytest.approx(1.0, abs=0.03)
+def test_votes_to_target_nomination_base_anchors():
+    # B(a) = 0.125 + 0.0375*a: +0.2 at attendance 2, +0.5 at attendance 10.
+    assert votes_to_target(2, 2) == pytest.approx(0.2)
+    assert votes_to_target(2, 10) == pytest.approx(0.5)
+    # degenerate a<votes: a clamped up to 2, no division by zero
+    assert votes_to_target(2, 1) == pytest.approx(0.2)
 
 
-def test_votes_to_target_matches_slow_week_sketch():
-    # attendance 3: a full sweep tops out below +1 (a smaller poll is weaker).
-    a = 3
-    assert votes_to_target(1, a) == pytest.approx(-0.5, abs=0.03)
-    assert votes_to_target(2, a) == pytest.approx(0.15, abs=0.05)
-    assert votes_to_target(3, a) == pytest.approx(0.75, abs=0.05)
+def test_votes_to_target_full_sweep_is_plus_one():
+    assert votes_to_target(7, 7) == pytest.approx(1.0)
+    # a := max(a, v) -- 10 votes clamp attendance up to 10, still a sweep
+    assert votes_to_target(10, 4) == pytest.approx(1.0)
+
+
+def test_votes_to_target_interpolates_between_base_and_sweep():
+    # v=6, a=10: B(10) + (1 - B(10)) * (6-2)/(10-2) = 0.5 + 0.5*0.5
+    assert votes_to_target(6, 10) == pytest.approx(0.75)
 
 
 def test_votes_to_target_monotonic_in_votes():
-    a = 7
-    vals = [votes_to_target(v, a) for v in range(2, 8)]  # skip the lone-vote floor
-    assert vals == sorted(vals)
+    a = 8
+    vals = [votes_to_target(v, a) for v in range(2, 9)]
+    assert vals == sorted(set(vals)) and len(set(vals)) == len(vals)
+    # a lone vote sits strictly below any nomination-with-support
+    assert votes_to_target(1, a) < vals[0]
+
+
+def test_votes_to_target_monotonic_in_attendance_for_v2():
+    vals = [votes_to_target(2, a) for a in range(2, 13)]
+    assert vals == sorted(set(vals)) and len(set(vals)) == len(vals)
+
+
+def test_votes_to_target_lone_vote_unchanged():
+    assert votes_to_target(1, 3) == pytest.approx(-0.5)
+    assert votes_to_target(1, 4) == pytest.approx(-0.625)
+    assert votes_to_target(1, 7) == pytest.approx(-1.0)
+    assert votes_to_target(1, 20) == pytest.approx(-1.0)  # clamped
+
+
+def test_votes_to_target_clamped_to_unit_interval():
+    # huge attendance drives B(a) past 1 before the clamp; huge votes sweep
+    for v, a in [(2, 100), (50, 50), (1, 100), (3, 1000)]:
+        t = votes_to_target(v, a)
+        assert -1.0 <= t <= 1.0
 
 
 def test_score_scale_is_prediction_error_bounded():
