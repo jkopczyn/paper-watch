@@ -43,6 +43,16 @@ class PageState(Protocol):
     def set_cursor(self, source: str, cursor: str) -> None: ...
 
 
+def link_key(url: str) -> str:
+    """Diff/dedup key for a link: the URL minus any trailing slash.
+
+    Sites republish with hrefs that gain or lose trailing slashes (Apollo's
+    Webflow rebuild, 2026-08-06); keyed on the raw URL, that mutation made
+    every link on the page diff as "new" at once.
+    """
+    return url.rstrip("/")
+
+
 def extract_post_links(html: str, base_url: str) -> list[tuple[str, str]]:
     """Candidate post links on an index page: (absolute url, anchor text).
 
@@ -50,8 +60,9 @@ def extract_post_links(html: str, base_url: str) -> list[tuple[str, str]]:
     pages sometimes point off-site (arXiv, anthropic.com/research), so no
     same-host restriction. Nav/footer noise is harmless: it lands in the seeded
     baseline and never diffs as new, and the LLM relevance gate catches the rare
-    later addition. Fragments are stripped; the page itself and empty-text icon
-    links are dropped; order is preserved and duplicates collapse.
+    later addition. Fragments are stripped; the page itself (with or without a
+    pagination query) and empty-text icon links are dropped; order is preserved
+    and duplicates collapse (trailing-slash variants count as duplicates).
     """
     page_url = urldefrag(urljoin(base_url, ""))[0]
     seen: set[str] = set()
@@ -62,9 +73,9 @@ def extract_post_links(html: str, base_url: str) -> list[tuple[str, str]]:
         url = urldefrag(urljoin(base_url, href))[0]
         if not url.startswith(("http://", "https://")):
             continue
-        if url.rstrip("/") == page_url.rstrip("/") or url in seen:
+        if link_key(url.split("?")[0]) == link_key(page_url) or link_key(url) in seen:
             continue
-        seen.add(url)
+        seen.add(link_key(url))
         links.append((url, anchor))
     return links
 
@@ -127,7 +138,9 @@ class PageWatchSource:
     def _diff_page(self, page, links: list[tuple[str, str]]) -> Iterator[RawItem]:
         key = f"page:{page.url}"
         cursor = self._state.get_cursor(key)
-        known: set[str] = set(json.loads(cursor)) if cursor else set()
+        # Baselines written before slash normalization hold raw URLs; keying
+        # them here migrates them in place on the next write.
+        known: set[str] = {link_key(u) for u in json.loads(cursor)} if cursor else set()
         if cursor is None:
             log.info(
                 "seeding baseline for %s (%d links, none yielded)",
@@ -136,7 +149,7 @@ class PageWatchSource:
             )
         else:
             for url, anchor in links:
-                if url in known:
+                if link_key(url) in known:
                     continue
                 yield RawItem(
                     source=f"page:{page.name}",
@@ -147,6 +160,6 @@ class PageWatchSource:
                     text=anchor[:_MAX_TEXT_CHARS],
                     trusted=page.trusted,
                 )
-        merged = known | {url for url, _ in links}
+        merged = known | {link_key(url) for url, _ in links}
         if cursor is None or merged != known:
             self._state.set_cursor(key, json.dumps(sorted(merged)))

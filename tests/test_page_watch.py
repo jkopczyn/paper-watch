@@ -51,7 +51,8 @@ def test_first_fetch_seeds_baseline_and_yields_nothing(fixture_text):
 
     assert list(src.fetch()) == []
     seen = json.loads(state.cursors[f"page:{BASE}"])
-    assert "https://alignment.example.com/2026/modular-pretraining/" in seen
+    # the baseline stores diff keys: trailing slashes are stripped
+    assert "https://alignment.example.com/2026/modular-pretraining" in seen
 
 
 def test_new_link_on_next_fetch_is_yielded(fixture_text):
@@ -86,6 +87,44 @@ def test_arxiv_link_post_adopts_the_arxiv_id(fixture_text):
     src._fetch = lambda url: html
     items = list(src.fetch())
     assert [to_entry_fields(i)["arxiv_id"] for i in items] == ["9999.00001"]
+
+
+def test_trailing_slash_mutation_does_not_retrigger_the_whole_page(fixture_text):
+    # 2026-08-06: Apollo's site republished with hrefs that dropped their
+    # trailing slashes, and every nav link flooded the digest as "new".
+    state = FakeState()
+    html = fixture_text("page_index.html")
+    pages = {BASE: html}
+    src = _source(state, html_by_url=pages)
+    list(src.fetch())  # seed with slashed forms
+
+    pages[BASE] = html.replace('href="2026/modular-pretraining/"', 'href="2026/modular-pretraining"')
+    assert list(src.fetch()) == []
+
+    # ...and the cursor self-migrates, so the slashed form doesn't re-trigger later
+    pages[BASE] = html
+    assert list(src.fetch()) == []
+
+
+def test_slash_variants_of_one_link_collapse_within_a_page():
+    html = (
+        '<a href="/posts/one/">First</a>'
+        '<a href="/posts/one">First again</a>'
+        '<a href="/posts/two">Second</a>'
+    )
+    links = extract_post_links(html, BASE)
+    assert [u for u, _ in links] == [
+        "https://alignment.example.com/posts/one/",
+        "https://alignment.example.com/posts/two",
+    ]
+
+
+def test_pagination_links_to_the_page_itself_are_dropped():
+    # Webflow indexes link "?457b778d_page=2" back to themselves; that is the
+    # index, not a post.
+    html = '<a href="?457b778d_page=2">2</a><a href="/posts/real">Real Post</a>'
+    links = extract_post_links(html, BASE)
+    assert [u for u, _ in links] == ["https://alignment.example.com/posts/real"]
 
 
 def test_removed_links_stay_seen_and_never_retrigger(fixture_text):
