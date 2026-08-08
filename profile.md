@@ -23,8 +23,12 @@ pluralistic alignment, multi-agent safety, AI forecasting and compute/scaling
 analysis, well-argued conceptual alignment work.
 
 **Peripheral** — usually relevance ≤ 1 unless exceptional: AI policy and
-governance news, capability results with no safety angle, ML systems and
-efficiency work, applications.
+governance work of any kind, capability results with no safety angle, ML
+systems and efficiency work, applications. Governance stays peripheral even
+when it is technical and comes from a safety lab — loss-of-control policy
+frameworks, deployment-governance primers, RFI/regulatory responses, incident
+regimes, national-security analyses all score ≤ 2. Only governance work whose
+main contribution is new empirical or technical safety content escapes the cap.
 
 A paper by a well-known safety researcher, or shared with strong endorsement in
 a curated channel, deserves the benefit of the doubt one relevance level up.
