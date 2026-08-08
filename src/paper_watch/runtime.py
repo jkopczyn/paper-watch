@@ -102,6 +102,7 @@ def fresh_start(store, new_window: str, now: datetime) -> str:
 
 # -- ingest ----------------------------------------------------------------
 def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) -> None:
+    original_url = raw.url
     canonical = canonicalize_url(raw.url)
     if canonical != raw.url:
         raw = replace(raw, url=canonical)
@@ -112,6 +113,12 @@ def _ingest_one(store, raw, now_iso: str, tweet_resolver, new_ids: list[int]) ->
     entry_id, created = resolve_or_create(store, fields)
     if created:
         new_ids.append(entry_id)
+    # Keep the as-published spelling as an alias alongside the canonical form:
+    # it is the only record of which mirror actually carried the item (e.g. an
+    # alignmentforum.org URL canonicalized to lesswrong.com), and display
+    # prefers the curated venue when it knows one (_display_links).
+    if original_url and original_url != raw.url:
+        store.add_entry_url(entry_id, original_url)
     store.add_mention(
         entry_id=entry_id,
         source=raw.source,
@@ -665,11 +672,29 @@ def _pub_display(store, row) -> tuple[str, bool]:
 def _display_links(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
     """The links to show; fall back to a URL the entry owns when it has none."""
     if links:
-        return links
+        return _prefer_alignmentforum(store, entry_id, links)
     for mention in store.get_mentions(entry_id):
         if mention["source_item_url"]:
             return {"link": mention["source_item_url"]}
     return links
+
+
+def _prefer_alignmentforum(store, entry_id: int, links: dict[str, str]) -> dict[str, str]:
+    """Show the alignmentforum.org spelling of a lesswrong.com post when we
+    have one. Identity canonicalizes AF post URLs to LW (every AF post is an
+    LW post, not vice versa), but AF is the curated venue the reader prefers
+    to land on; the as-published AF URL survives as an entry_urls alias, so
+    its presence is proof the post exists there."""
+    abstract = links.get("abstract") or ""
+    if "://www.lesswrong.com/posts/" not in abstract:
+        return links
+    af = next(
+        (u for u in store.get_entry_urls(entry_id) if "alignmentforum.org/posts/" in u),
+        None,
+    )
+    if af is None:
+        return links
+    return {**links, "abstract": af}
 
 
 def _to_item(store, c: dict, *, recent_start: str) -> DigestItem:

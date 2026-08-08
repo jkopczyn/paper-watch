@@ -1734,3 +1734,65 @@ def test_trusted_does_not_rescue_a_non_artifact():
     # the arXiv author whitelist stays unconditional (tracked authors' papers
     # are wanted even when the LLM shrugs)
     assert _passes_gate(row(0), {"arxiv"}, trusted=False) is True
+
+
+# -- AF/LW mirror presentation ----------------------------------------------
+def _af_item(url):
+    return RawItem(source="rss:Alignment Forum", url=url, title="Why do models task game?",
+                   authors=[], abstract="abs", published_at="2026-08-06T00:00:00Z")
+
+
+def test_af_feed_dual_hosts_collapse_and_flag_as_af(tmp_path):
+    # The AF feed emits the same post under both hosts; it must land as ONE
+    # entry whose source chip says rss:Alignment Forum.
+    from paper_watch.runtime import _entry_sources
+
+    store = Store(tmp_path / "pw.db")
+    ingest(store, [ListSource("rss:Alignment Forum", [
+        _af_item("https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"),
+        _af_item("https://www.lesswrong.com/posts/HACa4/why-do-models-task-game"),
+    ])], None, "2026-08-06T12:00:00Z")
+
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+    assert len(ids) == 1
+    assert _entry_sources(store, ids[0]) == {"rss:Alignment Forum"}
+    store.close()
+
+
+def test_af_post_displays_the_af_link(tmp_path):
+    # Identity canonicalizes to lesswrong.com, but AF is the curated venue:
+    # when the AF feed emitted the post, display its alignmentforum.org URL.
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    ingest(store, [ListSource("rss:Alignment Forum", [
+        _af_item("https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"),
+    ])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == (
+        "https://www.alignmentforum.org/posts/HACa4/why-do-models-task-game"
+    )
+    # ...while identity still answers to the canonical LW spelling
+    assert store.get_entry_by_source_url(
+        "https://www.lesswrong.com/posts/HACa4/why-do-models-task-game"
+    ) is not None
+    store.close()
+
+
+def test_lw_only_post_keeps_the_lw_link(tmp_path):
+    # A post that only ever appeared on LW has no AF page to point at.
+    from paper_watch.runtime import _display_links
+
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="graphql:LessWrong AI",
+                   url="https://www.lesswrong.com/posts/xyz9/an-lw-only-post",
+                   title="An LW-only post", authors=[], abstract="abs",
+                   published_at="2026-08-06T00:00:00Z")
+    ingest(store, [ListSource("graphql:LessWrong AI", [item])], None, "2026-08-06T12:00:00Z")
+    (eid,) = [r["id"] for r in store.conn.execute("SELECT id FROM entries")]
+
+    links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
+    assert links["abstract"] == "https://www.lesswrong.com/posts/xyz9/an-lw-only-post"
+    store.close()

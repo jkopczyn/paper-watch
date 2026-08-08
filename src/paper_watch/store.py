@@ -364,6 +364,13 @@ class Store:
         if commit:
             self.conn.commit()
 
+    def get_entry_urls(self, entry_id: int) -> list[str]:
+        """Every URL this entry answers to, oldest first."""
+        rows = self.conn.execute(
+            "SELECT url FROM entry_urls WHERE entry_id = ? ORDER BY id", (entry_id,)
+        ).fetchall()
+        return [r["url"] for r in rows]
+
     def get_entry_by_source_url(self, url: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT e.* FROM entries e JOIN entry_urls u ON u.entry_id = e.id "
