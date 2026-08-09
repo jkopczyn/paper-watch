@@ -407,7 +407,13 @@ def resolve_ties_cmd(config_path: str, groundtruth_path: Path | None) -> None:
             return
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for tie in ties:
-            click.echo(f"\n{tie.week} — tie between {len(tie.options)} option(s):")
+            polled = datetime.fromtimestamp(
+                float(tie.message_ts), tz=timezone.utc
+            ).strftime("%Y-%m-%d")
+            click.echo(
+                f"\n{tie.week} (polled {polled}) — "
+                f"tie between {len(tie.options)} option(s):"
+            )
             click.echo("  0: all / none / don't remember (mark every option read)")
             for i, opt in enumerate(tie.options, start=1):
                 by = f" — {', '.join(opt.authors)}" if opt.authors else ""

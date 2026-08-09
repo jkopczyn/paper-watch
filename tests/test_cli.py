@@ -268,6 +268,7 @@ def test_resolve_ties_prompts_and_records(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "2026-W27" in result.output
+    assert "2026-07-01" in result.output  # poll date, not just the week number
     assert "Paper A" in result.output and "arxiv.org" in result.output
     assert "0: all / none / don't remember" in result.output
 
