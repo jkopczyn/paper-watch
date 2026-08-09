@@ -76,6 +76,28 @@ For secrets.
 - `SLACK_TOKEN_*`: One **user** token (`xoxp-…`) per workspace, named to match `token_env` in config. Scopes: `channels:history` (ingest), `channels:read` (the `slack-channels` helper; add `groups:read` to also list private channels — it falls back to public-only without it)
 - `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD`: Optional OpenReview account (your website login). Set both to read login-gated submissions' abstracts; without them only public notes resolve
 
+### Local state (never checked in — ask an existing user for a copy)
+
+A working install accumulates files that live next to the code but are deliberately
+kept out of git. If you are setting up fresh, the code runs without them, but the
+learned/curated ones are irreplaceable — ask someone with a running instance:
+
+- `paper_watch.db` — the SQLite store: entries, mentions, enrichment, digest history,
+  learned feedback weights, and the readings ledger (what the group has already read,
+  which gates digest inclusion). Regenerable only in skeleton form by re-running the
+  pipeline; the accumulated history and feedback are not.
+- `paper_watch.db.*.bak` — point-in-time backups taken before risky migrations/imports.
+- `groundtruth.csv` — hand-curated reading-group poll history (options, votes,
+  attendance): the feedback loop's input and the eval's ground truth. The weekly
+  refresh appends to it; humans prune misdetected polls and correct votes in place.
+  Re-exportable from Slack (`paper-watch groundtruth`), but hand-pruning is lost.
+- `groundtruth.csv.imported` — machine-written snapshot from the last successful
+  import, used to detect hand edits. Never edit; safe to delete (one edit-detection
+  cycle is skipped while it regenerates).
+- `config.weekly.yaml` — optional local config variant for the weekly sweep (see below).
+- `.env` — secrets, above. `deploy/nitter/sessions.jsonl` — Nitter session tokens.
+- `out/` — rendered digest HTML from dry runs.
+
 ## Running
 
 ### Scheduled runs (the passive path)
