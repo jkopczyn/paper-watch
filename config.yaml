@@ -22,6 +22,15 @@ resurface_min_mentions: 2
 schedule:
   deliver_days: [tue, fri]
   deliver_at: '12:00'
+# Thursday feedback refresh: append new FAR reading-group polls to the
+# groundtruth CSV, import their votes into the learning loop, exclude papers
+# read in the last 26 weeks from digests, and mail a notice of what happened.
+feedback_refresh:
+  days: [thu]
+  at: '12:00'
+  workspace: far
+  groundtruth_path: groundtruth.csv
+  exclude_read_weeks: 26
 authors:
 - Ilya Sutskever
 - Jason Wei
