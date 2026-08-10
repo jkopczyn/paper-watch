@@ -2,7 +2,7 @@
 
 The Twitter source reads per-handle RSS from a Nitter instance. Public instances
 are effectively dead, so `config.nitter_instances` normally lists a locally
-hosted one (`http://localhost:8080`, run via `deploy/nitter/docker-compose.yml`).
+hosted one (`http://localhost:18080`, run via `deploy/nitter/docker-compose.yml`).
 
 `ensure_local_nitter` checks that local instance and, on a real run, tries to
 start it if it's down; on a dry run it just warns and proceeds. All the moving

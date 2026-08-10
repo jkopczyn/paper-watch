@@ -1,5 +1,6 @@
 # Local Nitter for paper-watch's Twitter source.
-# Bound to 127.0.0.1:8080 only. Redis is bundled and NOT published to the host,
+# Bound to 127.0.0.1:18080 only (off the contended 8080 default). Redis is
+# bundled and NOT published to the host,
 # so it does not clash with any host Redis on 6379.
 #
 #   docker compose -f deploy/nitter/docker-compose.yml up -d
@@ -13,7 +14,7 @@ services:
     image: zedeus/nitter:latest
     container_name: nitter
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:18080:8080"
     volumes:
       - ./nitter.conf:/src/nitter.conf:Z,ro
       - ./sessions.jsonl:/src/sessions.jsonl:Z,ro

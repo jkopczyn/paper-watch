@@ -142,7 +142,7 @@ handles:
 - woj_zaremba
   # - saachijain  # 404 on all instances 2026-08-05 (renamed/gone)
 nitter_instances:
-- http://localhost:8080
+- http://localhost:18080
 - https://nitter.net
 - https://nitter.poast.org
 feeds:

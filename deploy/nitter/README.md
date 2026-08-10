@@ -3,7 +3,7 @@
 paper-watch's Twitter source (`src/paper_watch/sources/twitter_nitter.py`) reads
 per-handle RSS from a Nitter instance at `{instance}/{handle}/rss`. Public Nitter
 instances are effectively dead since X disabled guest accounts (Feb 2024), so we run
-our own here, bound to `http://localhost:8080`.
+our own here, bound to `http://localhost:18080`.
 
 Self-hosted Nitter needs **session tokens from real X accounts**. We use throwaway
 accounts and let Nitter rotate across all of them.
@@ -12,7 +12,7 @@ accounts and let Nitter rotate across all of them.
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | Nitter + bundled Redis, bound to `127.0.0.1:8080` |
+| `docker-compose.yml` | Nitter + bundled Redis, bound to `127.0.0.1:18080` |
 | `nitter.conf` | Nitter config (RSS enabled, points at the bundled Redis) |
 | `get_session.py` | Vendored from [zedeus/nitter](https://github.com/zedeus/nitter) `tools/`; scripted API login |
 | `gen-session.sh` | Wrapper: runs `get_session.py` via `uv` for one account |
@@ -97,14 +97,14 @@ Nitter crash-loops on `cannot open: ./sessions.jsonl`).
 A healthy start serves RSS:
 
 ```bash
-curl -s http://localhost:8080/janleike/rss | head -40   # expect RSS <item> entries
+curl -s http://localhost:18080/janleike/rss | head -40   # expect RSS <item> entries
 ```
 
 "Bad Authentication Data" / empty feeds = bad or expired sessions → regenerate (step 1).
 
 ## 3. paper-watch uses it automatically
 
-`config.yaml` lists `http://localhost:8080` first in `nitter_instances`, so the searcher
+`config.yaml` lists `http://localhost:18080` first in `nitter_instances`, so the searcher
 hits the local instance first and falls back to public instances only if it's down.
 
 ## Maintenance
