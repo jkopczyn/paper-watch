@@ -163,7 +163,9 @@ smtp:
   port: 587
   username: ja.kopczynski@gmail.com
   from_addr: ja.kopczynski@gmail.com
-  to_addr: ja.kopczynski@gmail.com
+  to_addrs:                        # every recipient gets the same digest email; a
+    - ja.kopczynski@gmail.com      # Slack channel/DM email address posts it there too
+    - '"PRG Team (Slack)" <channel-address@example.slack.com>'
 
 llm:
   model: claude-haiku-4-5        # or claude-opus-4-8 for higher-quality enrichment

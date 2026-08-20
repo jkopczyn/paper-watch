@@ -30,7 +30,7 @@ class GmailSender:
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = self.smtp_config.from_addr
-        msg["To"] = to_addr or self.smtp_config.to_addr
+        msg["To"] = to_addr or ", ".join(self.smtp_config.to_addrs)
         msg.set_content(html, subtype="html")
 
         with self._factory(self.smtp_config.host, self.smtp_config.port) as smtp:

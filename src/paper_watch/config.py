@@ -10,7 +10,7 @@ from datetime import time
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from paper_watch.schedule import parse_deliver_at, parse_weekdays
 
@@ -199,7 +199,17 @@ class SmtpConfig(BaseModel):
     port: int = 587
     username: str = ""
     from_addr: str = ""
+    # Legacy single recipient; folded into `to_addrs` on load.
     to_addr: str = ""
+    # All digest recipients. Entries may carry a display name
+    # ('"PRG Team (Slack)" <...@far-labs.slack.com>' posts into a Slack convo).
+    to_addrs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _fold_legacy_to_addr(self) -> "SmtpConfig":
+        if self.to_addr and self.to_addr not in self.to_addrs:
+            self.to_addrs.insert(0, self.to_addr)
+        return self
 
 
 class LlmConfig(BaseModel):

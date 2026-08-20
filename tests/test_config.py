@@ -76,8 +76,28 @@ llm:
     assert cfg.scoring.velocity == 1.5
     # unspecified weight keeps its default
     assert cfg.scoring.feedback == pytest.approx(2.0)
-    assert cfg.smtp.to_addr == "me@gmail.com"
+    # legacy single to_addr folds into the recipient list
+    assert cfg.smtp.to_addrs == ["me@gmail.com"]
     assert cfg.llm.max_enrich_per_run == 30
+
+
+def test_smtp_to_addrs_list(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+smtp:
+  username: me@gmail.com
+  from_addr: me@gmail.com
+  to_addrs:
+    - me@gmail.com
+    - '"PRG Team (Slack)" <chan@far-labs.slack.com>'
+"""
+    )
+    cfg = Config.load(cfg_file)
+    assert cfg.smtp.to_addrs == [
+        "me@gmail.com",
+        '"PRG Team (Slack)" <chan@far-labs.slack.com>',
+    ]
 
 
 def test_schedule_override(tmp_path: Path):

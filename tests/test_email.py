@@ -58,6 +58,25 @@ def test_gmail_sender_builds_and_sends():
     assert msg.get_content_type() == "text/html"
 
 
+def test_gmail_sender_multiple_recipients():
+    smtps = []
+    sender = GmailSender(
+        SmtpConfig(
+            username="me@gmail.com",
+            from_addr="me@gmail.com",
+            to_addrs=[
+                "me@gmail.com",
+                '"PRG Team (Slack)" <chan@far-labs.slack.com>',
+            ],
+        ),
+        app_password="pw",
+        smtp_factory=lambda h, p: smtps.append(s := FakeSMTP(h, p)) or s,
+    )
+    sender.send(subject="s", html="<p>x</p>")
+    msg = smtps[0].events[2][1]
+    assert msg["To"] == 'me@gmail.com, "PRG Team (Slack)" <chan@far-labs.slack.com>'
+
+
 def test_gmail_sender_to_override():
     smtps = []
     sender = GmailSender(
