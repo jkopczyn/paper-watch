@@ -112,6 +112,8 @@ journalctl --user -u paper-watch -n 50             # logs from the last runs
 
 Failure mode to know: the SMTP app password lives in `.env` as `SMTP_APP_PASSWORD`. If Google revokes it, every run fails at the send step with `SMTPAuthenticationError` 535 — regenerate at <https://myaccount.google.com/apppasswords> and update `.env`.
 
+A failed tick is not silent: `OnFailure=` on the service fires `deploy/systemd/alert.sh`, which appends a line to `paper-watch-alerts.log` (repo root, gitignored), raises a desktop notification, and then tries Slack and email via `paper-watch alert` — each channel best-effort, configured under `alerts:` in `config.yaml`. A digest still undelivered 24h after its slot with every tick exiting cleanly is alerted the same way, once per due point. So: an empty alerts log plus a moving `last_sent_at` is the healthy state.
+
 ### Manual runs
 
 ```bash

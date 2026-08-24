@@ -32,6 +32,7 @@ uv run paper-watch run --dry-run     # preview into out/ without sending or cons
 mkdir -p ~/.config/systemd/user
 ln -sf ~/Code/paper-watch/deploy/systemd/paper-watch.service ~/.config/systemd/user/
 ln -sf ~/Code/paper-watch/deploy/systemd/paper-watch.timer   ~/.config/systemd/user/
+ln -sf ~/Code/paper-watch/deploy/systemd/paper-watch-alert@.service ~/.config/systemd/user/
 
 # 2. Let user services run without an active login session, and survive reboots
 sudo loginctl enable-linger "$USER"
@@ -53,6 +54,34 @@ journalctl --user -u paper-watch -n 50            # logs from the last ticks
 # status and the delivery watermark, not just the timer:
 systemctl --user status paper-watch.service
 sqlite3 ~/Code/paper-watch/paper_watch.db "select * from meta"
+cat ~/Code/paper-watch/paper-watch-alerts.log            # every alert ever raised
+```
+
+## Alerts on failure
+
+`paper-watch.service` carries `OnFailure=paper-watch-alert@%p.service`. Any nonzero
+exit starts `alert.sh`, which — in this order, each step independent of the rest —
+
+1. appends one line to `paper-watch-alerts.log` (the channel that needs nothing);
+2. `notify-send`s a critical desktop notification;
+3. runs `paper-watch alert`, which posts to Slack (`alerts.slack_workspace` /
+   `alerts.slack_channel`, using that workspace's token from `.env`) and emails
+   `smtp.from_addr` — never the digest recipients.
+
+The excerpt in the alert is the last `Error`/`Exception` line of *that* invocation's
+journal. Steps 1–2 work even when the Python environment is what broke; step 3 is
+skipped by `--skip log,desktop` so nothing is reported twice.
+
+Separately, `paper-watch run` itself raises a `digest overdue` alert when a due digest
+is still unsent `alerts.overdue_after_hours` (default 24) later even though every tick
+exited 0 — the quiet failure the unit status cannot see. One alert per due point,
+tracked as `digest_overdue_noticed_for` in `meta`.
+
+To exercise the whole path without breaking anything:
+
+```bash
+systemctl --user start paper-watch-alert@paper-watch.service
+journalctl --user -u paper-watch-alert@paper-watch.service -n 8 -o cat   # log/desktop/slack/email: ok|skipped|error
 ```
 
 ## Notes
