@@ -283,3 +283,17 @@ def test_resolve_ties_prompts_and_records(tmp_path):
     )
     assert result.exit_code == 0
     assert "No outstanding ties" in result.output
+
+
+def test_alert_command_fans_out_and_reports(tmp_path, monkeypatch):
+    from paper_watch import alerts as alerts_mod
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"alerts:\n  log_file: {tmp_path / 'a.log'}\n  desktop: false\n  email: false\n")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        cli, ["alert", "--config", str(cfg), "--subject", "tick failed", "--skip", "desktop"], input="exit 1\nboom\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "tick failed: exit 1 | boom" in (tmp_path / "a.log").read_text()
+    assert "log: ok" in result.output and "desktop: skipped" in result.output

@@ -170,3 +170,11 @@ smtp:
 llm:
   model: claude-haiku-4-5        # or claude-opus-4-8 for higher-quality enrichment
   max_enrich_per_run: 50
+
+alerts:                            # operational failures (a crashed tick, a digest long overdue)
+  log_file: paper-watch-alerts.log # always appended to
+  desktop: true                    # notify-send on this machine
+  email: true                      # to smtp.from_addr only (not the digest recipients)
+  slack_workspace: null            # a workspace from slack.workspaces, and a channel its token can post to
+  slack_channel: null
+  overdue_after_hours: 24          # alert when a due digest is still unsent this long after its slot

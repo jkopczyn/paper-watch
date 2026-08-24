@@ -1,0 +1,10 @@
+[Unit]
+Description=Alert that %i failed
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Code/paper-watch
+# The script does the two channels that need nothing but the machine (log
+# file, notify-send) before handing to `paper-watch alert` for Slack/email —
+# so a broken Python environment still leaves a trace.
+ExecStart=%h/Code/paper-watch/deploy/systemd/alert.sh %i

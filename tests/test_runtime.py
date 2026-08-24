@@ -2279,3 +2279,79 @@ def test_af_alias_for_a_different_post_does_not_relabel(tmp_path):
     links = _display_links(store, eid, json.loads(store.get_entry(eid)["links_json"]))
     assert links["abstract"] == "https://www.lesswrong.com/posts/xyz9/an-lw-only-post"
     store.close()
+
+
+# --- overdue-digest alert -------------------------------------------------
+
+
+def _overdue_setup(tmp_path, *, hours_late, last_sent_offset_days=-7):
+    """A Tue/Fri-noon schedule with `now` this many hours past the latest due point."""
+    from paper_watch.config import Config
+    from paper_watch.schedule import last_delivery_at_or_before
+
+    config = Config(db_path=str(tmp_path / "pw.db"), alerts={"log_file": str(tmp_path / "a.log"), "desktop": False, "email": False})
+    probe = datetime(2026, 8, 21, 20, 0, tzinfo=timezone.utc)  # a Friday evening
+    point = last_delivery_at_or_before(probe, days=config.schedule.weekdays, at=config.schedule.at_time)
+    now = point + timedelta(hours=hours_late)
+    store = Store(config.db_path)
+    store.set_last_sent_at((point + timedelta(days=last_sent_offset_days)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return config, store, now, point
+
+
+def test_overdue_digest_alerts_once_per_due_point(tmp_path):
+    from paper_watch.runtime import alert_if_overdue
+
+    config, store, now, point = _overdue_setup(tmp_path, hours_late=30)
+    sent = []
+    fired = alert_if_overdue(store, config, now=now, send=lambda cfg, s, b, **kw: sent.append((s, b)))
+    assert fired and len(sent) == 1
+    subject, body = sent[0]
+    assert "overdue" in subject
+    assert point.strftime("%Y-%m-%d") in body
+
+    # The next tick, still owed: no drumbeat.
+    fired = alert_if_overdue(store, config, now=now + timedelta(hours=4), send=lambda cfg, s, b, **kw: sent.append((s, b)))
+    assert not fired and len(sent) == 1
+    store.close()
+
+
+def test_recently_due_digest_is_not_yet_overdue(tmp_path):
+    from paper_watch.runtime import alert_if_overdue
+
+    config, store, now, _ = _overdue_setup(tmp_path, hours_late=6)
+    sent = []
+    assert not alert_if_overdue(store, config, now=now, send=lambda *a, **kw: sent.append(a))
+    assert sent == []
+    store.close()
+
+
+def test_delivered_digest_is_not_overdue(tmp_path):
+    from paper_watch.runtime import alert_if_overdue
+
+    config, store, now, _ = _overdue_setup(tmp_path, hours_late=30, last_sent_offset_days=0)
+    sent = []
+    assert not alert_if_overdue(store, config, now=now, send=lambda *a, **kw: sent.append(a))
+    assert sent == []
+    store.close()
+
+
+def test_run_raises_the_overdue_alert_after_a_clean_tick(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.runtime import RunResult
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        f"db_path: {tmp_path / 'pw.db'}\nalerts:\n  log_file: {tmp_path / 'a.log'}\n  desktop: false\n  email: false\n"
+    )
+    monkeypatch.setattr(runtime, "run_pipeline", lambda store, **kw: RunResult())
+    iso = "%Y-%m-%dT%H:%M:%SZ"
+    store = Store(tmp_path / "pw.db")
+    store.set_last_sent_at((datetime.now(timezone.utc) - timedelta(days=10)).strftime(iso))
+    store.set_last_polled_at(datetime.now(timezone.utc).strftime(iso))
+    store.close()
+
+    runtime.run(str(cfg_file))
+    text = (tmp_path / "a.log").read_text()
+    assert "overdue" in text

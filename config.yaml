@@ -276,3 +276,11 @@ slack:
       ingestion_channels:
         - {id: C015PNRDTKP, name: paper-club}
         - {id: C06276BMTK6, name: papers-running-list, trusted: true}
+
+alerts:
+  log_file: paper-watch-alerts.log
+  desktop: true
+  email: true
+  slack_workspace: far
+  slack_channel: null   # fill with a private channel the paper_watch user is in; null = no Slack alerts
+  overdue_after_hours: 24

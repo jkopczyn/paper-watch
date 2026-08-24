@@ -20,3 +20,4 @@ deploy/nitter/sessions.jsonl
 paper_watch.db.*.bak
 groundtruth.csv
 groundtruth.csv.imported
+paper-watch-alerts.log

@@ -243,3 +243,25 @@ def test_feedback_refresh_rejects_bad_day(tmp_path: Path, body: str):
     cfg_file.write_text(body)
     with pytest.raises(ValueError):
         Config.load(cfg_file)
+
+
+def test_alerts_config_defaults(tmp_path):
+    from paper_watch.config import Config
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("db_path: x.db\n")
+    c = Config.load(cfg)
+    assert c.alerts.log_file == "paper-watch-alerts.log"
+    assert c.alerts.desktop is True and c.alerts.email is True
+    assert c.alerts.slack_channel is None
+    assert c.alerts.overdue_after_hours == 24
+
+
+def test_alerts_config_slack_channel_needs_workspace(tmp_path):
+    import pytest
+    from paper_watch.config import Config
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("alerts:\n  slack_channel: C1\n")
+    with pytest.raises(ValueError):
+        Config.load(cfg)

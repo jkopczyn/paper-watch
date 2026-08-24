@@ -174,6 +174,47 @@ def replay(config_path: str, at: str) -> None:
 
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option("--subject", required=True, help="One-line alert subject.")
+@click.option(
+    "--skip",
+    default="",
+    help="Comma-separated channels already handled by the caller (log,desktop,slack,email).",
+)
+def alert(config_path: str, subject: str, skip: str) -> None:
+    """Send an operational alert; the body is read from stdin.
+
+    Used by deploy/systemd/alert.sh when a tick fails. Every channel in
+    `alerts:` is tried independently; this command exits 0 regardless, since
+    an alert path that itself fails the unit would just hide the outcome.
+    """
+    import sys
+
+    from paper_watch import alerts, runtime
+    from paper_watch.config import Config
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+    config = Config.load(config_path)
+    body = sys.stdin.read().strip() or "(no details)"
+    outcome = alerts.send_alert(
+        config.alerts,
+        subject,
+        body,
+        skip={c.strip() for c in skip.split(",") if c.strip()},
+        smtp=config.smtp,
+        sender=runtime._alert_sender(config),
+        slack_post=alerts.slack_poster(config),
+    )
+    for channel in alerts.CHANNELS:
+        click.echo(f"{channel}: {outcome[channel] or 'ok'}")
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
 def sources(config_path: str) -> None:
     """List configured sources."""
     from paper_watch.config import Config

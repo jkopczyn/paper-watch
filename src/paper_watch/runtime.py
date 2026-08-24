@@ -19,7 +19,12 @@ from paper_watch.digest import (
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
 from paper_watch.identity import canonicalize_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
-from paper_watch.schedule import is_delivery_due, is_poll_due, next_delivery_after
+from paper_watch.schedule import (
+    is_delivery_due,
+    is_poll_due,
+    last_delivery_at_or_before,
+    next_delivery_after,
+)
 from paper_watch.sources.slack import iso_to_ts
 from paper_watch.score import (
     ScoreFeatures,
@@ -1167,6 +1172,61 @@ def update_metrics(store, entry_ids: list[int], now_iso: str) -> None:
             store.record_metrics(entry_id, count, now_iso)
 
 
+def alert_if_overdue(store, config, *, now: datetime, send=None) -> bool:
+    """Raise an operational alert if a scheduled digest is long undelivered.
+
+    A tick that crashes is caught by systemd's OnFailure=. This covers the
+    quieter failure: every tick exits cleanly yet `last_sent_at` never moves
+    (nothing to send, a gate stuck shut, ...). One alert per due point, tracked
+    in `meta`, so the 4-hourly retries do not drumbeat.
+    """
+    from paper_watch import alerts
+    from paper_watch.store import DIGEST_OVERDUE_NOTICED_KEY
+
+    cfg = config.alerts
+    point = last_delivery_at_or_before(
+        now, days=config.schedule.weekdays, at=config.schedule.at_time
+    )
+    if point is None:
+        return False
+    if now - point < timedelta(hours=cfg.overdue_after_hours):
+        return False
+    if not is_delivery_due(
+        now, store.get_last_sent_at(), days=config.schedule.weekdays, at=config.schedule.at_time
+    ):
+        return False
+    point_iso = point.astimezone(timezone.utc).strftime(_ISO)
+    if store.get_meta(DIGEST_OVERDUE_NOTICED_KEY) == point_iso:
+        return False
+    hours = int((now - point).total_seconds() // 3600)
+    subject = "digest overdue"
+    body = (
+        f"The digest due {point.strftime('%a %Y-%m-%d %H:%M')} is still undelivered "
+        f"{hours}h later (last_sent_at={store.get_last_sent_at() or 'never'}). "
+        "Ticks are exiting cleanly, so check `journalctl --user -u paper-watch` "
+        "for 'Nothing to send' and the meta watermarks."
+    )
+    if send is None:
+        send = alerts.send_alert
+    send(
+        cfg,
+        subject,
+        body,
+        smtp=config.smtp,
+        sender=_alert_sender(config),
+        slack_post=alerts.slack_poster(config),
+        now=now,
+    )
+    store.set_meta(DIGEST_OVERDUE_NOTICED_KEY, point_iso)
+    return True
+
+
+def _alert_sender(config):
+    from paper_watch.delivery.email import GmailSender
+
+    return GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", ""))
+
+
 def run(
     config_path: str,
     *,
@@ -1307,6 +1367,11 @@ def run(
             ):
                 refresh.run_feedback_refresh(store, config, sender, now=now)
                 result.refreshed = True
+        # Last, and only on real ticks: the send above either moved the
+        # watermark or raised (systemd's OnFailure= reports that). What is left
+        # is a digest quietly still owed.
+        if not dry_run:
+            alert_if_overdue(store, config, now=now)
         result.attempted_delivery = deliver
         result.polled = do_ingest
         result.next_delivery = next_delivery_after(

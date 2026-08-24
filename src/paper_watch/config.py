@@ -223,6 +223,35 @@ class LlmConfig(BaseModel):
     tags_path: str = "tags.yaml"
 
 
+class AlertsConfig(BaseModel):
+    """Where operational failures are reported (see paper_watch.alerts).
+
+    Every channel is best-effort and independent: the log file is the floor
+    that always works, the rest are tried in turn and their failures noted.
+    """
+
+    # Appended to on every alert; relative to the working directory.
+    log_file: str = "paper-watch-alerts.log"
+    # notify-send on the machine running the timer.
+    desktop: bool = True
+    # A one-line email to smtp.from_addr (never the digest's to_addrs). Useless
+    # when SMTP itself is what broke, but the most effective channel otherwise.
+    email: bool = True
+    # Post to this channel in this workspace (from slack.workspaces) using that
+    # workspace's token. Unset ⇒ no Slack alerts.
+    slack_workspace: str | None = None
+    slack_channel: str | None = None
+    # A scheduled digest still undelivered this long after its due point is
+    # alerted once (per due point), even when every tick exited cleanly.
+    overdue_after_hours: int = 24
+
+    @model_validator(mode="after")
+    def _slack_pair(self) -> "AlertsConfig":
+        if self.slack_channel and not self.slack_workspace:
+            raise ValueError("alerts.slack_channel needs alerts.slack_workspace")
+        return self
+
+
 class Config(BaseModel):
     db_path: str = "paper_watch.db"
     authors: list[str] = Field(default_factory=list)
@@ -301,6 +330,7 @@ class Config(BaseModel):
     )
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":

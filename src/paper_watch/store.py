@@ -189,6 +189,10 @@ LAST_FEEDBACK_REFRESH_KEY = "last_feedback_refresh_at"
 # per owed point rather than a drumbeat. Plain get_meta/set_meta suffices.
 FEEDBACK_FAILURE_NOTICED_KEY = "feedback_failure_noticed_for"
 
+# Same idea for the digest itself: the ISO of the due point whose "still
+# undelivered" alert has gone out (see runtime.alert_if_overdue).
+DIGEST_OVERDUE_NOTICED_KEY = "digest_overdue_noticed_for"
+
 
 class Store:
     def __init__(self, path: str | Path):

@@ -1,5 +1,9 @@
 [Unit]
 Description=paper-watch digest run
+# Any nonzero exit (crash, SMTP auth failure, missing .env, broken uv) fires
+# the alert unit, which logs to paper-watch-alerts.log and fans out to the
+# channels in config.yaml `alerts:`. %p passes the unit prefix ("paper-watch") through.
+OnFailure=paper-watch-alert@%p.service
 
 [Service]
 Type=oneshot
