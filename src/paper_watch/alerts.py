@@ -59,10 +59,12 @@ def desktop_notify(subject: str, body: str) -> None:
 def _slack_api(token: str, method: str, payload: dict) -> dict:
     import httpx
 
+    # Form-encoded, not JSON: users.lookupByEmail rejects JSON bodies with
+    # invalid_arguments, and every method here accepts form params.
     resp = httpx.post(
         f"https://slack.com/api/{method}",
         headers={"Authorization": f"Bearer {token}"},
-        json=payload,
+        data=payload,
         timeout=20,
     )
     return resp.json()
