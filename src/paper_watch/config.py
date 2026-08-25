@@ -237,19 +237,28 @@ class AlertsConfig(BaseModel):
     # A one-line email to smtp.from_addr (never the digest's to_addrs). Useless
     # when SMTP itself is what broke, but the most effective channel otherwise.
     email: bool = True
-    # Post to this channel in this workspace (from slack.workspaces) using that
-    # workspace's token. Unset ⇒ no Slack alerts.
+    # Slack target, posted with the token of `slack_workspace` (a name from
+    # slack.workspaces). Either a channel the bot is in, or a person to DM —
+    # a member ID (U…) or, with the users:read.email scope, an email. Neither
+    # set ⇒ no Slack alerts.
     slack_workspace: str | None = None
     slack_channel: str | None = None
+    slack_user: str | None = None
     # A scheduled digest still undelivered this long after its due point is
     # alerted once (per due point), even when every tick exited cleanly.
     overdue_after_hours: int = 24
 
     @model_validator(mode="after")
     def _slack_pair(self) -> "AlertsConfig":
-        if self.slack_channel and not self.slack_workspace:
-            raise ValueError("alerts.slack_channel needs alerts.slack_workspace")
+        if self.slack_channel and self.slack_user:
+            raise ValueError("alerts.slack_channel and alerts.slack_user are exclusive")
+        if (self.slack_channel or self.slack_user) and not self.slack_workspace:
+            raise ValueError("alerts.slack_channel/slack_user need alerts.slack_workspace")
         return self
+
+    @property
+    def slack_target(self) -> str | None:
+        return self.slack_channel or self.slack_user
 
 
 class Config(BaseModel):

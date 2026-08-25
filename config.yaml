@@ -282,5 +282,5 @@ alerts:
   desktop: true
   email: true
   slack_workspace: far
-  slack_channel: null   # fill with a private channel the paper_watch user is in; null = no Slack alerts
+  slack_user: ja.kopczynski@gmail.com   # DM Jacob; needs im:write + users:read.email on the app (or a U… member ID with im:write alone)
   overdue_after_hours: 24

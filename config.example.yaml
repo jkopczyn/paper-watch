@@ -175,6 +175,7 @@ alerts:                            # operational failures (a crashed tick, a dig
   log_file: paper-watch-alerts.log # always appended to
   desktop: true                    # notify-send on this machine
   email: true                      # to smtp.from_addr only (not the digest recipients)
-  slack_workspace: null            # a workspace from slack.workspaces, and a channel its token can post to
-  slack_channel: null
+  slack_workspace: null            # a workspace from slack.workspaces, plus ONE of:
+  slack_channel: null              #   a channel the bot is in, or
+  slack_user: null                 #   a person to DM — member ID (im:write) or email (also users:read.email)
   overdue_after_hours: 24          # alert when a due digest is still unsent this long after its slot

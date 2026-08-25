@@ -25,7 +25,8 @@ from paper_watch.config import AlertsConfig, Config, SmtpConfig
 log = logging.getLogger(__name__)
 
 DesktopNotify = Callable[[str, str], None]
-SlackPost = Callable[[str, str, str], None]  # (workspace, channel, text)
+SlackPost = Callable[[str, str, str], None]  # (workspace, target, text)
+SlackApi = Callable[[str, str, dict], dict]  # (token, method, payload) -> response
 
 CHANNELS = ("log", "desktop", "slack", "email")
 
@@ -55,27 +56,47 @@ def desktop_notify(subject: str, body: str) -> None:
     )
 
 
-def slack_poster(config: Config) -> SlackPost:
-    """A poster bound to the config's workspace tokens (read from the env)."""
+def _slack_api(token: str, method: str, payload: dict) -> dict:
+    import httpx
 
-    def post(workspace: str, channel: str, text: str) -> None:
-        import httpx
+    resp = httpx.post(
+        f"https://slack.com/api/{method}",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=20,
+    )
+    return resp.json()
 
+
+def slack_poster(config: Config, *, api: SlackApi = _slack_api) -> SlackPost:
+    """A poster bound to the config's workspace tokens (read from the env).
+
+    `target` is a channel ID (posted to directly), a member ID (U…/W…: a DM is
+    opened first, needs im:write) or an email (looked up first, needs
+    users:read.email).
+    """
+
+    def call(token: str, method: str, payload: dict) -> dict:
+        data = api(token, method, payload)
+        if not data.get("ok"):
+            detail = data.get("error", "?")
+            if data.get("needed"):
+                detail += f" (needs scope {data['needed']})"
+            raise RuntimeError(f"{method}: {detail}")
+        return data
+
+    def post(workspace: str, target: str, text: str) -> None:
         ws = next((w for w in (config.slack.workspaces if config.slack else []) if w.name == workspace), None)
         if ws is None:
             raise LookupError(f"no slack workspace named {workspace!r} in config")
         token = os.environ.get(ws.token_env)
         if not token:
             raise LookupError(f"no Slack token for workspace {workspace} (env {ws.token_env})")
-        resp = httpx.post(
-            "https://slack.com/api/chat.postMessage",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"channel": channel, "text": text},
-            timeout=20,
-        )
-        data = resp.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"chat.postMessage: {data.get('error', resp.status_code)}")
+        if "@" in target:
+            target = call(token, "users.lookupByEmail", {"email": target})["user"]["id"]
+        if target[:1] in ("U", "W"):
+            target = call(token, "conversations.open", {"users": target})["channel"]["id"]
+        call(token, "chat.postMessage", {"channel": target, "text": text})
 
     return post
 
@@ -121,9 +142,9 @@ def send_alert(
     def do_slack() -> None:
         if slack_post is None:
             raise LookupError("no Slack poster available")
-        slack_post(cfg.slack_workspace, cfg.slack_channel, f"*{subject}*\n{body}")
+        slack_post(cfg.slack_workspace, cfg.slack_target, f"*{subject}*\n{body}")
 
-    attempt("slack", bool(cfg.slack_channel), do_slack)
+    attempt("slack", bool(cfg.slack_target), do_slack)
 
     def do_email() -> None:
         if sender is None or smtp is None:

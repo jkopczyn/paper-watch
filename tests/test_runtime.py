@@ -2343,7 +2343,8 @@ def test_run_raises_the_overdue_alert_after_a_clean_tick(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(
-        f"db_path: {tmp_path / 'pw.db'}\nalerts:\n  log_file: {tmp_path / 'a.log'}\n  desktop: false\n  email: false\n"
+        f"db_path: {tmp_path / 'pw.db'}\nalerts:\n  log_file: {tmp_path / 'a.log'}\n"
+        "  desktop: false\n  email: false\n  overdue_after_hours: 0\n"  # whatever the clock says
     )
     monkeypatch.setattr(runtime, "run_pipeline", lambda store, **kw: RunResult())
     iso = "%Y-%m-%dT%H:%M:%SZ"

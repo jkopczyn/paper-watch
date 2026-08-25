@@ -64,8 +64,9 @@ exit starts `alert.sh`, which — in this order, each step independent of the re
 
 1. appends one line to `paper-watch-alerts.log` (the channel that needs nothing);
 2. `notify-send`s a critical desktop notification;
-3. runs `paper-watch alert`, which posts to Slack (`alerts.slack_workspace` /
-   `alerts.slack_channel`, using that workspace's token from `.env`) and emails
+3. runs `paper-watch alert`, which posts to Slack (`alerts.slack_workspace` plus
+   either `slack_channel` or `slack_user` — a member ID or email to DM; the app
+   needs `im:write`, and `users:read.email` for the email form) and emails
    `smtp.from_addr` — never the digest recipients.
 
 The excerpt in the alert is the last `Error`/`Exception` line of *that* invocation's

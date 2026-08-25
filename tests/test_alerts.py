@@ -110,3 +110,68 @@ def test_slack_token_missing_is_reported_not_raised(tmp_path, monkeypatch):
     config = Config(alerts=cfg, slack={"workspaces": [{"name": "far", "token_env": "SLACK_TOKEN_FAR"}]})
     result = alerts.send_alert(cfg, "s", "b", slack_post=alerts.slack_poster(config))
     assert "SLACK_TOKEN_FAR" in result["slack"]
+
+
+def _fake_api(log):
+    """A stand-in for alerts._slack_api: records (method, payload), replies canned."""
+
+    def api(token, method, payload):
+        log.append((method, payload))
+        if method == "users.lookupByEmail":
+            return {"ok": True, "user": {"id": "U42"}}
+        if method == "conversations.open":
+            return {"ok": True, "channel": {"id": "D99"}}
+        if method == "chat.postMessage":
+            return {"ok": True}
+        raise AssertionError(method)
+
+    return api
+
+
+def _config_with_token(monkeypatch, **alerts_kw):
+    from paper_watch.config import Config
+
+    monkeypatch.setenv("SLACK_TOKEN_FAR", "xoxb-test")
+    return Config(
+        alerts=dict(slack_workspace="far", desktop=False, email=False, **alerts_kw),
+        slack={"workspaces": [{"name": "far", "token_env": "SLACK_TOKEN_FAR"}]},
+    )
+
+
+def test_slack_user_id_target_opens_a_dm_and_posts_there(tmp_path, monkeypatch):
+    log = []
+    config = _config_with_token(monkeypatch, slack_user="U42", log_file=str(tmp_path / "a.log"))
+    post = alerts.slack_poster(config, api=_fake_api(log))
+    result = alerts.send_alert(config.alerts, "s", "b", slack_post=post)
+    assert result["slack"] is None
+    assert log == [
+        ("conversations.open", {"users": "U42"}),
+        ("chat.postMessage", {"channel": "D99", "text": "*s*\nb"}),
+    ]
+
+
+def test_slack_user_email_target_is_looked_up_first(tmp_path, monkeypatch):
+    log = []
+    config = _config_with_token(monkeypatch, slack_user="me@example.com", log_file=str(tmp_path / "a.log"))
+    post = alerts.slack_poster(config, api=_fake_api(log))
+    alerts.send_alert(config.alerts, "s", "b", slack_post=post)
+    assert log[0] == ("users.lookupByEmail", {"email": "me@example.com"})
+    assert log[1] == ("conversations.open", {"users": "U42"})
+
+
+def test_slack_channel_target_posts_directly(tmp_path, monkeypatch):
+    log = []
+    config = _config_with_token(monkeypatch, slack_channel="C7", log_file=str(tmp_path / "a.log"))
+    post = alerts.slack_poster(config, api=_fake_api(log))
+    alerts.send_alert(config.alerts, "s", "b", slack_post=post)
+    assert log == [("chat.postMessage", {"channel": "C7", "text": "*s*\nb"})]
+
+
+def test_slack_api_error_is_reported_with_the_slack_error_code(tmp_path, monkeypatch):
+    config = _config_with_token(monkeypatch, slack_user="U42", log_file=str(tmp_path / "a.log"))
+
+    def api(token, method, payload):
+        return {"ok": False, "error": "missing_scope", "needed": "im:write"}
+
+    result = alerts.send_alert(config.alerts, "s", "b", slack_post=alerts.slack_poster(config, api=api))
+    assert "conversations.open" in result["slack"] and "missing_scope" in result["slack"]

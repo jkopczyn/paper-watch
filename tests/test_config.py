@@ -265,3 +265,13 @@ def test_alerts_config_slack_channel_needs_workspace(tmp_path):
     cfg.write_text("alerts:\n  slack_channel: C1\n")
     with pytest.raises(ValueError):
         Config.load(cfg)
+
+
+def test_alerts_slack_user_and_channel_are_exclusive(tmp_path):
+    import pytest
+    from paper_watch.config import Config
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("alerts:\n  slack_workspace: far\n  slack_channel: C1\n  slack_user: U1\n")
+    with pytest.raises(ValueError):
+        Config.load(cfg)
