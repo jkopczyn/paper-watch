@@ -270,6 +270,144 @@ def test_resolve_paper_metadata_skips_entries_with_abstract(tmp_path):
     store.close()
 
 
+class _LwStubResolver:
+    def __init__(self, meta):
+        self.meta = meta
+        self.seen = []
+
+    def resolve(self, url):
+        self.seen.append(url)
+        return self.meta
+
+
+class _BoomResolver:
+    def resolve(self, url):
+        raise AssertionError(f"should not resolve {url}")
+
+
+_LW_META = {
+    "title": "Value is Fragile",
+    "authors": ["Eliezer Yudkowsky"],
+    "abstract": "a post about fragile values",
+    "published_at": "2009-01-29T08:46:30Z",
+}
+
+
+def _lw_entry(store, url):
+    items = [RawItem(source="rss:AF", url=url, text=None)]
+    (entry_id,) = ingest(store, [ListSource("rss:AF", items)], None, "2026-07-01T00:00:00Z")
+    return entry_id
+
+
+def test_resolve_paper_metadata_uses_the_lesswrong_resolver_for_lw_posts(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    updated = resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    assert updated == 1
+    assert lw.seen == [url]
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Value is Fragile"
+    assert json.loads(row["authors_json"]) == ["Eliezer Yudkowsky"]
+    assert row["abstract"] == "a post about fragile values"
+    assert row["published_at"] == "2009-01-29T08:46:30Z"
+    store.close()
+
+
+def test_resolve_paper_metadata_routes_alignment_forum_mirrors_to_the_lw_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.alignmentforum.org/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    # canonicalize_url collapses the mirror host for /posts/ paths at ingest
+    assert lw.seen == ["https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"]
+    assert store.get_entry(entry_id)["title"] == "Value is Fragile"
+    store.close()
+
+
+def test_resolve_paper_metadata_routes_the_sequence_url_form_to_the_lw_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.alignmentforum.org/s/NouBkh4qnK8uKwn3L/p/Z8kLbceGBMWB5HGfn"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    assert lw.seen == [url]
+    assert store.get_entry(entry_id)["title"] == "Value is Fragile"
+    store.close()
+
+
+def test_resolve_paper_metadata_reads_a_url_date_before_fetching(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/research/2026-05-08-some-post")
+    # the HTML resolver supplies a title and abstract but no date
+    html = _StubMetaResolver({"title": "Some Post", "abstract": "a"})
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Some Post"
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    store.close()
+
+
+def test_resolve_paper_metadata_without_an_lw_resolver_uses_the_html_path(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    html = _StubMetaResolver({"title": "From The Page", "abstract": "a"})
+
+    resolve_paper_metadata(store, [entry_id], None, lw_resolver=None, html_resolver=html)
+
+    assert html.seen == [url]
+    assert store.get_entry(entry_id)["title"] == "From The Page"
+    store.close()
+
+
+def test_resolve_paper_metadata_leaves_an_lw_post_unresolved_when_graphql_fails(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    before = store.get_entry(entry_id)["title"]
+
+    updated = resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=_NullResolver(), html_resolver=_BoomResolver()
+    )
+
+    assert updated == 0
+    row = store.get_entry(entry_id)
+    assert row["title"] == before
+    assert row["abstract"] is None
+    store.close()
+
+
+def test_resolve_paper_metadata_leaves_non_lw_pages_on_the_html_path(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/posts/abcdefghij/some-post")
+    html = _StubMetaResolver({"title": "Ordinary Blog Post", "abstract": "a"})
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=_BoomResolver(), html_resolver=html
+    )
+
+    assert html.seen == ["https://blog.example/posts/abcdefghij/some-post"]
+    assert store.get_entry(entry_id)["title"] == "Ordinary Blog Post"
+    store.close()
+
+
 _NOW = datetime(2026, 6, 19, 9, tzinfo=timezone.utc)
 
 

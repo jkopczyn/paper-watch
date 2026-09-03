@@ -60,7 +60,7 @@ def titles(store: Store, ids: list[int]) -> dict[int, str]:
     }
 
 
-orv, pdf, html = _build_metadata_resolvers(config)
+orv, pdf, html, lw = _build_metadata_resolvers(config)
 
 src = config.db_path
 work = src if apply else str(Path(tempfile.mkdtemp()) / "preview.db")
@@ -80,7 +80,8 @@ print(f"{len(ids)} entries carry a junk title; re-resolving...\n")
 
 resolve_paper_metadata(
     store, ids, get_text,
-    openreview_resolver=orv, pdf_resolver=pdf, html_resolver=html, reresolve=True,
+    openreview_resolver=orv, pdf_resolver=pdf, html_resolver=html, lw_resolver=lw,
+    reresolve=True,
 )
 
 # ids can shrink if a re-resolve merges an entry into a twin; report on survivors.

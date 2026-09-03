@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from paper_watch.config import Config, ScoringWeights
-from paper_watch.dates import since_to_iso
+from paper_watch.dates import date_from_url, since_to_iso
 from paper_watch.digest import (
     DigestItem,
     SourceWarning,
@@ -250,6 +250,7 @@ def resolve_paper_metadata(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    lw_resolver=None,
     search_resolver=None,
     reresolve=False,
 ) -> int:
@@ -259,20 +260,26 @@ def resolve_paper_metadata(
     text (or bare URL) as its title and no abstract; the LLM gate and any
     content-based ranking need the actual paper. Resolves entries with no
     abstract by landing-page type: arXiv id → batched arXiv API (needs `fetch`);
-    an OpenReview forum link → `openreview_resolver`; a raw PDF link →
-    `pdf_resolver`; any other HTML page → `html_resolver` (its Open Graph / title
-    metadata). Each is best-effort; one failure never aborts the rest. Returns
-    how many entries were updated.
+    an OpenReview forum link → `openreview_resolver`; a LessWrong-family post →
+    `lw_resolver` (GraphQL; the HTML path gets a bot challenge there); a raw PDF
+    link → `pdf_resolver`; any other HTML page → `html_resolver` (its Open Graph
+    / title metadata). Each is best-effort; one failure never aborts the rest.
+    Returns how many entries were updated.
+
+    A date stated in the entry's own URL is read first, before any resolver is
+    scheduled, since it is free and needs no fetch.
 
     `reresolve` reprocesses entries that already have an abstract — off in the
     live pipeline (an abstract means already resolved), on for the backfill that
     re-runs a curated set of junk-titled entries through the fixed resolvers.
     """
     from paper_watch.sources.arxiv import fetch_metadata
+    from paper_watch.sources.lesswrong import post_id_from_url
     from paper_watch.sources.openreview import forum_id
 
     arxiv_pending: dict[str, int] = {}
     openreview_pending: list[tuple[int, str]] = []
+    lw_pending: list[tuple[int, str]] = []
     pdf_pending: list[tuple[int, str]] = []
     html_pending: list[tuple[int, str]] = []
     search_pending: list[tuple[int, str]] = []
@@ -284,8 +291,17 @@ def resolve_paper_metadata(
             arxiv_pending[row["arxiv_id"]] = entry_id
             continue
         abstract_url = json.loads(row["links_json"]).get("abstract") or ""
+        if row["published_at"] is None:
+            # Free, and it runs before any fetch is scheduled: the entry may still
+            # need a resolver for its title, but its date is already settled, so
+            # the date-only pass will never fetch this URL again.
+            iso = date_from_url(abstract_url) or date_from_url(_entry_lookup_url(store, row))
+            if iso:
+                store.fill_published_at(entry_id, iso)
         if openreview_resolver is not None and forum_id(abstract_url):
             openreview_pending.append((entry_id, abstract_url))
+        elif lw_resolver is not None and post_id_from_url(abstract_url):
+            lw_pending.append((entry_id, abstract_url))
         elif pdf_resolver is not None and (pdf := _entry_pdf_url(row)):
             pdf_pending.append((entry_id, pdf))
         elif html_resolver is not None and _is_html_page_url(abstract_url):
@@ -335,7 +351,11 @@ def resolve_paper_metadata(
             _flag_openreview_fallback(store, entry_id)
             updated += 1
 
-    for pending, resolver in ((pdf_pending, pdf_resolver), (html_pending, html_resolver)):
+    for pending, resolver in (
+        (lw_pending, lw_resolver),
+        (pdf_pending, pdf_resolver),
+        (html_pending, html_resolver),
+    ):
         for entry_id, url in pending:
             meta = _safe_resolve(resolver, url)
             if meta and meta.get("title"):
@@ -832,6 +852,7 @@ def run_pipeline(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    lw_resolver=None,
     search_resolver=None,
     web_search_resolver=None,
 ) -> RunResult:
@@ -878,6 +899,7 @@ def run_pipeline(
         or openreview_resolver
         or pdf_resolver
         or html_resolver
+        or lw_resolver
         or search_resolver
     ):
         resolve_paper_metadata(
@@ -887,6 +909,7 @@ def run_pipeline(
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            lw_resolver=lw_resolver,
             search_resolver=search_resolver,
         )
     # Last resort for entries that are still just a URL (no title, no abstract):
@@ -1114,11 +1137,12 @@ def _build_newsletter_extractor(config: Config):
 
 
 def _build_metadata_resolvers(config: Config):
-    """(openreview, pdf, html) resolvers for the metadata step. The LLM helpers
+    """(openreview, pdf, html, lesswrong) resolvers for the metadata step. The LLM helpers
     (PDF vision-OCR, and the publication-date fallback for pages/PDFs whose
     metadata carries no date) are only wired when an Anthropic key is present;
     deterministic extraction needs neither."""
     from paper_watch.sources.html_meta import HtmlMetaResolver
+    from paper_watch.sources.lesswrong import LessWrongResolver
     from paper_watch.sources.openreview import OpenReviewResolver
     from paper_watch.sources.pdf_meta import PdfMetaResolver
 
@@ -1134,6 +1158,7 @@ def _build_metadata_resolvers(config: Config):
         OpenReviewResolver(),
         PdfMetaResolver(ocr=ocr, date_llm=date_llm),
         HtmlMetaResolver(date_llm=date_llm),
+        LessWrongResolver(),  # needs no key
     )
 
 
@@ -1304,7 +1329,9 @@ def run(
 
         tweet_resolver = _build_tweet_resolver(config, store, nitter_instances)
         newsletter_extractor = _build_newsletter_extractor(config)
-        openreview_resolver, pdf_resolver, html_resolver = _build_metadata_resolvers(config)
+        openreview_resolver, pdf_resolver, html_resolver, lw_resolver = (
+            _build_metadata_resolvers(config)
+        )
         search_resolver = _build_search_resolver(config)
         web_search_resolver = _build_web_search_resolver(config)
 
@@ -1319,6 +1346,7 @@ def run(
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            lw_resolver=lw_resolver,
             search_resolver=search_resolver,
             web_search_resolver=web_search_resolver,
             source_priors=config.source_priors,
