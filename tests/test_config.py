@@ -293,3 +293,10 @@ def test_llm_date_model_is_overridable(tmp_path: Path):
 
     assert cfg.llm.date_model == "claude-opus-4-8"
     assert cfg.llm.model == "claude-haiku-4-5"
+
+
+def test_max_date_resolve_per_run_default(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("")
+
+    assert Config.load(cfg_file).max_date_resolve_per_run == 25

@@ -26,6 +26,7 @@ from paper_watch.schedule import (
     next_delivery_after,
 )
 from paper_watch.sources.slack import iso_to_ts
+from paper_watch.store import DATE_LINK_FIELDS
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
@@ -60,6 +61,29 @@ class RunResult:
     # poll <24h old, see schedule.is_poll_due). Defaults True so a hand-built
     # result reads as an ordinary polled tick.
     polled: bool = True
+
+
+@dataclass
+class DateFillResult:
+    """How the date-only pass filled the dates it filled, counted by method."""
+
+    url: int = 0
+    graphql: int = 0
+    html_meta: int = 0
+    pdf_meta: int = 0
+    llm: int = 0
+    unfilled: int = 0
+
+    @property
+    def total_filled(self) -> int:
+        return self.url + self.graphql + self.html_meta + self.pdf_meta + self.llm
+
+
+# How many failed date fetches an entry gets before the pass leaves it alone. A
+# page that states no date anywhere would otherwise be refetched on every
+# 4-hourly tick forever; three failures is about half a day, matching
+# alert_after_failures.
+_MAX_DATE_ATTEMPTS = 3
 
 
 def effective_since(
@@ -519,6 +543,97 @@ def recover_titles(store, entry_ids: list[int], resolver) -> int:
     return updated
 
 
+def _date_candidate_url(store, row) -> str | None:
+    """The URL the date pass will resolve this entry from, if it has one.
+
+    Reads the `DATE_LINK_FIELDS` in order, then falls back to the first mention
+    URL. Unlike `_entry_lookup_url` it also accepts a PDF-only entry, and the
+    field list is shared with `Store.entries_needing_date` so the query and this
+    helper cannot admit different entries.
+    """
+    links = json.loads(row["links_json"])
+    for field_name in DATE_LINK_FIELDS:
+        url = links.get(field_name)
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    for mention in store.get_mentions(row["id"]):
+        url = mention["source_item_url"]
+        if url and url.startswith("http"):
+            return url
+    return None
+
+
+def resolve_missing_dates(
+    store,
+    *,
+    limit: int,
+    now_iso: str,
+    lw_resolver=None,
+    html_resolver=None,
+    pdf_resolver=None,
+    max_attempts: int = _MAX_DATE_ATTEMPTS,
+) -> DateFillResult:
+    """Fill `published_at` on undated entries without redoing their metadata.
+
+    `resolve_paper_metadata` only looks at entries with no abstract, so an entry
+    that was resolved but whose page stated no date never gets a second look.
+    This pass takes those (newest first, up to `limit`) and writes nothing but
+    `published_at`: the URL's own date if it states one (free, no fetch), else
+    the LessWrong GraphQL backend, a PDF's metadata, or a page's metadata, each
+    with the LLM date fallback behind it. Failures are counted per entry and the
+    entry is dropped once it reaches `max_attempts`, so a page that states no
+    date is not refetched on every tick forever.
+    """
+    from paper_watch.sources.lesswrong import post_id_from_url
+
+    result = DateFillResult()
+    for row in store.entries_needing_date(limit=limit, max_attempts=max_attempts):
+        url = _date_candidate_url(store, row)
+        if url is None:
+            # Nothing was tried, so no attempt is charged: a later mention may
+            # still supply a URL. entries_needing_date already excludes these.
+            result.unfilled += 1
+            continue
+        iso = date_from_url(url)
+        if iso:
+            store.fill_published_at(row["id"], iso)
+            result.url += 1
+            continue
+        if lw_resolver is not None and post_id_from_url(url):
+            resolver, method = lw_resolver, "graphql"
+        elif is_pdf_url(url):
+            resolver, method = pdf_resolver, None
+        else:
+            resolver, method = html_resolver, None
+        if resolver is None:
+            result.unfilled += 1
+            continue
+        try:
+            found = resolver.resolve_date(url)
+        except Exception as exc:  # best-effort: a bad page is never fatal
+            import logging
+
+            logging.getLogger(__name__).warning("date resolve failed for %s: %s", url, exc)
+            found = None
+        if method == "graphql":
+            # The LW resolver answers with a bare ISO string.
+            found = {"published_at": found, "method": "graphql"} if found else None
+        if found and found.get("published_at"):
+            store.fill_published_at(row["id"], found["published_at"])
+            counter = {
+                "graphql": "graphql",
+                "html-meta": "html_meta",
+                "pdf-meta": "pdf_meta",
+                "llm": "llm",
+            }.get(found.get("method") or "")
+            if counter:
+                setattr(result, counter, getattr(result, counter) + 1)
+        else:
+            store.record_date_attempt(row["id"], now_iso)
+            result.unfilled += 1
+    return result
+
+
 # -- scoring / selection ---------------------------------------------------
 def _entry_sources(store, entry_id: int) -> set[str]:
     return {m["source"] for m in store.get_mentions(entry_id)}
@@ -840,6 +955,7 @@ def run_pipeline(
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
+    max_date_resolve: int = 0,
     dry_run: bool,
     deliver: bool = True,
     do_ingest: bool = True,
@@ -916,6 +1032,18 @@ def run_pipeline(
     # a web search to recover the work's title/snippet/abstract.
     if new_ids and web_search_resolver is not None:
         recover_titles(store, new_ids, web_search_resolver)
+    # Dates drive selection (old_after_days), so the backlog of undated entries
+    # is worked before the digest is built. Like enrichment it runs on gated
+    # ticks too, since it works a backlog rather than fresh ingestion.
+    if max_date_resolve > 0 and (lw_resolver or pdf_resolver or html_resolver):
+        resolve_missing_dates(
+            store,
+            limit=max_date_resolve,
+            now_iso=now_iso,
+            lw_resolver=lw_resolver,
+            html_resolver=html_resolver,
+            pdf_resolver=pdf_resolver,
+        )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
     result = RunResult(
@@ -1371,6 +1499,7 @@ def run(
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,
+            max_date_resolve=config.max_date_resolve_per_run,
             dry_run=dry_run,
             deliver=deliver,
             do_ingest=do_ingest,

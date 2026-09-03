@@ -301,6 +301,10 @@ class Config(BaseModel):
     new_window: str = "4d"
     max_new: int = 20
     max_resurface: int = 5
+    # How many undated entries the date-resolution pass may work on per tick.
+    # It bounds fetches, most of which never reach a model, so it can be much
+    # larger than the LLM budgets.
+    max_date_resolve_per_run: int = 25
     # A paper published longer ago than this is marked OLDER and treated as
     # padding even the first time we see it — news to us, but not new — so it
     # shares the `max_resurface` budget instead of a lead slot.
