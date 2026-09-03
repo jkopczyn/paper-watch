@@ -2494,3 +2494,19 @@ def test_run_raises_the_overdue_alert_after_a_clean_tick(tmp_path, monkeypatch):
     runtime.run(str(cfg_file))
     text = (tmp_path / "a.log").read_text()
     assert "overdue" in text
+
+
+def test_metadata_resolvers_use_the_date_model_for_date_extraction(tmp_path, monkeypatch):
+    from paper_watch.config import Config
+    from paper_watch.runtime import _build_metadata_resolvers
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("llm:\n  model: claude-haiku-4-5\n  date_model: claude-sonnet-5\n")
+    config = Config.load(cfg_file)
+
+    _openreview, pdf_resolver, html_resolver, _lw = _build_metadata_resolvers(config)
+
+    assert html_resolver._date_llm.model == "claude-sonnet-5"
+    assert pdf_resolver._date_llm.model == "claude-sonnet-5"
+    assert pdf_resolver._ocr.model == "claude-haiku-4-5"

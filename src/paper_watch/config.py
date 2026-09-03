@@ -216,6 +216,9 @@ class LlmConfig(BaseModel):
     # Cheap tier is plenty for TL;DR / tagging / relevance gating.
     # Bump to claude-opus-4-8 in config for higher-quality enrichment.
     model: str = "claude-haiku-4-5"
+    # Date-fallback calls are rare: only pages whose metadata and URL state no
+    # date reach a model at all, so a stronger tier costs almost nothing.
+    date_model: str = "claude-sonnet-5"
     max_enrich_per_run: int = 50
     # Reader profile + controlled tag vocabulary included in the enrichment
     # prompt (see profile.md / tags.yaml at the repo root).

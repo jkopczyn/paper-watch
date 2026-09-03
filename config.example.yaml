@@ -169,6 +169,7 @@ smtp:
 
 llm:
   model: claude-haiku-4-5        # or claude-opus-4-8 for higher-quality enrichment
+  # date_model: claude-sonnet-5  # publication-date fallback; called rarely, so a stronger tier is cheap
   max_enrich_per_run: 50
 
 alerts:                            # operational failures (a crashed tick, a digest long overdue)

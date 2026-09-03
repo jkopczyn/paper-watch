@@ -275,3 +275,21 @@ def test_alerts_slack_user_and_channel_are_exclusive(tmp_path):
     cfg.write_text("alerts:\n  slack_workspace: far\n  slack_channel: C1\n  slack_user: U1\n")
     with pytest.raises(ValueError):
         Config.load(cfg)
+
+
+def test_llm_date_model_defaults_to_sonnet(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("")
+    cfg = Config.load(cfg_file)
+
+    assert cfg.llm.model == "claude-haiku-4-5"
+    assert cfg.llm.date_model == "claude-sonnet-5"
+
+
+def test_llm_date_model_is_overridable(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("llm:\n  date_model: claude-opus-4-8\n")
+    cfg = Config.load(cfg_file)
+
+    assert cfg.llm.date_model == "claude-opus-4-8"
+    assert cfg.llm.model == "claude-haiku-4-5"

@@ -1140,7 +1140,8 @@ def _build_metadata_resolvers(config: Config):
     """(openreview, pdf, html, lesswrong) resolvers for the metadata step. The LLM helpers
     (PDF vision-OCR, and the publication-date fallback for pages/PDFs whose
     metadata carries no date) are only wired when an Anthropic key is present;
-    deterministic extraction needs neither."""
+    deterministic extraction needs neither. The date fallback runs on
+    llm.date_model rather than llm.model, since it is called far less often."""
     from paper_watch.sources.html_meta import HtmlMetaResolver
     from paper_watch.sources.lesswrong import LessWrongResolver
     from paper_watch.sources.openreview import OpenReviewResolver
@@ -1153,7 +1154,7 @@ def _build_metadata_resolvers(config: Config):
         from paper_watch.sources.pdf_meta import ClaudePdfOcr
 
         ocr = ClaudePdfOcr(config.llm.model)
-        date_llm = ClaudeDateExtractor(config.llm.model)
+        date_llm = ClaudeDateExtractor(config.llm.date_model)
     return (
         OpenReviewResolver(),
         PdfMetaResolver(ocr=ocr, date_llm=date_llm),
