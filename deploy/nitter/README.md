@@ -119,3 +119,12 @@ several accounts in `sessions.jsonl` means one bad token doesn't take the source
 docker compose -f docker-compose.yml down        # keep redis cache volume
 docker compose -f docker-compose.yml down -v     # also wipe the cache
 ```
+
+## Zombie processes
+
+The `nitter` container's main process (`./nitter`) accumulates zombie children over
+time (27 after ~2 weeks uptime on 2026-08-25). Harmless but worth checking periodically:
+
+    ps -eo ppid,stat,comm | awk '$2 ~ /Z/ {print $1}' | sort | uniq -c
+
+If the count is high and the parent is `./nitter`, `docker compose restart nitter` clears it.
