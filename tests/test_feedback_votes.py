@@ -438,3 +438,143 @@ def test_import_votes_omits_resolved_ties_from_result(tmp_path):
     res = import_votes(store, path=path, config=_cfg())
     assert res.ties == []
     store.close()
+
+
+def _three_way_csv(path):
+    path.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{TS1},1,one,3,https://arxiv.org/abs/2605.01642,Winner\n"
+        f"2026-W27,{TS1},2,two,3,https://arxiv.org/abs/2605.00002,Meh\n"
+        f"2026-W27,{TS1},3,three,3,https://arxiv.org/abs/2605.00003,ZeroVote\n"
+    )
+    return path
+
+
+def _three_way_tie(store, tmp_path):
+    path = _three_way_csv(tmp_path / "gt3.csv")
+    import_votes(store, path=path, config=_cfg())
+    from paper_watch.feedback import outstanding_ties
+
+    return outstanding_ties(store, path)[0]
+
+
+def _reading_urls(store):
+    return [r["url"] for r in store.conn.execute(
+        "SELECT url FROM readings WHERE message_ts = ? ORDER BY url", (TS1,)
+    )]
+
+
+def test_resolve_tie_list_marks_each_listed_option_read_and_none_picked(tmp_path):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    n = resolve_tie(store, tie, [1, 3], recorded_at="2026-08-08T00:00:00Z")
+    assert n == 2
+    assert _reading_urls(store) == [
+        "https://arxiv.org/abs/2605.00003", "https://arxiv.org/abs/2605.01642"
+    ]
+    assert all(r["picked"] == 0 for r in store.conn.execute("SELECT picked FROM feedback"))
+    store.close()
+
+
+def test_resolve_tie_single_element_list_behaves_like_the_bare_number(tmp_path):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _, b = _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    n = resolve_tie(store, tie, [2], recorded_at="2026-08-08T00:00:00Z")
+    assert n == 1
+    assert _reading_urls(store) == ["https://arxiv.org/abs/2605.00002"]
+    picked = {r["entry_id"]: r["picked"] for r in store.conn.execute(
+        "SELECT entry_id, picked FROM feedback WHERE week = '2026-W27'"
+    )}
+    assert picked[b] == 1
+    store.close()
+
+
+def test_resolve_tie_full_list_matches_zero(tmp_path):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    n = resolve_tie(store, tie, [1, 2, 3], recorded_at="2026-08-08T00:00:00Z")
+    assert n == 3
+    assert _reading_urls(store) == [
+        "https://arxiv.org/abs/2605.00002",
+        "https://arxiv.org/abs/2605.00003",
+        "https://arxiv.org/abs/2605.01642",
+    ]
+    assert all(r["picked"] == 0 for r in store.conn.execute("SELECT picked FROM feedback"))
+    store.close()
+
+
+@pytest.mark.parametrize("choice", [[0, 2], [4], [-1]])
+def test_resolve_tie_rejects_out_of_range_indices(tmp_path, choice):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    with pytest.raises(ValueError):
+        resolve_tie(store, tie, choice, recorded_at="2026-08-08T00:00:00Z")
+    store.close()
+
+
+def test_resolve_tie_rejects_duplicates(tmp_path):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    with pytest.raises(ValueError):
+        resolve_tie(store, tie, [1, 1], recorded_at="2026-08-08T00:00:00Z")
+    store.close()
+
+
+def test_resolve_tie_rejects_an_empty_list(tmp_path):
+    from paper_watch.feedback import resolve_tie
+
+    store = Store(tmp_path / "pw.db")
+    _seed_all(store)
+    tie = _three_way_tie(store, tmp_path)
+
+    with pytest.raises(ValueError):
+        resolve_tie(store, tie, [], recorded_at="2026-08-08T00:00:00Z")
+    store.close()
+
+
+def test_parse_tie_choice_reads_a_bare_number():
+    from paper_watch.feedback import parse_tie_choice
+
+    assert parse_tie_choice("2", 3) == 2
+    assert parse_tie_choice(" 3 ", 3) == 3
+
+
+def test_parse_tie_choice_reads_a_comma_list():
+    from paper_watch.feedback import parse_tie_choice
+
+    assert parse_tie_choice("1,3", 3) == [1, 3]
+    assert parse_tie_choice(" 1 , 3 ", 3) == [1, 3]
+
+
+def test_parse_tie_choice_reads_zero():
+    from paper_watch.feedback import parse_tie_choice
+
+    assert parse_tie_choice("0", 3) == 0
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "x", "1,", "1,x", "4", "1,1", "0,1", "-1"])
+def test_parse_tie_choice_rejects_junk(raw):
+    from paper_watch.feedback import parse_tie_choice
+
+    with pytest.raises(ValueError):
+        parse_tie_choice(raw, 3)

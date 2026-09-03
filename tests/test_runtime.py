@@ -270,6 +270,161 @@ def test_resolve_paper_metadata_skips_entries_with_abstract(tmp_path):
     store.close()
 
 
+class _LwStubResolver:
+    def __init__(self, meta):
+        self.meta = meta
+        self.seen = []
+
+    def resolve(self, url):
+        self.seen.append(url)
+        return self.meta
+
+
+class _BoomResolver:
+    def resolve(self, url):
+        raise AssertionError(f"should not resolve {url}")
+
+
+_LW_META = {
+    "title": "Value is Fragile",
+    "authors": ["Eliezer Yudkowsky"],
+    "abstract": "a post about fragile values",
+    "published_at": "2009-01-29T08:46:30Z",
+}
+
+
+def _lw_entry(store, url):
+    items = [RawItem(source="rss:AF", url=url, text=None)]
+    (entry_id,) = ingest(store, [ListSource("rss:AF", items)], None, "2026-07-01T00:00:00Z")
+    return entry_id
+
+
+def test_resolve_paper_metadata_uses_the_lesswrong_resolver_for_lw_posts(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    updated = resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    assert updated == 1
+    assert lw.seen == [url]
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Value is Fragile"
+    assert json.loads(row["authors_json"]) == ["Eliezer Yudkowsky"]
+    assert row["abstract"] == "a post about fragile values"
+    assert row["published_at"] == "2009-01-29T08:46:30Z"
+    store.close()
+
+
+def test_resolve_paper_metadata_routes_alignment_forum_mirrors_to_the_lw_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.alignmentforum.org/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    # canonicalize_url collapses the mirror host for /posts/ paths at ingest
+    assert lw.seen == ["https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"]
+    assert store.get_entry(entry_id)["title"] == "Value is Fragile"
+    store.close()
+
+
+def test_resolve_paper_metadata_routes_the_sequence_url_form_to_the_lw_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.alignmentforum.org/s/NouBkh4qnK8uKwn3L/p/Z8kLbceGBMWB5HGfn"
+    entry_id = _lw_entry(store, url)
+    lw = _LwStubResolver(_LW_META)
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=lw, html_resolver=_BoomResolver()
+    )
+
+    assert lw.seen == [url]
+    assert store.get_entry(entry_id)["title"] == "Value is Fragile"
+    store.close()
+
+
+def test_resolve_paper_metadata_reads_a_url_date_before_fetching(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/research/2026-05-08-some-post")
+    # the HTML resolver supplies a title and abstract but no date
+    html = _StubMetaResolver({"title": "Some Post", "abstract": "a"})
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Some Post"
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    store.close()
+
+
+def test_resolve_paper_metadata_keeps_the_url_date_over_a_conflicting_resolver_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/research/2026-05-08-some-post")
+    # The URL states one date and the page states another. The date read from
+    # the URL is stored first, and the rewrite must not replace it.
+    html = _StubMetaResolver(
+        {"title": "Some Post", "abstract": "a", "published_at": "2011-01-01T00:00:00Z"}
+    )
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Some Post"
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    store.close()
+
+
+def test_resolve_paper_metadata_without_an_lw_resolver_uses_the_html_path(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    html = _StubMetaResolver({"title": "From The Page", "abstract": "a"})
+
+    resolve_paper_metadata(store, [entry_id], None, lw_resolver=None, html_resolver=html)
+
+    assert html.seen == [url]
+    assert store.get_entry(entry_id)["title"] == "From The Page"
+    store.close()
+
+
+def test_resolve_paper_metadata_leaves_an_lw_post_unresolved_when_graphql_fails(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    entry_id = _lw_entry(store, url)
+    before = store.get_entry(entry_id)["title"]
+
+    updated = resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=_NullResolver(), html_resolver=_BoomResolver()
+    )
+
+    assert updated == 0
+    row = store.get_entry(entry_id)
+    assert row["title"] == before
+    assert row["abstract"] is None
+    store.close()
+
+
+def test_resolve_paper_metadata_leaves_non_lw_pages_on_the_html_path(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/posts/abcdefghij/some-post")
+    html = _StubMetaResolver({"title": "Ordinary Blog Post", "abstract": "a"})
+
+    resolve_paper_metadata(
+        store, [entry_id], None, lw_resolver=_BoomResolver(), html_resolver=html
+    )
+
+    assert html.seen == ["https://blog.example/posts/abcdefghij/some-post"]
+    assert store.get_entry(entry_id)["title"] == "Ordinary Blog Post"
+    store.close()
+
+
 _NOW = datetime(2026, 6, 19, 9, tzinfo=timezone.utc)
 
 
@@ -2360,3 +2515,504 @@ def test_run_raises_the_overdue_alert_after_a_clean_tick(tmp_path, monkeypatch):
     runtime.run(str(cfg_file))
     text = (tmp_path / "a.log").read_text()
     assert "overdue" in text
+
+
+def test_date_resolvers_use_the_date_model_for_date_extraction(tmp_path, monkeypatch):
+    from paper_watch.config import Config
+    from paper_watch.runtime import _build_date_resolvers
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("llm:\n  model: claude-haiku-4-5\n  date_model: claude-sonnet-5\n")
+    config = Config.load(cfg_file)
+
+    pdf_resolver, html_resolver = _build_date_resolvers(config)
+
+    assert html_resolver._date_llm.model == "claude-sonnet-5"
+    assert pdf_resolver._date_llm.model == "claude-sonnet-5"
+
+
+def test_metadata_resolvers_keep_ocr_and_drop_the_date_llm(tmp_path, monkeypatch):
+    from paper_watch.config import Config
+    from paper_watch.runtime import _build_metadata_resolvers
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("llm:\n  model: claude-haiku-4-5\n  date_model: claude-sonnet-5\n")
+    config = Config.load(cfg_file)
+
+    _openreview, pdf_resolver, html_resolver, _lw = _build_metadata_resolvers(config)
+
+    assert pdf_resolver._ocr.model == "claude-haiku-4-5"
+    assert pdf_resolver._date_llm is None
+    assert html_resolver._date_llm is None
+
+
+# -- the date-only resolution pass -----------------------------------------
+class _StubDateResolver:
+    """Stands in for any of the three date resolvers, recording what it is asked.
+
+    `resolve` (the metadata path) and `resolve_date` (this pass) are recorded
+    separately, so a test can assert that a date was never fetched.
+    """
+
+    def __init__(self, result=None, meta=None):
+        self.result = result
+        self.meta = meta
+        self.seen = []
+        self.resolved = []
+
+    def resolve(self, url):
+        self.resolved.append(url)
+        return self.meta
+
+    def resolve_date(self, url):
+        self.seen.append(url)
+        return self.result
+
+
+class _RaisingDateResolver:
+    def resolve_date(self, url):
+        raise RuntimeError("transport blew up")
+
+
+def _undated_entry(store, title, seen="2026-06-01T00:00:00Z", **kwargs):
+    return store.insert_entry(
+        title=title, title_norm=title.lower(), first_seen_at=seen, **kwargs
+    )
+
+
+def _date_pass(store, **kw):
+    from paper_watch.runtime import resolve_missing_dates
+
+    kw.setdefault("limit", 10)
+    kw.setdefault("now_iso", "2026-06-10T00:00:00Z")
+    return resolve_missing_dates(store, **kw)
+
+
+def test_resolve_missing_dates_prefers_the_url_date_and_never_fetches(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(
+        store, "Post", links={"abstract": "https://blog.example/research/2026-05-08-some-post"}
+    )
+    lw, html, pdf = _StubDateResolver(), _StubDateResolver(), _StubDateResolver()
+
+    result = _date_pass(store, lw_resolver=lw, html_resolver=html, pdf_resolver=pdf)
+
+    assert result.url == 1
+    row = store.get_entry(eid)
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    assert row["date_attempts"] == 0
+    assert (lw.seen, html.seen, pdf.seen) == ([], [], [])
+    store.close()
+
+
+def test_resolve_missing_dates_uses_the_lesswrong_resolver_for_lw_posts(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"
+    eid = _undated_entry(store, "Value is Fragile", links={"abstract": url})
+    lw = _StubDateResolver(result="2009-01-29T08:46:30Z")
+    html = _StubDateResolver()
+
+    result = _date_pass(store, lw_resolver=lw, html_resolver=html)
+
+    assert lw.seen == [url]
+    assert html.seen == []
+    assert result.graphql == 1
+    assert store.get_entry(eid)["published_at"] == "2009-01-29T08:46:30Z"
+    store.close()
+
+
+def test_resolve_missing_dates_routes_sequence_form_lw_urls_to_the_lw_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://www.alignmentforum.org/s/NouBkh4qnK8uKwn3L/p/Z8kLbceGBMWB5HGfn"
+    eid = _undated_entry(store, "A sequence post", links={"abstract": url})
+    lw = _StubDateResolver(result="2018-02-01T00:00:00Z")
+    html = _StubDateResolver()
+
+    _date_pass(store, lw_resolver=lw, html_resolver=html)
+
+    assert lw.seen == [url]
+    assert html.seen == []
+    assert store.get_entry(eid)["published_at"] == "2018-02-01T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_uses_the_html_resolver_for_pages(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://blog.example/some-post"
+    eid = _undated_entry(store, "Some Post", links={"abstract": url})
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+    pdf = _StubDateResolver()
+
+    result = _date_pass(store, html_resolver=html, pdf_resolver=pdf)
+
+    assert html.seen == [url]
+    assert pdf.seen == []
+    assert result.html_meta == 1
+    assert store.get_entry(eid)["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_uses_the_pdf_resolver_for_pdf_links(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://example.org/paper.pdf"
+    eid = _undated_entry(store, "A Paper", links={"pdf": url})
+    pdf = _StubDateResolver({"published_at": "2020-07-02T00:00:00Z", "method": "pdf-meta"})
+    html = _StubDateResolver()
+
+    result = _date_pass(store, html_resolver=html, pdf_resolver=pdf)
+
+    assert pdf.seen == [url]
+    assert html.seen == []
+    assert result.pdf_meta == 1
+    assert store.get_entry(eid)["published_at"] == "2020-07-02T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_routes_a_pdf_with_a_query_string_to_the_pdf_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    url = "https://mbs.edu/report.pdf?rev=3"
+    _undated_entry(store, "A Report", links={"abstract": url})
+    pdf = _StubDateResolver({"published_at": "2021-01-04T00:00:00Z", "method": "pdf-meta"})
+    html = _StubDateResolver()
+
+    _date_pass(store, html_resolver=html, pdf_resolver=pdf)
+
+    assert pdf.seen == [url]
+    assert html.seen == []
+    store.close()
+
+
+def test_resolve_missing_dates_does_not_touch_title_abstract_or_authors(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(
+        store,
+        "The Real Title",
+        links={"abstract": "https://blog.example/some-post"},
+        abstract="the real abstract",
+        authors=["Ada Lovelace"],
+    )
+    html = _StubDateResolver(
+        {
+            "published_at": "2019-03-11T00:00:00Z",
+            "method": "html-meta",
+            "title": "A Different Title",
+            "abstract": "a different abstract",
+            "authors": ["Someone Else"],
+        }
+    )
+
+    _date_pass(store, html_resolver=html)
+
+    row = store.get_entry(eid)
+    assert row["title"] == "The Real Title"
+    assert row["abstract"] == "the real abstract"
+    assert json.loads(row["authors_json"]) == ["Ada Lovelace"]
+    assert row["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_never_overwrites_an_existing_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(
+        store,
+        "Dated",
+        links={"abstract": "https://blog.example/some-post"},
+        published_at="2015-05-05T00:00:00Z",
+    )
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _date_pass(store, html_resolver=html)
+
+    assert html.seen == []
+    assert result.total_filled == 0
+    assert store.get_entry(eid)["published_at"] == "2015-05-05T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_counts_an_attempt_only_on_failure(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(store, "Undatable", links={"abstract": "https://blog.example/x"})
+    html = _StubDateResolver(None)
+
+    result = _date_pass(store, html_resolver=html, now_iso="2026-06-10T00:00:00Z")
+
+    assert result.unfilled == 1
+    row = store.get_entry(eid)
+    assert row["published_at"] is None
+    assert row["date_attempts"] == 1
+    assert row["date_attempted_at"] == "2026-06-10T00:00:00Z"
+    store.close()
+
+
+def test_resolve_missing_dates_stops_at_the_attempt_cap(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(store, "Undatable", links={"abstract": "https://blog.example/x"})
+    html = _StubDateResolver(None)
+
+    for _ in range(4):
+        _date_pass(store, html_resolver=html)
+
+    assert len(html.seen) == 3  # _MAX_DATE_ATTEMPTS
+    assert store.get_entry(eid)["date_attempts"] == 3
+    store.close()
+
+
+def test_resolve_missing_dates_is_bounded_per_run(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    for i in range(5):
+        _undated_entry(
+            store, f"E{i}", f"2026-06-0{i + 1}T00:00:00Z",
+            links={"abstract": f"https://blog.example/{i}"},
+        )
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _date_pass(store, limit=2, html_resolver=html)
+
+    assert len(html.seen) == 2
+    assert result.html_meta == 2
+    store.close()
+
+
+def test_resolve_missing_dates_takes_the_newest_entries_first(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    for i in range(3):
+        _undated_entry(
+            store, f"E{i}", f"2026-06-0{i + 1}T00:00:00Z",
+            links={"abstract": f"https://blog.example/{i}"},
+        )
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    _date_pass(store, limit=1, html_resolver=html)
+
+    assert html.seen == ["https://blog.example/2"]
+    store.close()
+
+
+def test_resolve_missing_dates_reports_counts_by_method(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    _undated_entry(
+        store, "From the URL", "2026-06-05T00:00:00Z",
+        links={"abstract": "https://blog.example/2026-05-08-post"},
+    )
+    _undated_entry(
+        store, "From graphql", "2026-06-04T00:00:00Z",
+        links={"abstract": "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/x"},
+    )
+    _undated_entry(
+        store, "From html", "2026-06-03T00:00:00Z",
+        links={"abstract": "https://blog.example/page"},
+    )
+    _undated_entry(
+        store, "From the pdf", "2026-06-02T00:00:00Z",
+        links={"pdf": "https://example.org/p.pdf"},
+    )
+    _undated_entry(
+        store, "Undatable", "2026-06-01T00:00:00Z",
+        links={"abstract": "https://blog.example/undatable"},
+    )
+
+    class _HtmlByUrl:
+        seen = []
+
+        def resolve_date(self, url):
+            if url.endswith("/page"):
+                return {"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"}
+            return None
+
+    class _PdfLlm:
+        def resolve_date(self, url):
+            return {"published_at": "2020-07-02T00:00:00Z", "method": "llm"}
+
+    result = _date_pass(
+        store,
+        lw_resolver=_StubDateResolver(result="2009-01-29T08:46:30Z"),
+        html_resolver=_HtmlByUrl(),
+        pdf_resolver=_PdfLlm(),
+    )
+
+    assert (result.url, result.graphql, result.html_meta, result.pdf_meta) == (1, 1, 1, 0)
+    assert (result.llm, result.unfilled) == (1, 1)
+    assert result.total_filled == 4
+    store.close()
+
+
+def test_resolve_missing_dates_survives_a_raising_resolver(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    bad = _undated_entry(
+        store, "Bad", "2026-06-02T00:00:00Z", links={"pdf": "https://example.org/p.pdf"}
+    )
+    good = _undated_entry(
+        store, "Good", "2026-06-01T00:00:00Z", links={"abstract": "https://blog.example/page"}
+    )
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _date_pass(store, html_resolver=html, pdf_resolver=_RaisingDateResolver())
+
+    assert store.get_entry(good)["published_at"] == "2019-03-11T00:00:00Z"
+    assert store.get_entry(bad)["date_attempts"] == 1
+    assert result.unfilled == 1
+    store.close()
+
+
+def test_resolve_missing_dates_skips_entries_with_no_http_link(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(store, "Linkless", links={"code": "https://github.com/x/y"})
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _date_pass(store, html_resolver=html)
+
+    assert html.seen == []
+    assert (result.total_filled, result.unfilled) == (0, 0)
+    assert store.get_entry(eid)["date_attempts"] == 0
+    store.close()
+
+
+def test_run_pipeline_fills_missing_dates_when_a_budget_is_set(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="rss:Blog", url="https://blog.example/some-post", text=None)
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _pipeline(
+        store,
+        [ListSource("rss", [item])],
+        CapturingSender(),
+        html_resolver=html,
+        max_date_resolve=5,
+    )
+
+    assert html.seen == ["https://blog.example/some-post"]
+    assert store.get_entry(result.chosen_ids[0])["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()
+
+
+def test_run_pipeline_skips_date_resolution_when_the_budget_is_zero(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="rss:Blog", url="https://blog.example/some-post", text=None)
+    html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"})
+
+    result = _pipeline(
+        store,
+        [ListSource("rss", [item])],
+        CapturingSender(),
+        html_resolver=html,
+        max_date_resolve=0,
+    )
+
+    assert html.seen == []
+    assert store.get_entry(result.chosen_ids[0])["published_at"] is None
+    store.close()
+
+
+def test_a_url_dated_entry_never_reaches_the_network_for_its_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(
+        source="rss:Blog", url="https://blog.example/research/2026-05-08-some-post", text=None
+    )
+    html = _StubDateResolver(None, meta={"title": "Some Post", "abstract": "a"})
+
+    result = _pipeline(
+        store,
+        [ListSource("rss", [item])],
+        CapturingSender(),
+        html_resolver=html,
+        max_date_resolve=5,
+    )
+
+    assert store.get_entry(result.chosen_ids[0])["published_at"] == "2026-05-08T00:00:00Z"
+    assert html.seen == []  # the date pass never selected it
+    store.close()
+
+
+# -- where the LLM date fallback is wired -----------------------------------
+_UNDATED_PAGE = (
+    '<head><meta property="og:title" content="Undated Post"></head>'
+    "<body><p>Posted on March 11, 2019 by A. Researcher.</p></body>"
+)
+
+
+def _counting_date_llm(monkeypatch, tmp_path):
+    """Config with an Anthropic key present, plus the list of date-LLM calls made."""
+    calls = []
+
+    class _FakeDateExtractor:
+        def __init__(self, model, client=None):
+            self.model = model
+
+        def __call__(self, text):
+            calls.append(text)
+            return "2019-03-11"
+
+    class _FakeOcr:
+        def __init__(self, model, client=None):
+            self.model = model
+
+        def __call__(self, page_pdf):
+            return None
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("paper_watch.sources.date_llm.ClaudeDateExtractor", _FakeDateExtractor)
+    monkeypatch.setattr("paper_watch.sources.pdf_meta.ClaudePdfOcr", _FakeOcr)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    return Config.load(cfg_file), calls
+
+
+def test_metadata_resolvers_make_no_llm_date_calls(tmp_path, monkeypatch):
+    from paper_watch.runtime import _build_metadata_resolvers
+
+    config, calls = _counting_date_llm(monkeypatch, tmp_path)
+    _, _, html, _ = _build_metadata_resolvers(config)
+    html._fetch = lambda _u: _UNDATED_PAGE
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/posts/abcdefghij/some-post")
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    # The page has a title but no date meta tag: the metadata pass takes the
+    # title and leaves the date to the bounded date-only pass.
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Undated Post"
+    assert row["published_at"] is None
+    assert calls == []
+    store.close()
+
+
+def test_date_resolvers_keep_the_llm_date_fallback(tmp_path, monkeypatch):
+    from paper_watch.runtime import _build_date_resolvers
+
+    config, calls = _counting_date_llm(monkeypatch, tmp_path)
+    _, html = _build_date_resolvers(config)
+    html._fetch = lambda _u: _UNDATED_PAGE
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(store, "Undated Post", links={"abstract": "https://blog.example/p"})
+
+    result = _date_pass(store, html_resolver=html)
+
+    assert result.llm == 1
+    assert len(calls) == 1
+    assert store.get_entry(eid)["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()
+
+
+def test_run_pipeline_gives_the_date_pass_its_own_resolvers(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="rss:Blog", url="https://blog.example/some-post", text=None)
+    metadata_html = _StubDateResolver(None, meta={"title": "Some Post", "abstract": "a"})
+    date_html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "llm"})
+
+    result = _pipeline(
+        store,
+        [ListSource("rss", [item])],
+        CapturingSender(),
+        html_resolver=metadata_html,
+        date_html_resolver=date_html,
+        max_date_resolve=5,
+    )
+
+    assert metadata_html.resolved == ["https://blog.example/some-post"]
+    assert metadata_html.seen == []  # the date pass used the other resolver
+    assert date_html.seen == ["https://blog.example/some-post"]
+    assert store.get_entry(result.chosen_ids[0])["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()

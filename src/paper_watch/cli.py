@@ -423,16 +423,18 @@ def groundtruth_cmd(
 def resolve_ties_cmd(config_path: str, groundtruth_path: Path | None) -> None:
     """Settle tied polls by hand: pick what the group actually read.
 
-    For each poll whose top vote count is shared, the tied options are shown
-    by title/author/source and one keypress decides: N marks that option read
-    (and picked); 0 — all, none, or you don't remember — marks every tied
-    option read, since exclusion is cheap whichever it was. Settled ties stop
-    appearing in the weekly refresh notice.
+    For each poll whose top vote count is shared, the tied options are shown by
+    title/author/source and the answer takes one of three forms. N marks that
+    option read and picked. A comma-separated list such as 1,3 marks each
+    listed option read and picks nobody, which is the answer for a week where
+    several of the tied papers were read. 0 (all, none, or you don't remember)
+    marks every tied option read, since exclusion is cheap whichever it was.
+    Settled ties stop appearing in the weekly refresh notice.
     """
     from datetime import datetime, timezone
 
     from paper_watch.config import Config
-    from paper_watch.feedback import outstanding_ties, resolve_tie
+    from paper_watch.feedback import outstanding_ties, parse_tie_choice, resolve_tie
     from paper_watch.store import Store
 
     cfg = Config.load(config_path)
@@ -459,9 +461,15 @@ def resolve_ties_cmd(config_path: str, groundtruth_path: Path | None) -> None:
             for i, opt in enumerate(tie.options, start=1):
                 by = f" — {', '.join(opt.authors)}" if opt.authors else ""
                 click.echo(f"  {i}: {opt.title}{by} [{opt.source}]")
-            choice = click.prompt(
-                "Which was read", type=click.IntRange(0, len(tie.options))
-            )
+            click.echo("  N or a list like 1,3 (a list marks those read, none picked)")
+            while True:
+                raw = click.prompt("Which was read", type=str)
+                try:
+                    choice = parse_tie_choice(raw, len(tie.options))
+                except ValueError as exc:
+                    click.echo(str(exc))
+                    continue
+                break
             n = resolve_tie(store, tie, choice, recorded_at=now)
             click.echo(f"Recorded {n} reading(s).")
     finally:

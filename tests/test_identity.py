@@ -3,6 +3,7 @@ from paper_watch.identity import (
     extract_arxiv_id,
     extract_doi,
     is_distinctive_title,
+    is_pdf_url,
     normalize_title,
     resolve_or_create,
 )
@@ -128,6 +129,36 @@ def test_canonicalize_forum_mirrors_only_touch_post_paths():
         canonicalize_url("https://www.alignmentforum.org/tag/ai")
         == "https://www.alignmentforum.org/tag/ai"
     )
+
+
+# -- PDF URL detection -----------------------------------------------------
+def test_is_pdf_url_accepts_a_plain_pdf_link():
+    assert is_pdf_url("https://example.com/papers/paper.pdf")
+
+
+def test_is_pdf_url_accepts_a_pdf_with_a_query_string():
+    assert is_pdf_url("https://mbs.edu/docs/paper.pdf?rev=3")
+    assert is_pdf_url("https://iowaattorneygeneral.gov/a.pdf?utm_source=x")
+
+
+def test_is_pdf_url_accepts_a_pdf_with_a_fragment():
+    assert is_pdf_url("https://example.com/papers/paper.pdf#page=4")
+
+
+def test_is_pdf_url_is_case_insensitive():
+    assert is_pdf_url("https://example.com/papers/PAPER.PDF")
+
+
+def test_is_pdf_url_rejects_html_pages():
+    assert not is_pdf_url("https://example.com/papers/index.html")
+    # only the path counts: this URL fetches a viewer page, not PDF bytes
+    assert not is_pdf_url("https://example.com/view?file=paper.pdf")
+
+
+def test_is_pdf_url_handles_none_and_junk():
+    assert not is_pdf_url(None)
+    assert not is_pdf_url("")
+    assert not is_pdf_url("not a url at all")
 
 
 # -- DOI extraction --------------------------------------------------------

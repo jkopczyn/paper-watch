@@ -146,6 +146,25 @@ def _extract_published_at(html: str, meta: dict[str, str]) -> str | None:
     return parse_to_iso_date(raw)
 
 
+def _collect_meta(html: str) -> _MetaCollector:
+    p = _MetaCollector()
+    try:
+        p.feed(html)
+    except Exception as exc:  # malformed markup — keep whatever parsed first
+        log.debug("html meta parse failed: %s", exc)
+    return p
+
+
+def parse_html_date(html: str) -> str | None:
+    """The page's publication date alone, with no title required.
+
+    parse_html_meta returns None when the page carries no usable title, which is
+    the normal case for the bot-blocked and script-rendered pages this path is
+    for. Reads and writes nothing but the date.
+    """
+    return _extract_published_at(html, _collect_meta(html).meta)
+
+
 def parse_html_meta(html: str) -> dict | None:
     """{title, abstract, published_at} from a page's metadata, or None w/o title.
 
@@ -153,11 +172,7 @@ def parse_html_meta(html: str) -> dict | None:
     stripped). Abstract: og:description, then the meta description. Publication
     date: head date meta, then JSON-LD `datePublished` (None if neither).
     """
-    p = _MetaCollector()
-    try:
-        p.feed(html)
-    except Exception as exc:  # malformed markup — keep whatever parsed first
-        log.debug("html meta parse failed: %s", exc)
+    p = _collect_meta(html)
     meta = p.meta
     title = (
         _clean(meta.get("og:title"))
@@ -243,3 +258,23 @@ class HtmlMetaResolver:
 
             meta["published_at"] = safe_llm_date(self._date_llm, html_visible_text(html))
         return meta
+
+    def resolve_date(self, url: str) -> dict | None:
+        """{published_at, method} for an HTML page URL, or None. Never raises.
+
+        Date-only: it neither reads nor writes a title, so a page whose metadata
+        carries a date but no usable title still answers. `method` is
+        "html-meta" or "llm", which the caller reports per resolution path.
+        """
+        try:
+            html = self._fetch(url)
+        except Exception as exc:
+            log.debug("HTML fetch failed for %s: %s", url, exc)
+            return None
+        iso = parse_html_date(html)
+        if iso is not None:
+            return {"published_at": iso, "method": "html-meta"}
+        from paper_watch.sources.date_llm import safe_llm_date
+
+        iso = safe_llm_date(self._date_llm, html_visible_text(html))
+        return {"published_at": iso, "method": "llm"} if iso else None

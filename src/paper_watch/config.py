@@ -216,6 +216,9 @@ class LlmConfig(BaseModel):
     # Cheap tier is plenty for TL;DR / tagging / relevance gating.
     # Bump to claude-opus-4-8 in config for higher-quality enrichment.
     model: str = "claude-haiku-4-5"
+    # Date-fallback calls are rare: only pages whose metadata and URL state no
+    # date reach a model at all, so a stronger tier costs almost nothing.
+    date_model: str = "claude-sonnet-5"
     max_enrich_per_run: int = 50
     # Reader profile + controlled tag vocabulary included in the enrichment
     # prompt (see profile.md / tags.yaml at the repo root).
@@ -298,6 +301,10 @@ class Config(BaseModel):
     new_window: str = "4d"
     max_new: int = 20
     max_resurface: int = 5
+    # How many undated entries the date-resolution pass may work on per tick.
+    # It bounds fetches, most of which never reach a model, so it can be much
+    # larger than the LLM budgets.
+    max_date_resolve_per_run: int = 25
     # A paper published longer ago than this is marked OLDER and treated as
     # padding even the first time we see it — news to us, but not new — so it
     # shares the `max_resurface` budget instead of a lead slot.

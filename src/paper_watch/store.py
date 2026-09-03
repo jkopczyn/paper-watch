@@ -12,6 +12,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+# The `links_json` fields the date-resolution pass will resolve a URL from.
+# `entries_needing_date` builds its SQL from this tuple and runtime's
+# `_date_candidate_url` reads the same fields in the same order; a field the
+# query admits but the pass never reads would give an entry a slot on every run
+# without ever charging it an attempt.
+DATE_LINK_FIELDS: tuple[str, ...] = ("abstract", "pdf")
+
 SCHEMA: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS entries (
@@ -216,6 +223,13 @@ class Store:
         # only from authoritative metadata resolution (arXiv API / S2 / Crossref);
         # NULL means "unknown, estimate from mentions/first_seen at display time".
         self._add_column_if_missing("entries", "published_at", "TEXT")
+        # Date-resolution bookkeeping: a page that states no date anywhere must
+        # not be refetched on every 4-hourly tick forever, so failed attempts are
+        # counted and the pass stops asking once the count reaches its cap.
+        self._add_column_if_missing(
+            "entries", "date_attempts", "INTEGER NOT NULL DEFAULT 0"
+        )
+        self._add_column_if_missing("entries", "date_attempted_at", "TEXT")
         self.conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, decl: str) -> None:
@@ -543,9 +557,9 @@ class Store:
         """Replace a post-shaped entry's identity fields with the real paper's.
 
         `links` entries are merged over the existing ones (the post URL lives on
-        in mentions; the entry should link the paper). `published_at` is set only
-        when given, so a later resolve that doesn't carry a date never wipes a
-        date an earlier resolve already learned.
+        in mentions; the entry should link the paper). `published_at` only fills
+        a NULL date, matching `fill_published_at`: a later resolve that carries
+        no date, or a different one, never replaces a date already stored.
         """
         row = self.get_entry(entry_id)
         if row is None:
@@ -555,7 +569,7 @@ class Store:
         cols = ["title = ?", "title_norm = ?", "authors_json = ?", "abstract = ?", "links_json = ?"]
         params: list[Any] = [title, title_norm, json.dumps(authors), abstract, json.dumps(merged)]
         if published_at is not None:
-            cols.append("published_at = ?")
+            cols.append("published_at = COALESCE(published_at, ?)")
             params.append(published_at)
         params.append(entry_id)
         self.conn.execute(
@@ -694,6 +708,54 @@ class Store:
             "UPDATE entries SET published_at = ? "
             "WHERE id = ? AND published_at IS NULL",
             (iso, entry_id),
+        )
+        self.conn.commit()
+
+    def entries_needing_date(
+        self, *, limit: int, max_attempts: int
+    ) -> list[sqlite3.Row]:
+        """Undated entries the date pass can work on, newest first.
+
+        Entries whose failed attempts have reached `max_attempts` are dropped:
+        a page that states no date anywhere would otherwise be refetched every
+        tick forever. The http-link test is in the query rather than in the
+        calling loop because the pass skips a linkless entry without charging an
+        attempt, so a selectable linkless entry would take a slot on every run
+        and the resolvable backlog would never be reached. Keeping it a
+        query-time EXISTS also means an entry that gains an http mention later
+        becomes eligible again with no extra bookkeeping.
+        """
+        link_clauses = " OR ".join(
+            f"json_extract(links_json, '$.{field}') LIKE 'http%'"
+            for field in DATE_LINK_FIELDS
+        )
+        return self.conn.execute(
+            f"""
+            SELECT id, title, links_json, first_seen_at FROM entries
+            WHERE published_at IS NULL
+              AND COALESCE(date_attempts, 0) < ?
+              AND (
+                {link_clauses}
+                OR EXISTS (
+                  SELECT 1 FROM mentions m
+                  WHERE m.entry_id = entries.id
+                    AND m.source_item_url LIKE 'http%'
+                )
+              )
+            ORDER BY first_seen_at DESC
+            LIMIT ?
+            """,
+            (max_attempts, limit),
+        ).fetchall()
+
+    def record_date_attempt(self, entry_id: int, at: str) -> None:
+        """Count one date-resolution attempt that fetched something and failed."""
+        self.conn.execute(
+            "UPDATE entries "
+            "SET date_attempts = COALESCE(date_attempts, 0) + 1, "
+            "    date_attempted_at = ? "
+            "WHERE id = ?",
+            (at, entry_id),
         )
         self.conn.commit()
 

@@ -82,6 +82,22 @@ def canonicalize_url(url: str | None) -> str | None:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+def is_pdf_url(url: str | None) -> bool:
+    """Whether fetching `url` returns PDF bytes, judged by the path alone.
+
+    The path is what the fetcher retrieves, so a viewer page that merely names a
+    PDF in its query (".../view?file=paper.pdf") is deliberately not a PDF here
+    and stays on the HTML path.
+    """
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return (parts.path or "").lower().endswith(".pdf")
+
+
 def extract_arxiv_id(text: str | None) -> str | None:
     """Return the canonical (version-stripped) arXiv ID found in `text`, if any."""
     if not text:

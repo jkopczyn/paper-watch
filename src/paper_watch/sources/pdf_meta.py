@@ -254,6 +254,27 @@ class PdfMetaResolver:
             return result
         return None
 
+    def resolve_date(self, url: str) -> dict | None:
+        """{published_at, method} for a PDF URL, or None. Never raises.
+
+        Date-only: it neither reads nor writes a title, so a PDF whose page 1
+        yields no usable title still answers. OCR is never run here; a scanned
+        page's date is not worth a vision call in a bounded per-tick pass.
+        `method` is "pdf-meta" or "llm".
+        """
+        try:
+            data = self._fetch(url)
+        except Exception as exc:
+            log.debug("PDF fetch failed for %s: %s", url, exc)
+            return None
+        iso = pdf_info_date(data)
+        if iso is not None:
+            return {"published_at": iso, "method": "pdf-meta"}
+        from paper_watch.sources.date_llm import safe_llm_date
+
+        iso = safe_llm_date(self._date_llm, pdf_first_page_text(data))
+        return {"published_at": iso, "method": "llm"} if iso else None
+
 
 class ClaudePdfOcr:
     """One-page vision OCR: hand a single-page PDF to Claude, get title+abstract.

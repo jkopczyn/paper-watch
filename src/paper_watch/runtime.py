@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from paper_watch.config import Config, ScoringWeights
-from paper_watch.dates import since_to_iso
+from paper_watch.dates import date_from_url, since_to_iso
 from paper_watch.digest import (
     DigestItem,
     SourceWarning,
@@ -17,7 +17,7 @@ from paper_watch.digest import (
     score_explanation,
 )
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
-from paper_watch.identity import canonicalize_url, resolve_or_create
+from paper_watch.identity import canonicalize_url, is_pdf_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
 from paper_watch.schedule import (
     is_delivery_due,
@@ -26,6 +26,7 @@ from paper_watch.schedule import (
     next_delivery_after,
 )
 from paper_watch.sources.slack import iso_to_ts
+from paper_watch.store import DATE_LINK_FIELDS
 from paper_watch.score import (
     ScoreFeatures,
     best_source_prior,
@@ -60,6 +61,29 @@ class RunResult:
     # poll <24h old, see schedule.is_poll_due). Defaults True so a hand-built
     # result reads as an ordinary polled tick.
     polled: bool = True
+
+
+@dataclass
+class DateFillResult:
+    """How the date-only pass filled the dates it filled, counted by method."""
+
+    url: int = 0
+    graphql: int = 0
+    html_meta: int = 0
+    pdf_meta: int = 0
+    llm: int = 0
+    unfilled: int = 0
+
+    @property
+    def total_filled(self) -> int:
+        return self.url + self.graphql + self.html_meta + self.pdf_meta + self.llm
+
+
+# How many failed date fetches an entry gets before the pass leaves it alone. A
+# page that states no date anywhere would otherwise be refetched on every
+# 4-hourly tick forever; three failures is about half a day, matching
+# alert_after_failures.
+_MAX_DATE_ATTEMPTS = 3
 
 
 def effective_since(
@@ -180,7 +204,7 @@ def _entry_pdf_url(row) -> str | None:
     if pdf:
         return pdf
     abstract_url = links.get("abstract") or ""
-    return abstract_url if abstract_url.lower().endswith(".pdf") else None
+    return abstract_url if is_pdf_url(abstract_url) else None
 
 
 def rewrite_paper_metadata(
@@ -232,7 +256,7 @@ def rewrite_paper_metadata(
 
 def _is_html_page_url(url: str) -> bool:
     """An http(s) page to scrape for metadata — not a PDF (that's the PDF path)."""
-    return url.startswith(("http://", "https://")) and not url.lower().endswith(".pdf")
+    return url.startswith(("http://", "https://")) and not is_pdf_url(url)
 
 
 def _has_http_link(row) -> bool:
@@ -250,6 +274,7 @@ def resolve_paper_metadata(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    lw_resolver=None,
     search_resolver=None,
     reresolve=False,
 ) -> int:
@@ -259,20 +284,26 @@ def resolve_paper_metadata(
     text (or bare URL) as its title and no abstract; the LLM gate and any
     content-based ranking need the actual paper. Resolves entries with no
     abstract by landing-page type: arXiv id → batched arXiv API (needs `fetch`);
-    an OpenReview forum link → `openreview_resolver`; a raw PDF link →
-    `pdf_resolver`; any other HTML page → `html_resolver` (its Open Graph / title
-    metadata). Each is best-effort; one failure never aborts the rest. Returns
-    how many entries were updated.
+    an OpenReview forum link → `openreview_resolver`; a LessWrong-family post →
+    `lw_resolver` (GraphQL; the HTML path gets a bot challenge there); a raw PDF
+    link → `pdf_resolver`; any other HTML page → `html_resolver` (its Open Graph
+    / title metadata). Each is best-effort; one failure never aborts the rest.
+    Returns how many entries were updated.
+
+    A date stated in the entry's own URL is read first, before any resolver is
+    scheduled, since it is free and needs no fetch.
 
     `reresolve` reprocesses entries that already have an abstract — off in the
     live pipeline (an abstract means already resolved), on for the backfill that
     re-runs a curated set of junk-titled entries through the fixed resolvers.
     """
     from paper_watch.sources.arxiv import fetch_metadata
+    from paper_watch.sources.lesswrong import post_id_from_url
     from paper_watch.sources.openreview import forum_id
 
     arxiv_pending: dict[str, int] = {}
     openreview_pending: list[tuple[int, str]] = []
+    lw_pending: list[tuple[int, str]] = []
     pdf_pending: list[tuple[int, str]] = []
     html_pending: list[tuple[int, str]] = []
     search_pending: list[tuple[int, str]] = []
@@ -284,8 +315,17 @@ def resolve_paper_metadata(
             arxiv_pending[row["arxiv_id"]] = entry_id
             continue
         abstract_url = json.loads(row["links_json"]).get("abstract") or ""
+        if row["published_at"] is None:
+            # Free, and it runs before any fetch is scheduled: the entry may still
+            # need a resolver for its title, but its date is already settled, so
+            # the date-only pass will never fetch this URL again.
+            iso = date_from_url(abstract_url) or date_from_url(_entry_lookup_url(store, row))
+            if iso:
+                store.fill_published_at(entry_id, iso)
         if openreview_resolver is not None and forum_id(abstract_url):
             openreview_pending.append((entry_id, abstract_url))
+        elif lw_resolver is not None and post_id_from_url(abstract_url):
+            lw_pending.append((entry_id, abstract_url))
         elif pdf_resolver is not None and (pdf := _entry_pdf_url(row)):
             pdf_pending.append((entry_id, pdf))
         elif html_resolver is not None and _is_html_page_url(abstract_url):
@@ -335,7 +375,11 @@ def resolve_paper_metadata(
             _flag_openreview_fallback(store, entry_id)
             updated += 1
 
-    for pending, resolver in ((pdf_pending, pdf_resolver), (html_pending, html_resolver)):
+    for pending, resolver in (
+        (lw_pending, lw_resolver),
+        (pdf_pending, pdf_resolver),
+        (html_pending, html_resolver),
+    ):
         for entry_id, url in pending:
             meta = _safe_resolve(resolver, url)
             if meta and meta.get("title"):
@@ -497,6 +541,97 @@ def recover_titles(store, entry_ids: list[int], resolver) -> int:
             )
             updated += 1
     return updated
+
+
+def _date_candidate_url(store, row) -> str | None:
+    """The URL the date pass will resolve this entry from, if it has one.
+
+    Reads the `DATE_LINK_FIELDS` in order, then falls back to the first mention
+    URL. Unlike `_entry_lookup_url` it also accepts a PDF-only entry, and the
+    field list is shared with `Store.entries_needing_date` so the query and this
+    helper cannot admit different entries.
+    """
+    links = json.loads(row["links_json"])
+    for field_name in DATE_LINK_FIELDS:
+        url = links.get(field_name)
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    for mention in store.get_mentions(row["id"]):
+        url = mention["source_item_url"]
+        if url and url.startswith("http"):
+            return url
+    return None
+
+
+def resolve_missing_dates(
+    store,
+    *,
+    limit: int,
+    now_iso: str,
+    lw_resolver=None,
+    html_resolver=None,
+    pdf_resolver=None,
+    max_attempts: int = _MAX_DATE_ATTEMPTS,
+) -> DateFillResult:
+    """Fill `published_at` on undated entries without redoing their metadata.
+
+    `resolve_paper_metadata` only looks at entries with no abstract, so an entry
+    that was resolved but whose page stated no date never gets a second look.
+    This pass takes those (newest first, up to `limit`) and writes nothing but
+    `published_at`: the URL's own date if it states one (free, no fetch), else
+    the LessWrong GraphQL backend, a PDF's metadata, or a page's metadata, each
+    with the LLM date fallback behind it. Failures are counted per entry and the
+    entry is dropped once it reaches `max_attempts`, so a page that states no
+    date is not refetched on every tick forever.
+    """
+    from paper_watch.sources.lesswrong import post_id_from_url
+
+    result = DateFillResult()
+    for row in store.entries_needing_date(limit=limit, max_attempts=max_attempts):
+        url = _date_candidate_url(store, row)
+        if url is None:
+            # Nothing was tried, so no attempt is charged: a later mention may
+            # still supply a URL. entries_needing_date already excludes these.
+            result.unfilled += 1
+            continue
+        iso = date_from_url(url)
+        if iso:
+            store.fill_published_at(row["id"], iso)
+            result.url += 1
+            continue
+        if lw_resolver is not None and post_id_from_url(url):
+            resolver, method = lw_resolver, "graphql"
+        elif is_pdf_url(url):
+            resolver, method = pdf_resolver, None
+        else:
+            resolver, method = html_resolver, None
+        if resolver is None:
+            result.unfilled += 1
+            continue
+        try:
+            found = resolver.resolve_date(url)
+        except Exception as exc:  # best-effort: a bad page is never fatal
+            import logging
+
+            logging.getLogger(__name__).warning("date resolve failed for %s: %s", url, exc)
+            found = None
+        if method == "graphql":
+            # The LW resolver answers with a bare ISO string.
+            found = {"published_at": found, "method": "graphql"} if found else None
+        if found and found.get("published_at"):
+            store.fill_published_at(row["id"], found["published_at"])
+            counter = {
+                "graphql": "graphql",
+                "html-meta": "html_meta",
+                "pdf-meta": "pdf_meta",
+                "llm": "llm",
+            }.get(found.get("method") or "")
+            if counter:
+                setattr(result, counter, getattr(result, counter) + 1)
+        else:
+            store.record_date_attempt(row["id"], now_iso)
+            result.unfilled += 1
+    return result
 
 
 # -- scoring / selection ---------------------------------------------------
@@ -820,6 +955,7 @@ def run_pipeline(
     resurface_min_mentions: int = 2,
     now: datetime,
     max_enrich: int,
+    max_date_resolve: int = 0,
     dry_run: bool,
     deliver: bool = True,
     do_ingest: bool = True,
@@ -832,8 +968,11 @@ def run_pipeline(
     openreview_resolver=None,
     pdf_resolver=None,
     html_resolver=None,
+    lw_resolver=None,
     search_resolver=None,
     web_search_resolver=None,
+    date_pdf_resolver=None,
+    date_html_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -878,6 +1017,7 @@ def run_pipeline(
         or openreview_resolver
         or pdf_resolver
         or html_resolver
+        or lw_resolver
         or search_resolver
     ):
         resolve_paper_metadata(
@@ -887,12 +1027,30 @@ def run_pipeline(
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            lw_resolver=lw_resolver,
             search_resolver=search_resolver,
         )
     # Last resort for entries that are still just a URL (no title, no abstract):
     # a web search to recover the work's title/snippet/abstract.
     if new_ids and web_search_resolver is not None:
         recover_titles(store, new_ids, web_search_resolver)
+    # Dates drive selection (old_after_days), so the backlog of undated entries
+    # is worked before the digest is built. Like enrichment it runs on gated
+    # ticks too, since it works a backlog rather than fresh ingestion.
+    # It gets its own PDF/HTML resolvers, since only this bounded pass carries
+    # the LLM date fallback; it falls back to the metadata ones when the caller
+    # supplies no separate pair. The LW resolver needs no LLM, so it is shared.
+    date_pdf = date_pdf_resolver if date_pdf_resolver is not None else pdf_resolver
+    date_html = date_html_resolver if date_html_resolver is not None else html_resolver
+    if max_date_resolve > 0 and (lw_resolver or date_pdf or date_html):
+        resolve_missing_dates(
+            store,
+            limit=max_date_resolve,
+            now_iso=now_iso,
+            lw_resolver=lw_resolver,
+            html_resolver=date_html,
+            pdf_resolver=date_pdf,
+        )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
     result = RunResult(
@@ -1114,27 +1272,54 @@ def _build_newsletter_extractor(config: Config):
 
 
 def _build_metadata_resolvers(config: Config):
-    """(openreview, pdf, html) resolvers for the metadata step. The LLM helpers
-    (PDF vision-OCR, and the publication-date fallback for pages/PDFs whose
-    metadata carries no date) are only wired when an Anthropic key is present;
-    deterministic extraction needs neither."""
+    """(openreview, pdf, html, lesswrong) resolvers for the metadata step.
+
+    These extract dates deterministically only. The metadata step runs over
+    every newly ingested entry with no cap, so wiring the LLM date fallback here
+    would allow one date-model call per new entry on every tick; the fallback
+    belongs to the capped date-only pass instead (`_build_date_resolvers`).
+
+    PDF vision-OCR is still wired when an Anthropic key is present: it recovers
+    titles and abstracts, which is what this step is for.
+    """
     from paper_watch.sources.html_meta import HtmlMetaResolver
+    from paper_watch.sources.lesswrong import LessWrongResolver
     from paper_watch.sources.openreview import OpenReviewResolver
     from paper_watch.sources.pdf_meta import PdfMetaResolver
 
     ocr = None
-    date_llm = None
     if os.environ.get("ANTHROPIC_API_KEY"):
-        from paper_watch.sources.date_llm import ClaudeDateExtractor
         from paper_watch.sources.pdf_meta import ClaudePdfOcr
 
         ocr = ClaudePdfOcr(config.llm.model)
-        date_llm = ClaudeDateExtractor(config.llm.model)
     return (
         OpenReviewResolver(),
-        PdfMetaResolver(ocr=ocr, date_llm=date_llm),
-        HtmlMetaResolver(date_llm=date_llm),
+        PdfMetaResolver(ocr=ocr),
+        HtmlMetaResolver(),
+        LessWrongResolver(),  # needs no key
     )
+
+
+def _build_date_resolvers(config: Config):
+    """(pdf, html) resolvers for the date-only step, with the LLM fallback.
+
+    The publication-date fallback for pages and PDFs whose metadata carries no
+    date is only wired when an Anthropic key is present; deterministic
+    extraction needs none. It runs on llm.date_model rather than llm.model,
+    since it is called far less often. The caller bounds this step with
+    max_date_resolve_per_run, so the number of calls per tick is capped.
+
+    No OCR here: this step reads dates and never writes a title or abstract.
+    """
+    from paper_watch.sources.html_meta import HtmlMetaResolver
+    from paper_watch.sources.pdf_meta import PdfMetaResolver
+
+    date_llm = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from paper_watch.sources.date_llm import ClaudeDateExtractor
+
+        date_llm = ClaudeDateExtractor(config.llm.date_model)
+    return PdfMetaResolver(date_llm=date_llm), HtmlMetaResolver(date_llm=date_llm)
 
 
 def _build_search_resolver(config: Config):
@@ -1304,7 +1489,10 @@ def run(
 
         tweet_resolver = _build_tweet_resolver(config, store, nitter_instances)
         newsletter_extractor = _build_newsletter_extractor(config)
-        openreview_resolver, pdf_resolver, html_resolver = _build_metadata_resolvers(config)
+        openreview_resolver, pdf_resolver, html_resolver, lw_resolver = (
+            _build_metadata_resolvers(config)
+        )
+        date_pdf_resolver, date_html_resolver = _build_date_resolvers(config)
         search_resolver = _build_search_resolver(config)
         web_search_resolver = _build_web_search_resolver(config)
 
@@ -1319,8 +1507,11 @@ def run(
             openreview_resolver=openreview_resolver,
             pdf_resolver=pdf_resolver,
             html_resolver=html_resolver,
+            lw_resolver=lw_resolver,
             search_resolver=search_resolver,
             web_search_resolver=web_search_resolver,
+            date_pdf_resolver=date_pdf_resolver,
+            date_html_resolver=date_html_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,
@@ -1342,6 +1533,7 @@ def run(
             resurface_min_mentions=config.resurface_min_mentions,
             now=now,
             max_enrich=config.llm.max_enrich_per_run,
+            max_date_resolve=config.max_date_resolve_per_run,
             dry_run=dry_run,
             deliver=deliver,
             do_ingest=do_ingest,

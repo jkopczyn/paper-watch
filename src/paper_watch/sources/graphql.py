@@ -62,7 +62,7 @@ def _terms(feed) -> dict[str, Any]:
     }
 
 
-def _to_iso_z(timestamp: str | None) -> str | None:
+def to_iso_z(timestamp: str | None) -> str | None:
     """ForumMagnum's '2026-07-13T17:20:06.976Z' -> the store's second-precision
     'Z' format, so timestamps compare lexicographically with every other source."""
     if not timestamp:
@@ -74,7 +74,7 @@ def _to_iso_z(timestamp: str | None) -> str | None:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _authors(post: dict[str, Any]) -> list[str]:
+def author_names(post: dict[str, Any]) -> list[str]:
     people = [post.get("user")] + list(post.get("coauthors") or [])
     return [p["displayName"] for p in people if p and p.get("displayName")]
 
@@ -96,9 +96,9 @@ def parse_posts(data: dict[str, Any], feed) -> list[RawItem]:
                 url=link_target if is_linkpost else page_url,
                 mention_url=page_url if is_linkpost else None,
                 title=" ".join((post.get("title") or "").split()) or None,
-                authors=_authors(post),
+                authors=author_names(post),
                 text=body[:_MAX_TEXT_CHARS] or None,
-                published_at=_to_iso_z(post.get("postedAt")),
+                published_at=to_iso_z(post.get("postedAt")),
                 # Ids in the body are citations; a linkpost's identity already
                 # comes from its target URL above.
                 extract_ids_from_text=False,
