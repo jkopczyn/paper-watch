@@ -557,9 +557,9 @@ class Store:
         """Replace a post-shaped entry's identity fields with the real paper's.
 
         `links` entries are merged over the existing ones (the post URL lives on
-        in mentions; the entry should link the paper). `published_at` is set only
-        when given, so a later resolve that doesn't carry a date never wipes a
-        date an earlier resolve already learned.
+        in mentions; the entry should link the paper). `published_at` only fills
+        a NULL date, matching `fill_published_at`: a later resolve that carries
+        no date, or a different one, never replaces a date already stored.
         """
         row = self.get_entry(entry_id)
         if row is None:
@@ -569,7 +569,7 @@ class Store:
         cols = ["title = ?", "title_norm = ?", "authors_json = ?", "abstract = ?", "links_json = ?"]
         params: list[Any] = [title, title_norm, json.dumps(authors), abstract, json.dumps(merged)]
         if published_at is not None:
-            cols.append("published_at = ?")
+            cols.append("published_at = COALESCE(published_at, ?)")
             params.append(published_at)
         params.append(entry_id)
         self.conn.execute(

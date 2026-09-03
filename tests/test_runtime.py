@@ -364,6 +364,23 @@ def test_resolve_paper_metadata_reads_a_url_date_before_fetching(tmp_path):
     store.close()
 
 
+def test_resolve_paper_metadata_keeps_the_url_date_over_a_conflicting_resolver_date(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/research/2026-05-08-some-post")
+    # The URL states one date and the page states another. The date read from
+    # the URL is stored first, and the rewrite must not replace it.
+    html = _StubMetaResolver(
+        {"title": "Some Post", "abstract": "a", "published_at": "2011-01-01T00:00:00Z"}
+    )
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Some Post"
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    store.close()
+
+
 def test_resolve_paper_metadata_without_an_lw_resolver_uses_the_html_path(tmp_path):
     store = Store(tmp_path / "pw.db")
     url = "https://www.lesswrong.com/posts/GNnHHmm8EzePmKzPk/value-is-fragile"

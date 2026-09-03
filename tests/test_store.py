@@ -188,6 +188,21 @@ def test_update_paper_metadata_keeps_published_at_when_not_given(tmp_path: Path)
     store.close()
 
 
+def test_update_paper_metadata_never_overwrites_a_stored_published_at(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="t", title_norm="t", first_seen_at="2026-06-19T00:00:00Z"
+    )
+    store.fill_published_at(eid, "2018-01-01T00:00:00Z")
+    # A resolver reporting a different date must not move the stored one.
+    store.update_paper_metadata(
+        eid, title="Real", title_norm="real", authors=[], abstract="x",
+        links={}, published_at="2020-09-09T00:00:00Z",
+    )
+    assert store.get_entry(eid)["published_at"] == "2018-01-01T00:00:00Z"
+    store.close()
+
+
 def test_count_shown_since_windows_by_digest_time(tmp_path: Path):
     store = Store(tmp_path / "pw.db")
     eid = store.insert_entry(
