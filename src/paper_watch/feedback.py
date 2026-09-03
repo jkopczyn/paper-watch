@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -284,14 +285,64 @@ def outstanding_ties(store: Store, path: str | Path) -> list[TiePoll]:
     return ties
 
 
-def resolve_tie(store: Store, tie: TiePoll, choice: int, *, recorded_at: str) -> int:
+def parse_tie_choice(raw: str, n_options: int) -> int | list[int]:
+    """Read a resolve-ties answer: "0", "N", or a comma-separated list.
+
+    Returns an int for the first two forms and a list of 1-based indices for
+    the third. Every rejection raises ValueError carrying a message the CLI
+    prints back to the user before re-prompting.
+    """
+    bad = ValueError(
+        f"options are 0 or 1-{n_options}, or a comma-separated list like 1,{n_options}"
+    )
+    text = (raw or "").strip()
+    if not text:
+        raise bad
+    if "," not in text:
+        if not text.isdigit():
+            raise bad
+        value = int(text)
+        if not 0 <= value <= n_options:
+            raise bad
+        return value
+    parts = [p.strip() for p in text.split(",")]
+    if not all(p.isdigit() for p in parts):
+        raise bad
+    values = [int(p) for p in parts]
+    if any(not 1 <= v <= n_options for v in values):
+        raise bad
+    if len(set(values)) != len(values):
+        raise bad
+    return values
+
+
+def resolve_tie(
+    store: Store, tie: TiePoll, choice: int | Sequence[int], *, recorded_at: str
+) -> int:
     """Apply a human call on a tie; returns the readings recorded.
 
-    `choice` N (1-based) marks that option read and picked; 0 means
-    "all/none/don't remember" — every tied option is marked read (exclusion is
-    cheap and safe whichever of those it was) but none is picked. Either way
-    the poll gains ledger rows, so it stops counting as outstanding.
+    `choice` takes three forms. N (1-based) marks that option read and picked.
+    0 means "all/none/don't remember" — every tied option is marked read
+    (exclusion is cheap and safe whichever of those it was) but none is picked.
+    A list of two or more indices marks each listed option read and picks
+    nobody: several papers were read, so which one the poll settled on is not
+    known. Either way the poll gains ledger rows, so it stops counting as
+    outstanding.
     """
+    if not isinstance(choice, int):
+        values = list(choice)
+        if not values:
+            raise ValueError("choose at least one option")
+        if any(not 1 <= v <= len(tie.options) for v in values):
+            raise ValueError(f"options are 1-{len(tie.options)}")
+        if len(set(values)) != len(values):
+            raise ValueError("options must not repeat")
+        if len(values) == 1:
+            choice = values[0]
+        else:
+            for v in values:
+                _record_reading_for(store, tie.options[v - 1].row, recorded_at=recorded_at)
+            return len(values)
     chosen = tie.options if choice == 0 else [tie.options[choice - 1]]
     for opt in chosen:
         _record_reading_for(store, opt.row, recorded_at=recorded_at)

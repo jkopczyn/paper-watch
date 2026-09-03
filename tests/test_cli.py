@@ -285,6 +285,63 @@ def test_resolve_ties_prompts_and_records(tmp_path):
     assert "No outstanding ties" in result.output
 
 
+def _tie_config(tmp_path):
+    from datetime import datetime, timezone
+
+    ts = str(datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc).timestamp())
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    gt = tmp_path / "gt.csv"
+    gt.write_text(
+        "week,message_ts,option,emoji,votes,url,context\n"
+        f"2026-W27,{ts},1,one,3,https://arxiv.org/abs/2605.01642,Paper A\n"
+        f"2026-W27,{ts},2,two,3,https://blog.example/b,Paper B\n"
+        f"2026-W27,{ts},3,three,3,https://blog.example/c,Paper C\n"
+    )
+    return cfg, gt
+
+
+def test_resolve_ties_accepts_a_comma_separated_answer(tmp_path):
+    from paper_watch.store import Store
+
+    cfg, gt = _tie_config(tmp_path)
+    Store(tmp_path / "pw.db").close()
+
+    result = CliRunner().invoke(
+        cli,
+        ["resolve-ties", "--config", str(cfg), "--groundtruth", str(gt)],
+        input="1,3\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Recorded 2 reading(s)." in result.output
+
+    store = Store(tmp_path / "pw.db")
+    urls = sorted(r["url"] for r in store.conn.execute("SELECT url FROM readings"))
+    assert urls == ["https://arxiv.org/abs/2605.01642", "https://blog.example/c"]
+    assert all(r["picked"] == 0 for r in store.conn.execute("SELECT picked FROM feedback"))
+    store.close()
+
+
+def test_resolve_ties_reprompts_after_an_invalid_answer(tmp_path):
+    from paper_watch.store import Store
+
+    cfg, gt = _tie_config(tmp_path)
+    Store(tmp_path / "pw.db").close()
+
+    result = CliRunner().invoke(
+        cli,
+        ["resolve-ties", "--config", str(cfg), "--groundtruth", str(gt)],
+        input="9\n1\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "1-3" in result.output
+
+    store = Store(tmp_path / "pw.db")
+    urls = [r["url"] for r in store.conn.execute("SELECT url FROM readings")]
+    assert urls == ["https://arxiv.org/abs/2605.01642"]
+    store.close()
+
+
 def test_alert_command_fans_out_and_reports(tmp_path, monkeypatch):
     from paper_watch import alerts as alerts_mod
 
