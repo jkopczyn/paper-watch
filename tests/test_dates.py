@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from paper_watch.dates import parse_to_iso_date, since_to_iso, struct_to_iso
+from paper_watch.dates import (
+    date_from_url,
+    parse_to_iso_date,
+    since_to_iso,
+    struct_to_iso,
+)
 
 
 def test_since_to_iso_relative_windows():
@@ -19,6 +24,8 @@ def test_struct_to_iso_none():
 
 
 _NOW = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+_NOW_2026 = _NOW
+_NOW_NAIVE = datetime(2026, 7, 22, 12, 0, 0)
 
 
 def test_parse_to_iso_date_iso_forms():
@@ -53,3 +60,69 @@ def test_parse_to_iso_date_rejects_junk_and_implausible():
 def test_parse_to_iso_date_allows_old_but_plausible():
     # the Clarke 1945 article is old but real; only absurd years are rejected
     assert parse_to_iso_date("1945-10-01", now=_NOW) == "1945-10-01T00:00:00Z"
+
+
+def test_date_from_url_reads_dashed_path_date():
+    url = "https://example.org/research/2026-05-08-some-post"
+    assert date_from_url(url, now=_NOW_2026) == "2026-05-08T00:00:00Z"
+
+
+def test_date_from_url_reads_slashed_path_date():
+    url = "https://example.org/2019/03/11/title/"
+    assert date_from_url(url) == "2019-03-11T00:00:00Z"
+
+
+def test_date_from_url_reads_year_month_path():
+    # month precision only — the day defaults to the 1st, as parse_to_iso_date does
+    assert date_from_url("https://example.org/2018/07/title") == "2018-07-01T00:00:00Z"
+
+
+def test_date_from_url_ignores_arxiv_ids():
+    assert date_from_url("https://arxiv.org/abs/2608.14825") is None
+    assert date_from_url("https://arxiv.org/pdf/2608.14825v2") is None
+    assert date_from_url("https://arxiv.org/abs/1706.03762") is None
+
+
+def test_date_from_url_ignores_bare_numbers():
+    assert date_from_url("https://example.org/posts/12345/slug") is None
+    assert date_from_url("https://example.org/2026") is None
+    assert date_from_url("https://example.org/id/20260508") is None
+
+
+def test_date_from_url_rejects_implausible_years():
+    assert date_from_url("https://example.org/1985/03/11/x") is None
+    assert date_from_url("https://example.org/1200-01-01-x") is None
+
+
+def test_date_from_url_rejects_far_future_dates():
+    two_months = "https://example.org/2026/09/21/x"
+    two_days = "https://example.org/2026/07/24/x"
+    assert date_from_url(two_months, now=_NOW_NAIVE) is None
+    assert date_from_url(two_days, now=_NOW_NAIVE) == "2026-07-24T00:00:00Z"
+
+
+def test_date_from_url_accepts_an_aware_now():
+    # datetime(y, m, d) is naive; an aware `now` must not raise on comparison
+    url = "https://example.org/2026/07/24/x"
+    assert date_from_url(url, now=_NOW_2026) == date_from_url(url, now=_NOW_NAIVE)
+
+
+def test_date_from_url_accepts_a_naive_now():
+    assert date_from_url("https://example.org/2019/03/11/x", now=_NOW_NAIVE) == (
+        "2019-03-11T00:00:00Z"
+    )
+
+
+def test_date_from_url_rejects_impossible_calendar_dates():
+    assert date_from_url("https://example.org/2019/02/31/x") is None
+    assert date_from_url("https://example.org/2019-13-01-x") is None
+
+
+def test_date_from_url_handles_none_and_non_urls():
+    assert date_from_url(None) is None
+    assert date_from_url("") is None
+    assert date_from_url("not a url at all") is None
+
+
+def test_date_from_url_ignores_the_query_string():
+    assert date_from_url("https://example.org/post?d=2019-03-11") is None

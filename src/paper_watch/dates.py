@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 _WINDOW = re.compile(r"^\s*(\d+)\s*([dhw])\s*$", re.IGNORECASE)
 _UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7}
@@ -52,6 +53,14 @@ def _parse_any(raw: str) -> datetime | None:
     return None
 
 
+def _naive_utc_now(now: datetime | None) -> datetime:
+    """A naive UTC datetime to compare parsed (naive) dates against."""
+    base = now or datetime.now(timezone.utc)
+    if base.tzinfo is not None:
+        base = base.astimezone(timezone.utc)
+    return base.replace(tzinfo=None)
+
+
 def parse_to_iso_date(
     raw: str | None, *, now: datetime | None = None
 ) -> str | None:
@@ -69,10 +78,51 @@ def parse_to_iso_date(
         return None
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    base = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+    base = _naive_utc_now(now)
     if dt.year < _MIN_YEAR or dt > base + timedelta(days=1):
         return None
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Tighter bounds than parse_to_iso_date's: a date stated in a URL path is a
+# strong signal, but a bare digit run that only looks like one is not, so
+# anything outside the range a blog URL plausibly carries is dropped.
+_URL_MIN_YEAR = 1990
+_URL_MAX_FUTURE = timedelta(days=31)
+_URL_DASHED = re.compile(r"/(\d{4})-(\d{2})-(\d{2})(?=[-/_.]|$)")
+_URL_SLASHED = re.compile(r"/(\d{4})/(\d{2})(?:/(\d{2}))?(?=[/-]|$)")
+
+
+def date_from_url(url: str | None, *, now: datetime | None = None) -> str | None:
+    """Read a publication date stated in a URL path, as an ISO-8601 'Z' string.
+
+    Reads the path only (never the query string or fragment), and costs no
+    network call. Deliberately conservative: both patterns require the date's
+    separators, so an arXiv id like 2608.14825 or an undelimited run like
+    20260508 is not read as a date, and a year outside 1990..(a month ahead)
+    is rejected.
+    """
+    if not url:
+        return None
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return None
+    base = _naive_utc_now(now)
+    for pattern in (_URL_DASHED, _URL_SLASHED):
+        m = pattern.search(path)
+        if not m:
+            continue
+        year, month = int(m.group(1)), int(m.group(2))
+        day = int(m.group(3)) if m.lastindex == 3 and m.group(3) else 1
+        try:
+            dt = datetime(year, month, day)
+        except ValueError:
+            continue
+        if year < _URL_MIN_YEAR or dt > base + _URL_MAX_FUTURE:
+            continue
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return None
 
 
 def since_to_iso(window: str, *, now: datetime | None = None) -> str:
