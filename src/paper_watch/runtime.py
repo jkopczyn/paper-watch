@@ -17,7 +17,7 @@ from paper_watch.digest import (
     score_explanation,
 )
 from paper_watch.enrich import EnrichmentResult, enrich_unenriched
-from paper_watch.identity import canonicalize_url, resolve_or_create
+from paper_watch.identity import canonicalize_url, is_pdf_url, resolve_or_create
 from paper_watch.normalize import to_entry_fields
 from paper_watch.schedule import (
     is_delivery_due,
@@ -180,7 +180,7 @@ def _entry_pdf_url(row) -> str | None:
     if pdf:
         return pdf
     abstract_url = links.get("abstract") or ""
-    return abstract_url if abstract_url.lower().endswith(".pdf") else None
+    return abstract_url if is_pdf_url(abstract_url) else None
 
 
 def rewrite_paper_metadata(
@@ -232,7 +232,7 @@ def rewrite_paper_metadata(
 
 def _is_html_page_url(url: str) -> bool:
     """An http(s) page to scrape for metadata — not a PDF (that's the PDF path)."""
-    return url.startswith(("http://", "https://")) and not url.lower().endswith(".pdf")
+    return url.startswith(("http://", "https://")) and not is_pdf_url(url)
 
 
 def _has_http_link(row) -> bool:
