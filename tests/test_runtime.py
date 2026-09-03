@@ -2031,7 +2031,7 @@ feedback_refresh:
 
     refreshed_with = []
 
-    def fake_refresh(store, config, sender, *, now):
+    def fake_refresh(store, config, *, now):
         refreshed_with.append(now)
         return RefreshResult(performed=True, ok=True)
 
@@ -2143,6 +2143,11 @@ def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
                 "workspace": "far",
                 "groundtruth_path": str(tmp_path / "gt.csv"),
             },
+            "alerts": {
+                "log_file": str(tmp_path / "alerts.log"),
+                "desktop": False,
+                "email": False,
+            },
         }
     )
     fr = cfg.feedback_refresh
@@ -2213,7 +2218,7 @@ def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
         ):
             refreshes.append(now.strftime("%a %H:%M"))
             refresh.run_feedback_refresh(
-                store, cfg, sender, now=now,
+                store, cfg, now=now,
                 export=lambda token, channel_ids, *, oldest, path, append=False: 0,
                 importer=refresh_importer,
             )
@@ -2234,8 +2239,10 @@ def test_fake_week_of_ticks_end_to_end(tmp_path, tz, monkeypatch):
     assert "Thursday Paper" in digests[1][1]
     # Fresh to the pipeline, but the group already read it: excluded.
     assert "Read Before Ingest" not in digests[1][1]
-    # The refresh's own notice email went out too.
-    assert any(s.startswith("paper-watch feedback refresh") for s, _ in sender.sent)
+    # The refresh's notice went to the alerts log, not to the digest sender
+    # (whose recipients include the reading group).
+    assert not any("feedback refresh" in s for s, _ in sender.sent)
+    assert "feedback refresh" in (tmp_path / "alerts.log").read_text()
 
 
 # -- historical replay ------------------------------------------------------
