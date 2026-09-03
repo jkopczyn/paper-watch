@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from paper_watch.store import Store
@@ -471,4 +472,174 @@ def test_as_of_view_freezes_the_clock_and_reads_the_rest_through(tmp_path: Path)
     assert view.get_last_sent_at() == "2026-08-02T12:00:00Z"
     # non-time-anchored reads pass through to the real store
     assert view.get_entry(eid)["title"] == "A Paper"
+    store.close()
+
+
+# -- date-resolution attempts ----------------------------------------------
+def _undated(store: Store, title: str, seen: str, **kwargs) -> int:
+    return store.insert_entry(
+        title=title,
+        title_norm=title.lower(),
+        first_seen_at=seen,
+        **kwargs,
+    )
+
+
+def test_entries_needing_date_lists_undated_entries_newest_first(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    links = {"abstract": "https://example.org/p"}
+    old = _undated(store, "Old", "2026-06-01T00:00:00Z", links=links)
+    new = _undated(store, "New", "2026-06-03T00:00:00Z", links=links)
+    _undated(
+        store,
+        "Dated",
+        "2026-06-04T00:00:00Z",
+        links=links,
+        published_at="2026-05-01T00:00:00Z",
+    )
+
+    rows = store.entries_needing_date(limit=10, max_attempts=3)
+    assert [r["id"] for r in rows] == [new, old]
+    store.close()
+
+
+def test_entries_needing_date_respects_the_limit(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    links = {"abstract": "https://example.org/p"}
+    for i in range(4):
+        _undated(store, f"E{i}", f"2026-06-0{i + 1}T00:00:00Z", links=links)
+
+    rows = store.entries_needing_date(limit=2, max_attempts=3)
+    assert len(rows) == 2
+    store.close()
+
+
+def test_entries_needing_date_skips_entries_at_the_attempt_cap(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    links = {"abstract": "https://example.org/p"}
+    capped = _undated(store, "Capped", "2026-06-02T00:00:00Z", links=links)
+    below = _undated(store, "Below", "2026-06-01T00:00:00Z", links=links)
+    for _ in range(3):
+        store.record_date_attempt(capped, "2026-06-05T00:00:00Z")
+    for _ in range(2):
+        store.record_date_attempt(below, "2026-06-05T00:00:00Z")
+
+    rows = store.entries_needing_date(limit=10, max_attempts=3)
+    assert [r["id"] for r in rows] == [below]
+    store.close()
+
+
+def test_entries_needing_date_skips_entries_with_no_http_link(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    _undated(store, "Linkless", "2026-06-01T00:00:00Z")
+
+    assert store.entries_needing_date(limit=10, max_attempts=3) == []
+    store.close()
+
+
+def test_entries_needing_date_ignores_link_fields_the_pass_never_reads(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    _undated(
+        store,
+        "Code only",
+        "2026-06-01T00:00:00Z",
+        links={"abstract": "arXiv:2608.14825", "code": "https://github.com/x/y"},
+    )
+
+    assert store.entries_needing_date(limit=10, max_attempts=3) == []
+    store.close()
+
+
+def test_entries_needing_date_accepts_a_pdf_only_link(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated(
+        store,
+        "Pdf only",
+        "2026-06-01T00:00:00Z",
+        links={"pdf": "https://example.org/p.pdf"},
+    )
+
+    rows = store.entries_needing_date(limit=10, max_attempts=3)
+    assert [r["id"] for r in rows] == [eid]
+    store.close()
+
+
+def test_entries_needing_date_counts_a_mention_url_as_a_candidate(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated(store, "Linkless", "2026-06-01T00:00:00Z")
+    assert store.entries_needing_date(limit=10, max_attempts=3) == []
+
+    store.add_mention(
+        entry_id=eid,
+        source="rss:Blog",
+        source_item_url="https://blog/p",
+        fetched_at="2026-06-02T00:00:00Z",
+    )
+    rows = store.entries_needing_date(limit=10, max_attempts=3)
+    assert [r["id"] for r in rows] == [eid]
+    store.close()
+
+
+def test_entries_needing_date_does_not_let_linkless_entries_starve_the_budget(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "pw.db")
+    resolvable = _undated(
+        store,
+        "Resolvable",
+        "2026-06-01T00:00:00Z",
+        links={"abstract": "https://example.org/p"},
+    )
+    for i in range(5):
+        _undated(store, f"Linkless {i}", f"2026-06-1{i}T00:00:00Z")
+
+    rows = store.entries_needing_date(limit=2, max_attempts=3)
+    assert [r["id"] for r in rows] == [resolvable]
+    store.close()
+
+
+def test_record_date_attempt_increments_and_stamps(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = _undated(
+        store,
+        "E",
+        "2026-06-01T00:00:00Z",
+        links={"abstract": "https://example.org/p"},
+    )
+    store.record_date_attempt(eid, "2026-06-02T00:00:00Z")
+    store.record_date_attempt(eid, "2026-06-03T00:00:00Z")
+
+    row = store.get_entry(eid)
+    assert row["date_attempts"] == 2
+    assert row["date_attempted_at"] == "2026-06-03T00:00:00Z"
+    store.close()
+
+
+def test_fill_published_at_clears_nothing_else(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    eid = store.insert_entry(
+        title="A Paper",
+        title_norm="a paper",
+        abstract="An abstract.",
+        authors=["Ann"],
+        first_seen_at="2026-06-01T00:00:00Z",
+    )
+    store.fill_published_at(eid, "2026-05-08T00:00:00Z")
+
+    row = store.get_entry(eid)
+    assert row["published_at"] == "2026-05-08T00:00:00Z"
+    assert row["title"] == "A Paper"
+    assert row["abstract"] == "An abstract."
+    assert json.loads(row["authors_json"]) == ["Ann"]
+    store.close()
+
+
+def test_date_attempt_columns_migrate_onto_an_existing_db(tmp_path: Path):
+    db = tmp_path / "pw.db"
+    Store(db).close()
+    store = Store(db)
+
+    cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(entries)")]
+    assert cols.count("date_attempts") == 1
+    assert cols.count("date_attempted_at") == 1
     store.close()
