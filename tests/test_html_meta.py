@@ -3,6 +3,7 @@ rest of the codebase does), so the tests need no network and no new dependency."
 
 from paper_watch.sources.html_meta import (
     HtmlMetaResolver,
+    parse_html_date,
     parse_html_meta,
 )
 
@@ -172,3 +173,57 @@ def test_resolver_rejects_implausible_llm_date():
         fetch=lambda _u: page, date_llm=lambda _t: "2999-01-01"
     ).resolve("https://x/p")
     assert meta["published_at"] is None  # a hallucinated far-future date is dropped
+
+
+def test_parse_html_date_reads_meta_without_a_title():
+    # A bot-blocked or script-rendered page can carry a date meta tag and no
+    # usable title; parse_html_meta gives up on it, the date-only path does not.
+    html = '<head><meta property="article:published_time" content="2019-03-11"></head>'
+    assert parse_html_meta(html) is None
+    assert parse_html_date(html) == "2019-03-11T00:00:00Z"
+
+
+def test_parse_html_date_falls_back_to_json_ld():
+    html = """<head></head>
+    <body>
+      <script type="application/ld+json">
+      {"@type": "Article", "datePublished": "2016-06-21"}
+      </script>
+    </body>"""
+    assert parse_html_date(html) == "2016-06-21T00:00:00Z"
+
+
+def test_parse_html_date_returns_none_without_any_date():
+    assert parse_html_date("<head><title>Undated</title></head><body>no date</body>") is None
+
+
+def test_resolve_date_reports_the_meta_method():
+    page = '<head><meta property="article:published_time" content="2019-03-11"></head>'
+    got = HtmlMetaResolver(fetch=lambda _u: page).resolve_date("https://x/p")
+    assert got == {"published_at": "2019-03-11T00:00:00Z", "method": "html-meta"}
+
+
+def test_resolve_date_falls_back_to_the_llm_and_reports_it():
+    page = "<head><title>Undated</title></head><body><p>Posted on March 11, 2019.</p></body>"
+    calls = []
+
+    def fake_llm(text):
+        calls.append(text)
+        return "March 11, 2019"
+
+    got = HtmlMetaResolver(fetch=lambda _u: page, date_llm=fake_llm).resolve_date("https://x/p")
+    assert got == {"published_at": "2019-03-11T00:00:00Z", "method": "llm"}
+    assert calls and "Posted on March 11, 2019" in calls[0]
+    assert "<p>" not in calls[0]  # visible text, not raw markup
+
+
+def test_resolve_date_returns_none_without_a_date_anywhere():
+    page = "<head><title>Undated</title></head><body>no date</body>"
+    assert HtmlMetaResolver(fetch=lambda _u: page).resolve_date("https://x/p") is None
+
+
+def test_resolve_date_returns_none_when_the_fetch_fails():
+    def boom(_u):
+        raise RuntimeError("down")
+
+    assert HtmlMetaResolver(fetch=boom).resolve_date("https://x/p") is None

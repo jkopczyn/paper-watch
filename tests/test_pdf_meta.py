@@ -224,3 +224,34 @@ def test_resolver_uses_llm_date_when_pdf_has_no_creation_date():
     meta = PdfMetaResolver(fetch=lambda _u: PAPER, date_llm=fake_llm).resolve("https://x/paper.pdf")
     assert meta["published_at"] == "2018-07-01T00:00:00Z"
     assert calls and "Scalable Oversight" in calls[0]  # fed page-1 text
+
+
+def test_resolve_date_reads_the_pdf_info_date():
+    dated = _with_creation_date(PAPER, "D:20190311093000Z")
+    got = PdfMetaResolver(fetch=lambda _u: dated).resolve_date("https://x/paper.pdf")
+    assert got == {"published_at": "2019-03-11T00:00:00Z", "method": "pdf-meta"}
+
+
+def test_resolve_date_falls_back_to_the_llm_over_first_page_text():
+    calls = []
+
+    def fake_llm(text):
+        calls.append(text)
+        return "2018-07-01"
+
+    got = PdfMetaResolver(fetch=lambda _u: PAPER, date_llm=fake_llm).resolve_date(
+        "https://x/paper.pdf"
+    )
+    assert got == {"published_at": "2018-07-01T00:00:00Z", "method": "llm"}
+    assert calls and "Scalable Oversight" in calls[0]
+
+
+def test_resolve_date_returns_none_without_a_date_anywhere():
+    assert PdfMetaResolver(fetch=lambda _u: PAPER).resolve_date("https://x/paper.pdf") is None
+
+
+def test_resolve_date_returns_none_when_the_pdf_cannot_be_fetched():
+    def boom(_u):
+        raise RuntimeError("down")
+
+    assert PdfMetaResolver(fetch=boom).resolve_date("https://x/paper.pdf") is None
