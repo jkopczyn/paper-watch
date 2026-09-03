@@ -1857,6 +1857,10 @@ def test_run_wires_feedback_refresh_on_a_due_tick(tmp_path, monkeypatch):
     cfg_file.write_text(
         f"""
 db_path: {tmp_path / "pw.db"}
+alerts:
+  log_file: {tmp_path / "alerts.log"}
+  desktop: false
+  email: false
 feedback_refresh:
   workspace: far
   groundtruth_path: {tmp_path / "gt.csv"}

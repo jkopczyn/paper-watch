@@ -175,3 +175,13 @@ def test_slack_api_error_is_reported_with_the_slack_error_code(tmp_path, monkeyp
 
     result = alerts.send_alert(config.alerts, "s", "b", slack_post=alerts.slack_poster(config, api=api))
     assert "conversations.open" in result["slack"] and "missing_scope" in result["slack"]
+
+
+def test_desktop_default_resolves_at_call_time(tmp_path, monkeypatch):
+    # The conftest guard against real notify-send popups relies on this:
+    # patching the module attribute must reach send_alert's default channel.
+    calls = []
+    monkeypatch.setattr(alerts, "desktop_notify", lambda s, b: calls.append((s, b)))
+    cfg = _cfg(tmp_path, email=False, slack_channel=None)
+    alerts.send_alert(cfg, "subj", "body")
+    assert calls == [("subj", "body")]

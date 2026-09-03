@@ -111,7 +111,7 @@ def send_alert(
     skip: set[str] | None = None,
     smtp: SmtpConfig | None = None,
     sender: Sender | None = None,
-    desktop_notify: DesktopNotify = desktop_notify,
+    desktop_notify: DesktopNotify | None = None,
     slack_post: SlackPost | None = None,
     now: datetime | None = None,
 ) -> dict[str, str | None]:
@@ -122,6 +122,10 @@ def send_alert(
     (alert.sh writes the log and notify-send before Python is even involved).
     """
     skip = skip or set()
+    if desktop_notify is None:
+        # Resolved at call time so tests can monkeypatch the module attribute;
+        # a def-time default would keep pointing at the original function.
+        desktop_notify = globals()["desktop_notify"]
     result: dict[str, str | None] = {}
 
     def attempt(name: str, enabled: bool, fn: Callable[[], None]) -> None:
