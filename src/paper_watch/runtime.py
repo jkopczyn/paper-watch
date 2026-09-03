@@ -971,6 +971,8 @@ def run_pipeline(
     lw_resolver=None,
     search_resolver=None,
     web_search_resolver=None,
+    date_pdf_resolver=None,
+    date_html_resolver=None,
 ) -> RunResult:
     now_iso = now.strftime(_ISO)
     candidate_start = (now - timedelta(days=candidate_window_days)).strftime(_ISO)
@@ -1035,14 +1037,19 @@ def run_pipeline(
     # Dates drive selection (old_after_days), so the backlog of undated entries
     # is worked before the digest is built. Like enrichment it runs on gated
     # ticks too, since it works a backlog rather than fresh ingestion.
-    if max_date_resolve > 0 and (lw_resolver or pdf_resolver or html_resolver):
+    # It gets its own PDF/HTML resolvers, since only this bounded pass carries
+    # the LLM date fallback; it falls back to the metadata ones when the caller
+    # supplies no separate pair. The LW resolver needs no LLM, so it is shared.
+    date_pdf = date_pdf_resolver if date_pdf_resolver is not None else pdf_resolver
+    date_html = date_html_resolver if date_html_resolver is not None else html_resolver
+    if max_date_resolve > 0 and (lw_resolver or date_pdf or date_html):
         resolve_missing_dates(
             store,
             limit=max_date_resolve,
             now_iso=now_iso,
             lw_resolver=lw_resolver,
-            html_resolver=html_resolver,
-            pdf_resolver=pdf_resolver,
+            html_resolver=date_html,
+            pdf_resolver=date_pdf,
         )
     enriched = enrich_unenriched(store, enricher, max_enrich) if enricher else 0
 
@@ -1265,30 +1272,54 @@ def _build_newsletter_extractor(config: Config):
 
 
 def _build_metadata_resolvers(config: Config):
-    """(openreview, pdf, html, lesswrong) resolvers for the metadata step. The LLM helpers
-    (PDF vision-OCR, and the publication-date fallback for pages/PDFs whose
-    metadata carries no date) are only wired when an Anthropic key is present;
-    deterministic extraction needs neither. The date fallback runs on
-    llm.date_model rather than llm.model, since it is called far less often."""
+    """(openreview, pdf, html, lesswrong) resolvers for the metadata step.
+
+    These extract dates deterministically only. The metadata step runs over
+    every newly ingested entry with no cap, so wiring the LLM date fallback here
+    would allow one date-model call per new entry on every tick; the fallback
+    belongs to the capped date-only pass instead (`_build_date_resolvers`).
+
+    PDF vision-OCR is still wired when an Anthropic key is present: it recovers
+    titles and abstracts, which is what this step is for.
+    """
     from paper_watch.sources.html_meta import HtmlMetaResolver
     from paper_watch.sources.lesswrong import LessWrongResolver
     from paper_watch.sources.openreview import OpenReviewResolver
     from paper_watch.sources.pdf_meta import PdfMetaResolver
 
     ocr = None
-    date_llm = None
     if os.environ.get("ANTHROPIC_API_KEY"):
-        from paper_watch.sources.date_llm import ClaudeDateExtractor
         from paper_watch.sources.pdf_meta import ClaudePdfOcr
 
         ocr = ClaudePdfOcr(config.llm.model)
-        date_llm = ClaudeDateExtractor(config.llm.date_model)
     return (
         OpenReviewResolver(),
-        PdfMetaResolver(ocr=ocr, date_llm=date_llm),
-        HtmlMetaResolver(date_llm=date_llm),
+        PdfMetaResolver(ocr=ocr),
+        HtmlMetaResolver(),
         LessWrongResolver(),  # needs no key
     )
+
+
+def _build_date_resolvers(config: Config):
+    """(pdf, html) resolvers for the date-only step, with the LLM fallback.
+
+    The publication-date fallback for pages and PDFs whose metadata carries no
+    date is only wired when an Anthropic key is present; deterministic
+    extraction needs none. It runs on llm.date_model rather than llm.model,
+    since it is called far less often. The caller bounds this step with
+    max_date_resolve_per_run, so the number of calls per tick is capped.
+
+    No OCR here: this step reads dates and never writes a title or abstract.
+    """
+    from paper_watch.sources.html_meta import HtmlMetaResolver
+    from paper_watch.sources.pdf_meta import PdfMetaResolver
+
+    date_llm = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from paper_watch.sources.date_llm import ClaudeDateExtractor
+
+        date_llm = ClaudeDateExtractor(config.llm.date_model)
+    return PdfMetaResolver(date_llm=date_llm), HtmlMetaResolver(date_llm=date_llm)
 
 
 def _build_search_resolver(config: Config):
@@ -1461,6 +1492,7 @@ def run(
         openreview_resolver, pdf_resolver, html_resolver, lw_resolver = (
             _build_metadata_resolvers(config)
         )
+        date_pdf_resolver, date_html_resolver = _build_date_resolvers(config)
         search_resolver = _build_search_resolver(config)
         web_search_resolver = _build_web_search_resolver(config)
 
@@ -1478,6 +1510,8 @@ def run(
             lw_resolver=lw_resolver,
             search_resolver=search_resolver,
             web_search_resolver=web_search_resolver,
+            date_pdf_resolver=date_pdf_resolver,
+            date_html_resolver=date_html_resolver,
             source_priors=config.source_priors,
             tracked_authors=normalize_tracked_authors(config.authors),
             weights=config.scoring,

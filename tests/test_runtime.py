@@ -2513,7 +2513,22 @@ def test_run_raises_the_overdue_alert_after_a_clean_tick(tmp_path, monkeypatch):
     assert "overdue" in text
 
 
-def test_metadata_resolvers_use_the_date_model_for_date_extraction(tmp_path, monkeypatch):
+def test_date_resolvers_use_the_date_model_for_date_extraction(tmp_path, monkeypatch):
+    from paper_watch.config import Config
+    from paper_watch.runtime import _build_date_resolvers
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("llm:\n  model: claude-haiku-4-5\n  date_model: claude-sonnet-5\n")
+    config = Config.load(cfg_file)
+
+    pdf_resolver, html_resolver = _build_date_resolvers(config)
+
+    assert html_resolver._date_llm.model == "claude-sonnet-5"
+    assert pdf_resolver._date_llm.model == "claude-sonnet-5"
+
+
+def test_metadata_resolvers_keep_ocr_and_drop_the_date_llm(tmp_path, monkeypatch):
     from paper_watch.config import Config
     from paper_watch.runtime import _build_metadata_resolvers
 
@@ -2524,9 +2539,9 @@ def test_metadata_resolvers_use_the_date_model_for_date_extraction(tmp_path, mon
 
     _openreview, pdf_resolver, html_resolver, _lw = _build_metadata_resolvers(config)
 
-    assert html_resolver._date_llm.model == "claude-sonnet-5"
-    assert pdf_resolver._date_llm.model == "claude-sonnet-5"
     assert pdf_resolver._ocr.model == "claude-haiku-4-5"
+    assert pdf_resolver._date_llm is None
+    assert html_resolver._date_llm is None
 
 
 # -- the date-only resolution pass -----------------------------------------
@@ -2903,4 +2918,97 @@ def test_a_url_dated_entry_never_reaches_the_network_for_its_date(tmp_path):
 
     assert store.get_entry(result.chosen_ids[0])["published_at"] == "2026-05-08T00:00:00Z"
     assert html.seen == []  # the date pass never selected it
+    store.close()
+
+
+# -- where the LLM date fallback is wired -----------------------------------
+_UNDATED_PAGE = (
+    '<head><meta property="og:title" content="Undated Post"></head>'
+    "<body><p>Posted on March 11, 2019 by A. Researcher.</p></body>"
+)
+
+
+def _counting_date_llm(monkeypatch, tmp_path):
+    """Config with an Anthropic key present, plus the list of date-LLM calls made."""
+    calls = []
+
+    class _FakeDateExtractor:
+        def __init__(self, model, client=None):
+            self.model = model
+
+        def __call__(self, text):
+            calls.append(text)
+            return "2019-03-11"
+
+    class _FakeOcr:
+        def __init__(self, model, client=None):
+            self.model = model
+
+        def __call__(self, page_pdf):
+            return None
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("paper_watch.sources.date_llm.ClaudeDateExtractor", _FakeDateExtractor)
+    monkeypatch.setattr("paper_watch.sources.pdf_meta.ClaudePdfOcr", _FakeOcr)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(f"db_path: {tmp_path / 'pw.db'}\n")
+    return Config.load(cfg_file), calls
+
+
+def test_metadata_resolvers_make_no_llm_date_calls(tmp_path, monkeypatch):
+    from paper_watch.runtime import _build_metadata_resolvers
+
+    config, calls = _counting_date_llm(monkeypatch, tmp_path)
+    _, _, html, _ = _build_metadata_resolvers(config)
+    html._fetch = lambda _u: _UNDATED_PAGE
+    store = Store(tmp_path / "pw.db")
+    entry_id = _lw_entry(store, "https://blog.example/posts/abcdefghij/some-post")
+
+    resolve_paper_metadata(store, [entry_id], None, html_resolver=html)
+
+    # The page has a title but no date meta tag: the metadata pass takes the
+    # title and leaves the date to the bounded date-only pass.
+    row = store.get_entry(entry_id)
+    assert row["title"] == "Undated Post"
+    assert row["published_at"] is None
+    assert calls == []
+    store.close()
+
+
+def test_date_resolvers_keep_the_llm_date_fallback(tmp_path, monkeypatch):
+    from paper_watch.runtime import _build_date_resolvers
+
+    config, calls = _counting_date_llm(monkeypatch, tmp_path)
+    _, html = _build_date_resolvers(config)
+    html._fetch = lambda _u: _UNDATED_PAGE
+    store = Store(tmp_path / "pw.db")
+    eid = _undated_entry(store, "Undated Post", links={"abstract": "https://blog.example/p"})
+
+    result = _date_pass(store, html_resolver=html)
+
+    assert result.llm == 1
+    assert len(calls) == 1
+    assert store.get_entry(eid)["published_at"] == "2019-03-11T00:00:00Z"
+    store.close()
+
+
+def test_run_pipeline_gives_the_date_pass_its_own_resolvers(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    item = RawItem(source="rss:Blog", url="https://blog.example/some-post", text=None)
+    metadata_html = _StubDateResolver(None, meta={"title": "Some Post", "abstract": "a"})
+    date_html = _StubDateResolver({"published_at": "2019-03-11T00:00:00Z", "method": "llm"})
+
+    result = _pipeline(
+        store,
+        [ListSource("rss", [item])],
+        CapturingSender(),
+        html_resolver=metadata_html,
+        date_html_resolver=date_html,
+        max_date_resolve=5,
+    )
+
+    assert metadata_html.resolved == ["https://blog.example/some-post"]
+    assert metadata_html.seen == []  # the date pass used the other resolver
+    assert date_html.seen == ["https://blog.example/some-post"]
+    assert store.get_entry(result.chosen_ids[0])["published_at"] == "2019-03-11T00:00:00Z"
     store.close()
