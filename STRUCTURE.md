@@ -161,7 +161,7 @@ Source adapters are tested against recorded fixtures (no live network), and the 
   - `newsletter_links.py` — fans a newsletter body out into the papers it links (one `RawItem` each)
 - `sources/` resolvers — fill in metadata for existing entries rather than yield items:
   - `tweet_resolver.py` — expands a bare tweet link via local Nitter (text/links/thread; SQLite-cached)
-  - `openreview.py` — OpenReview API title/abstract; optional login for gated notes
+  - `openreview.py` — OpenReview API title/abstract/date/venue; optional login for gated notes
   - `pdf_meta.py` — title/abstract from page 1 of a raw PDF (vision OCR only for scanned pages)
   - `html_meta.py` — title/blurb from an HTML landing page's Open Graph / `<title>` metadata
   - `paper_search.py` — S2/Crossref title search to give link-less entries a canonical URL + date

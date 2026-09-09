@@ -2,6 +2,7 @@
   "notes": [
     {
       "id": "OldVenue123",
+      "cdate": 1746834142471,
       "content": {
         "title": "An Older Venue Paper",
         "abstract": "A v1-style paper with a flat abstract string.",

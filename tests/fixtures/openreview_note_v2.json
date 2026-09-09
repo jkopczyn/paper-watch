@@ -2,10 +2,14 @@
   "notes": [
     {
       "id": "dy2HwmOvFX",
+      "cdate": 1746834142471,
+      "pdate": 1758216990751,
+      "mdate": 1783627373620,
       "content": {
         "title": {"value": "A Structured Study of Oversight"},
         "abstract": {"value": "We present a v2-style paper with a wrapped abstract value."},
-        "authors": {"value": ["Alice Ng", "Bob Lim"]}
+        "authors": {"value": ["Alice Ng", "Bob Lim"]},
+        "venue": {"value": "NeurIPS 2025 poster"}
       }
     }
   ]
