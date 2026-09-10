@@ -30,6 +30,8 @@ def test_resolve_reads_v2(fixture_text):
     assert meta["title"] == "A Structured Study of Oversight"
     assert "wrapped abstract" in meta["abstract"]
     assert meta["authors"] == ["Alice Ng", "Bob Lim"]
+    assert meta["published_at"] == "2025-09-18T17:36:30Z"  # pdate
+    assert meta["venue"] == "NeurIPS 2025 poster"
 
 
 def test_resolve_falls_back_to_v1(fixture_text):
@@ -44,6 +46,9 @@ def test_resolve_falls_back_to_v1(fixture_text):
     assert meta["title"] == "An Older Venue Paper"
     assert meta["abstract"].startswith("A v1-style")
     assert meta["authors"] == ["Carol Reyes"]
+    # No pdate on this note: the submission's own cdate stands in.
+    assert meta["published_at"] == "2025-05-09T23:42:22Z"
+    assert meta["venue"] is None
 
 
 def test_resolve_error_is_none():
@@ -140,3 +145,33 @@ def test_login_attempted_once_across_resolves(fixture_text):
     r.resolve("https://openreview.net/forum?id=a")
     r.resolve("https://openreview.net/forum?id=b")
     assert len(logins) == 1  # token cached; login not repeated per resolve
+
+
+# --- dates and venue ---
+
+
+def test_resolve_without_any_date_is_none(fixture_text):
+    """A note carrying neither pdate nor cdate leaves the date unset."""
+
+    def fetch(url, *, params=None, headers=None):
+        note = json.loads(fixture_text("openreview_note_v2.json"))
+        note["notes"][0].pop("pdate")
+        note["notes"][0].pop("cdate")
+        return note
+
+    r = OpenReviewResolver(fetch=fetch, login=lambda: None)
+    meta = r.resolve("https://openreview.net/forum?id=dy2HwmOvFX")
+    assert meta["published_at"] is None
+
+
+def test_resolve_ignores_unusable_date(fixture_text):
+    """A non-numeric date field is dropped rather than raising."""
+
+    def fetch(url, *, params=None, headers=None):
+        note = json.loads(fixture_text("openreview_note_v2.json"))
+        note["notes"][0]["pdate"] = "not-a-timestamp"
+        note["notes"][0].pop("cdate")
+        return note
+
+    r = OpenReviewResolver(fetch=fetch, login=lambda: None)
+    assert r.resolve("https://openreview.net/forum?id=dy2HwmOvFX")["published_at"] is None

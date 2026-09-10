@@ -1781,6 +1781,26 @@ def test_resolve_paper_metadata_dispatches_openreview_and_pdf(tmp_path):
     store.close()
 
 
+def test_resolve_paper_metadata_keeps_openreview_date(tmp_path):
+    """The date the OpenReview note carries lands on the entry."""
+    store = Store(tmp_path / "pw.db")
+    items = [RawItem(source="slack:x", url="https://openreview.net/forum?id=dy2HwmOvFX", text="oversight")]
+    new_ids = ingest(store, [ListSource("slack", items)], since=None, now_iso="2026-06-30T08:00:00Z")
+    orv = _StubMetaResolver(
+        {
+            "title": "OR Paper",
+            "abstract": "or abstract",
+            "authors": ["A"],
+            "published_at": "2025-09-18T17:36:30Z",
+        }
+    )
+
+    resolve_paper_metadata(store, new_ids, None, openreview_resolver=orv)
+
+    assert store.get_entry(new_ids[0])["published_at"] == "2025-09-18T17:36:30Z"
+    store.close()
+
+
 def test_resolve_paper_metadata_dispatches_html_pages(tmp_path):
     store = Store(tmp_path / "pw.db")
     items = [

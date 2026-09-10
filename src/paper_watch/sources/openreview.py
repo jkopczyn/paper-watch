@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
@@ -56,6 +57,26 @@ def forum_id(url: str | None) -> str | None:
     return ids[0] if ids else None
 
 
+def _iso_date(note: dict) -> str | None:
+    """The note's publication date: `pdate` when it has one, else `cdate`.
+
+    Both are epoch milliseconds. `pdate` is the date the venue published the
+    paper, which is what the forum page labels "Published"; a submission that
+    was never accepted has no `pdate`, and its `cdate` (when it was submitted)
+    is the closest date the API states.
+    """
+    for key in ("pdate", "cdate"):
+        raw = note.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        try:
+            dt = datetime.fromtimestamp(raw / 1000, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            continue
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return None
+
+
 def _field(content: dict, key: str):
     """Read a content field across API versions (v2 wraps values in {'value': …})."""
     val = content.get(key)
@@ -84,7 +105,7 @@ class OpenReviewResolver:
         return {"Authorization": f"Bearer {self._token}"} if self._token else None
 
     def resolve(self, url: str) -> dict | None:
-        """{title, abstract, authors} for an OpenReview forum URL, or None."""
+        """{title, abstract, authors, published_at, venue} for a forum URL, or None."""
         fid = forum_id(url)
         if fid is None:
             return None
@@ -97,10 +118,13 @@ class OpenReviewResolver:
             if not title:
                 continue
             authors = _field(content, "authors") or []
+            venue = _field(content, "venue")
             return {
                 "title": str(title),
                 "abstract": _field(content, "abstract"),
                 "authors": [str(a) for a in authors] if isinstance(authors, list) else [],
+                "published_at": _iso_date(note),
+                "venue": str(venue) if venue else None,
             }
         return None
 
