@@ -6,24 +6,30 @@ machinery (`paper_watch.schedule`): each tick asks whether a refresh moment has
 passed that the last *successful* refresh did not cover, so missed Thursdays
 collapse into one catch-up run and a failed refresh stays owed until a later
 tick lands it. A refresh = append-mode groundtruth export → vote import →
-notice email; the import's idempotence is what makes those blind retries safe.
+notice; the import's idempotence is what makes those blind retries safe.
+
+Notices are operator-facing and must never reach the digest recipients (the
+digest's `to_addrs` include the reading group's Slack address). A successful
+refresh writes one line to the alerts log file; a failed one fans out through
+the operational-alert channels (`alerts.send_alert`), which are configured to
+reach only the operator.
 
 Failures never advance the watermark, and — to avoid a 4-hourly drumbeat while
-one stays owed — at most one failure notice is mailed per owed refresh point
-(tracked under `FEEDBACK_FAILURE_NOTICED_KEY` in `meta`). A notice email that
-itself fails to send does not fail an otherwise-successful refresh: the spec
-ties the watermark to the refresh, not the mail.
+one stays owed — at most one failure alert goes out per owed refresh point
+(tracked under `FEEDBACK_FAILURE_NOTICED_KEY` in `meta`). A notice that itself
+fails to record does not fail an otherwise-successful refresh: the spec ties
+the watermark to the refresh, not the notice.
 """
 
 from __future__ import annotations
 
-import html
 import logging
 import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 
+from paper_watch import alerts
 from paper_watch.config import Config
 from paper_watch.dates import since_to_iso
 from paper_watch.feedback import VoteImportResult, import_votes
@@ -47,6 +53,8 @@ class RefreshResult:
     performed: bool = False
     ok: bool = False
     summary: str = ""
+    # Success: the log line was written. Failure: at least one alert channel
+    # landed (or none was owed because this point was already noticed).
     notice_sent: bool = False
 
 
@@ -80,66 +88,76 @@ def _workspace_token(config: Config, workspace: str) -> tuple[str, list[str]]:
 def render_notice(
     result: VoteImportResult | None, *, appended: int = 0, error: str | None = None
 ) -> str:
-    """The refresh notice email body: what happened, or why nothing did."""
+    """The refresh notice body, plain text: what happened, or why nothing did."""
     if error is not None:
         return (
-            "<p>Feedback refresh FAILED; it stays owed and later ticks will "
-            f"retry it.</p>\n<p>Error: {html.escape(error)}</p>"
+            "Feedback refresh FAILED; it stays owed and later ticks will "
+            f"retry it.\nError: {error}"
         )
     assert result is not None
-    weeks = f": {html.escape(', '.join(result.weeks))}" if result.weeks else ""
+    weeks = f": {', '.join(result.weeks)}" if result.weeks else ""
     parts = [
-        f"<p>Appended {appended} new poll option(s) to the groundtruth CSV.</p>",
-        f"<p>Imported {result.imported} vote row(s) across {len(result.weeks)} "
+        f"Appended {appended} new poll option(s) to the groundtruth CSV.",
+        f"Imported {result.imported} vote row(s) across {len(result.weeks)} "
         f"week(s){weeks}; touched {result.weight_keys_touched} feedback weight "
-        "key(s).</p>",
-        f"<p>Skipped {result.skipped_zero} zero-vote row(s) and "
-        f"{result.skipped_existing} already-imported row(s).</p>",
-        f"<p>Recorded {result.readings_recorded} reading(s); backfilled "
-        f"{result.resolutions_backfilled} earlier resolution(s).</p>",
+        "key(s).",
+        f"Skipped {result.skipped_zero} zero-vote row(s) and "
+        f"{result.skipped_existing} already-imported row(s).",
+        f"Recorded {result.readings_recorded} reading(s); backfilled "
+        f"{result.resolutions_backfilled} earlier resolution(s).",
     ]
     if result.reimported:
         parts.append(
-            f"<p>Re-imported {result.reimported} row(s) from hand-edited "
+            f"Re-imported {result.reimported} row(s) from hand-edited "
             "poll(s); their feedback rows and ledger winners were re-derived "
-            "(the prior weight nudge decays rather than being unwound).</p>"
+            "(the prior weight nudge decays rather than being unwound)."
         )
     if result.ties:
-        parts.append(
-            "<p>Tie(s) awaiting a human call: "
-            f"{html.escape(', '.join(result.ties))}</p>"
-        )
+        parts.append(f"Tie(s) awaiting a human call: {', '.join(result.ties)}")
     if result.unresolved_urls:
-        items = "".join(f"<li>{html.escape(u)}</li>" for u in result.unresolved_urls)
-        parts.append(f"<p>Unresolved URL(s):</p>\n<ul>{items}</ul>")
+        parts.append(f"Unresolved URL(s): {', '.join(result.unresolved_urls)}")
     return "\n".join(parts)
 
 
-def _send_notice(sender, now: datetime, body: str) -> bool:
+def _log_notice(config: Config, now: datetime, body: str) -> bool:
+    subject = f"feedback refresh — {now:%Y-%m-%d}"
     try:
-        sender.send(
-            subject=f"paper-watch feedback refresh — {now:%Y-%m-%d}", html=body
-        )
+        alerts.append_log(config.alerts.log_file, subject, body, now=now)
         return True
-    except Exception as exc:  # a mail hiccup must not fail the refresh itself
-        _log.warning("feedback refresh notice failed to send: %s", exc)
+    except Exception as exc:  # a log hiccup must not fail the refresh itself
+        _log.warning("feedback refresh notice failed to log: %s", exc)
         return False
+
+
+def _default_alert_send(cfg, subject, body, *, config: Config, now: datetime):
+    from paper_watch.delivery.email import GmailSender
+
+    return alerts.send_alert(
+        cfg,
+        subject,
+        body,
+        smtp=config.smtp,
+        sender=GmailSender(config.smtp, os.environ.get("SMTP_APP_PASSWORD", "")),
+        slack_post=alerts.slack_poster(config),
+        now=now,
+    )
 
 
 def run_feedback_refresh(
     store: Store,
     config: Config,
-    sender,
     *,
     now: datetime,
     export=export_groundtruth,
     importer=import_votes,
+    alert_send=None,
 ) -> RefreshResult:
-    """Export new polls, import their votes, and mail the notice.
+    """Export new polls, import their votes, and record the notice.
 
-    Success advances the refresh watermark (even if the notice mail fails);
-    any export/import failure leaves it untouched and mails a failure notice
-    at most once per owed refresh point.
+    Success advances the refresh watermark (even if the log line fails to
+    write) and logs a one-line notice to the alerts log file; any export/import
+    failure leaves the watermark untouched and raises an operational alert at
+    most once per owed refresh point.
     """
     fr = config.feedback_refresh
     result = RefreshResult(performed=True)
@@ -176,9 +194,9 @@ def run_feedback_refresh(
             f"({len(imported.weeks)} week(s), {len(imported.ties)} tie(s), "
             f"{imported.unresolved} unresolved)"
         )
-        result.notice_sent = _send_notice(
-            sender, now, render_notice(imported, appended=appended)
-        )
+        body = render_notice(imported, appended=appended)
+        result.notice_sent = _log_notice(config, now, body)
+        _log.info("feedback refresh ok: %s", result.summary)
         store.set_last_feedback_refresh_at(now.strftime(_ISO))
         return result
 
@@ -188,7 +206,15 @@ def run_feedback_refresh(
         point.astimezone(timezone.utc).strftime(_ISO) if point else "unscheduled"
     )
     if store.get_meta(FEEDBACK_FAILURE_NOTICED_KEY) != point_iso:
-        result.notice_sent = _send_notice(sender, now, render_notice(None, error=error))
+        subject = "feedback refresh failed"
+        body = render_notice(None, error=error)
+        if alert_send is None:
+            outcome = _default_alert_send(
+                config.alerts, subject, body, config=config, now=now
+            )
+        else:
+            outcome = alert_send(config.alerts, subject, body, now=now)
+        result.notice_sent = any(v is None for v in (outcome or {}).values())
         if result.notice_sent:
             store.set_meta(FEEDBACK_FAILURE_NOTICED_KEY, point_iso)
     return result

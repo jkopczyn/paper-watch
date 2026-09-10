@@ -1558,7 +1558,7 @@ def run(
                 days=fr.weekdays,
                 at=fr.at_time,
             ):
-                refresh.run_feedback_refresh(store, config, sender, now=now)
+                refresh.run_feedback_refresh(store, config, now=now)
                 result.refreshed = True
         # Last, and only on real ticks: the send above either moved the
         # watermark or raised (systemd's OnFailure= reports that). What is left
