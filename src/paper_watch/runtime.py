@@ -199,7 +199,7 @@ def _publish_site(
         _log.warning("site publish failure could not be recorded", exc_info=True)
     body = (
         summary
-        + "\nThe digest was sent normally. The site will be published again"
+        + "\nThe tick itself completed normally. The site will be published again"
         + " on the next send or feedback refresh."
     )
     try:
