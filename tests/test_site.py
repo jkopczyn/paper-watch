@@ -210,11 +210,45 @@ def test_record_url_prefers_alignmentforum(site_store):
     assert record.url == "https://www.alignmentforum.org/posts/abc123/slug"
 
 
-def test_record_url_falls_back_to_mention(site_store):
+def test_record_url_never_uses_a_mention(site_store):
+    """A mention URL is a link to where the paper was discussed, often a
+    private Slack permalink, so it is never published as the paper's link."""
     record = _by_title(load_records(site_store), TITLE_C)[0]
-    assert record.url == "https://example.slack.com/archives/C1/p123"
+    assert record.url is None
     assert record.is_estimate is True
     assert record.published == "2026-08"
+    permalink = "https://example.slack.com/archives/C1/p123"
+    for name, content in build_site(site_store, domain="example.org").items():
+        assert permalink not in content, name
+        assert "example.slack.com" not in content, name
+
+
+def test_record_url_falls_back_to_entry_url(tmp_path):
+    """An entry with no links of its own still has the URLs it answers to,
+    and the first http or https one of those is used."""
+    store = Store(tmp_path / "pw.db")
+    try:
+        entry_id = store.insert_entry(
+            title="Alias only",
+            title_norm="alias only",
+            first_seen_at="2026-10-01T00:00:00Z",
+        )
+        store.add_entry_url(entry_id, "slack://channel?team=T1&id=C1")
+        store.add_entry_url(entry_id, "https://example.org/paper")
+        store.add_mention(
+            entry_id=entry_id,
+            source="slack:alignment:papers",
+            source_item_url="https://example.slack.com/archives/C1/p9",
+            fetched_at="2026-10-01T00:00:00Z",
+            published_at="2026-09-01T00:00:00Z",
+        )
+        store.record_shown(
+            entry_id=entry_id, digest_at=D1, rank=1, score=1.0, resurfaced=False
+        )
+        records = load_records(store)
+        assert records[0].url == "https://example.org/paper"
+    finally:
+        store.close()
 
 
 def test_latest_week_rating_wins(site_store):

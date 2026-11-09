@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from jinja2 import Environment
 
 from paper_watch.config import SiteConfig
-from paper_watch.runtime import _display_links, _pub_display
+from paper_watch.runtime import _prefer_alignmentforum, _pub_display
 
 _log = logging.getLogger(__name__)
 
@@ -106,17 +106,36 @@ class SiteRecord:
         }
 
 
+def entry_link(store, entry_id: int, links: dict[str, str]) -> str | None:
+    """The one link the site shows for an entry, or None.
+
+    Only links the entry owns are used. When the entry has stored links, the
+    first one is taken after the same alignmentforum.org preference the digest
+    email applies, and it is published only if it passes `public_url`. When it
+    has none, the first http or https URL the entry answers to is used. The
+    email's last fallback, a mention's URL, is never used here, because a
+    mention URL points at where the paper was discussed, which is often a
+    private Slack message.
+    """
+    if links:
+        preferred = _prefer_alignmentforum(store, entry_id, links)
+        return public_url(next(iter(preferred.values()), None))
+    for url in store.get_entry_urls(entry_id):
+        if public_url(url):
+            return url
+    return None
+
+
 def load_records(store) -> list[SiteRecord]:
     """One record per `shown` row, newest digest first and in rank order.
 
-    The displayed link and the publication date come from the same helpers the
-    digest email uses, so the site and the email agree on both.
+    The publication date comes from the same helper the digest email uses, so
+    the site and the email agree on it. The link is chosen by `entry_link`.
     """
     records: list[SiteRecord] = []
     for row in store.shown_history():
         entry_id = int(row["id"])
-        links = _display_links(store, entry_id, json.loads(row["links_json"]))
-        first_link = next(iter(links.values()), None)
+        link = entry_link(store, entry_id, json.loads(row["links_json"]))
         published, is_estimate = _pub_display(store, row)
         records.append(
             SiteRecord(
@@ -126,7 +145,7 @@ def load_records(store) -> list[SiteRecord]:
                 resurfaced=bool(row["resurfaced"]),
                 title=row["title"],
                 authors=json.loads(row["authors_json"]),
-                url=public_url(first_link),
+                url=link,
                 arxiv_id=row["arxiv_id"],
                 published=published,
                 is_estimate=is_estimate,
