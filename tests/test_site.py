@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -823,7 +824,7 @@ def test_dirty_managed_file_is_allowed(site_store, site_repo):
 def test_git_env_without_key_is_batch_mode():
     for environ in ({}, {"SITE_DEPLOY_KEY": ""}):
         env = _git_env(environ)
-        assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+        assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes -o ConnectTimeout=30"
         assert env["GIT_TERMINAL_PROMPT"] == "0"
 
 
@@ -831,7 +832,7 @@ def test_git_env_with_key_adds_identity():
     env = _git_env({"SITE_DEPLOY_KEY": "/k/my key"})
     assert (
         env["GIT_SSH_COMMAND"]
-        == "ssh -o BatchMode=yes -i '/k/my key' -o IdentitiesOnly=yes"
+        == "ssh -o BatchMode=yes -o ConnectTimeout=30 -i '/k/my key' -o IdentitiesOnly=yes"
     )
 
 
@@ -840,7 +841,8 @@ def test_git_env_expands_home_in_key(monkeypatch, tmp_path):
     env = _git_env({"SITE_DEPLOY_KEY": "~/.ssh/site_key"})
     assert (
         env["GIT_SSH_COMMAND"]
-        == f"ssh -o BatchMode=yes -i {tmp_path}/.ssh/site_key -o IdentitiesOnly=yes"
+        == f"ssh -o BatchMode=yes -o ConnectTimeout=30 -i {tmp_path}/.ssh/site_key"
+        " -o IdentitiesOnly=yes"
     )
 
 
@@ -864,23 +866,60 @@ def test_deploy_key_under_home_is_accepted(site_store, site_repo, tmp_path, monk
 
 def test_git_env_overrides_ambient_ssh_command():
     env = _git_env({"GIT_SSH_COMMAND": "ssh -v"})
-    assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+    assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes -o ConnectTimeout=30"
+
+
+class _FakePopen:
+    """A stand-in for `subprocess.Popen` whose first `communicate` times out."""
+
+    instances: list = []
+
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.kwargs = kwargs
+        self.pid = 4242
+        self.returncode = None
+        self.communicate_calls = []
+        _FakePopen.instances.append(self)
+
+    def communicate(self, timeout=None):
+        self.communicate_calls.append(timeout)
+        if len(self.communicate_calls) == 1:
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+        self.returncode = -9
+        return "", ""
 
 
 def test_git_timeout_is_a_publish_error(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(kwargs)
-        raise subprocess.TimeoutExpired(cmd, GIT_TIMEOUT_SECONDS)
-
-    monkeypatch.setattr(site_mod.subprocess, "run", fake_run)
+    _FakePopen.instances = []
+    killed = []
+    monkeypatch.setattr(site_mod.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(site_mod.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     with pytest.raises(SitePublishError) as excinfo:
         site_mod._git(tmp_path, "status", "--porcelain", env={})
     assert "status" in str(excinfo.value)
     assert "120" in str(excinfo.value)
     assert GIT_TIMEOUT_SECONDS == 120
-    assert calls[0]["timeout"] == GIT_TIMEOUT_SECONDS
+    proc = _FakePopen.instances[0]
+    assert proc.communicate_calls[0] == GIT_TIMEOUT_SECONDS
+    assert killed == [(4242, signal.SIGKILL)]
+
+
+def test_git_runs_in_its_own_process_group(tmp_path, monkeypatch):
+    """git starts ssh as a grandchild, so the timeout kills the whole group,
+    which only works when git leads a new session."""
+    real_popen = subprocess.Popen
+    seen = []
+
+    def spy(cmd, **kwargs):
+        seen.append(kwargs)
+        return real_popen(cmd, **kwargs)
+
+    monkeypatch.setattr(site_mod.subprocess, "Popen", spy)
+    proc = site_mod._run_git(tmp_path, ("--version",), dict(os.environ))
+    assert proc.returncode == 0
+    assert proc.stdout.startswith("git version")
+    assert seen[0]["start_new_session"] is True
 
 
 def test_git_error_message_is_first_stderr_line(site_repo):

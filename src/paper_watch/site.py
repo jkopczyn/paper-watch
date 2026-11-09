@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -574,6 +575,12 @@ def _deploy_key(environ: Mapping[str, str]) -> str:
     return str(Path(key).expanduser())
 
 
+# The ssh options every push and fetch uses. ConnectTimeout bounds the TCP
+# connect separately from GIT_TIMEOUT_SECONDS, so an unreachable host fails in
+# seconds rather than holding the whole git timeout.
+_SSH_BASE = "ssh -o BatchMode=yes -o ConnectTimeout=30"
+
+
 def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
     """`environ` with the ssh and prompt settings every git call needs.
 
@@ -588,10 +595,10 @@ def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
     key = _deploy_key(env)
     if key:
         env["GIT_SSH_COMMAND"] = (
-            f"ssh -o BatchMode=yes -i {shlex.quote(key)} -o IdentitiesOnly=yes"
+            f"{_SSH_BASE} -i {shlex.quote(key)} -o IdentitiesOnly=yes"
         )
     else:
-        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+        env["GIT_SSH_COMMAND"] = _SSH_BASE
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
@@ -619,19 +626,33 @@ def _run_git(
     Callers that need a non-zero exit to be an error use `_git` instead. This
     one exists for the checks where a non-zero exit is an answer rather than a
     failure, such as asking whether a ref exists.
+
+    git runs as the leader of a new session, and a timeout kills that whole
+    process group. Killing only git would leave an ssh child it started
+    running, holding the output pipes open, so the timeout would not end the
+    call.
     """
+    cmd = ["git", "-C", str(repo), *args]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(env),
+        start_new_session=True,
+    )
     try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT_SECONDS,
-            env=dict(env),
-        )
+        stdout, stderr = proc.communicate(timeout=GIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
         raise SitePublishError(
             f"git {_subcommand(args)} timed out after {GIT_TIMEOUT_SECONDS} seconds"
         ) from exc
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _git(repo: Path, *args: str, env: Mapping[str, str]) -> str:
