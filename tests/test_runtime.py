@@ -3043,3 +3043,294 @@ def test_run_pipeline_gives_the_date_pass_its_own_resolvers(tmp_path):
     assert date_html.seen == ["https://blog.example/some-post"]
     assert store.get_entry(result.chosen_ids[0])["published_at"] == "2019-03-11T00:00:00Z"
     store.close()
+
+
+# -- site publish wiring ----------------------------------------------------
+_DEPLOY_KEY = "/home/x/.ssh/paper-watch-site_deploy_key"
+
+
+def _site_config_file(tmp_path, *, site=True, feedback=False):
+    """A config for the publish wiring tests, with alerts pointed at tmp_path."""
+    body = f"""
+db_path: {tmp_path / "pw.db"}
+alerts:
+  log_file: {tmp_path / "alerts.log"}
+  desktop: false
+  email: false
+"""
+    if feedback:
+        body += f"""feedback_refresh:
+  workspace: far
+  groundtruth_path: {tmp_path / "gt.csv"}
+"""
+    if site:
+        body += f"""site:
+  repo_path: {tmp_path / "site"}
+  committer_email: bot@example.org
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(body)
+    return cfg_file
+
+
+def _wire_publish(monkeypatch, tmp_path, *, sent, refresh_result=None, publish=None):
+    """Fake out the pipeline, the refresh, publish, and the operator alert.
+
+    Returns (calls, notices): `calls` records refresh and publish calls in the
+    order they happened, and `notices` the (subject, body) pairs the operator
+    alert route was given.
+    """
+    from paper_watch import refresh as refresh_mod
+    from paper_watch import runtime
+    from paper_watch import site as site_mod
+    from paper_watch.runtime import RunResult
+
+    # Keep the repo's .env (and its API keys) out of the run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    calls = []
+    notices = []
+
+    monkeypatch.setattr(runtime, "run_pipeline", lambda store, **kw: RunResult(sent=sent))
+
+    def fake_refresh(store, config, *, now):
+        calls.append(("refresh", now))
+        return refresh_result
+
+    if refresh_result is not None:
+        monkeypatch.setattr(refresh_mod, "run_feedback_refresh", fake_refresh)
+
+    def fake_publish(store, site_config, *, now, **kwargs):
+        calls.append(("publish", site_config))
+        if publish is not None:
+            return publish()
+        return site_mod.PublishResult(changed=True, committed=True, pushed=True)
+
+    monkeypatch.setattr(site_mod, "publish", fake_publish)
+
+    def fake_alert(cfg, subject, body, *, config, now):
+        notices.append((subject, body))
+        return {}
+
+    monkeypatch.setattr(refresh_mod, "_default_alert_send", fake_alert)
+    return calls, notices
+
+
+def _publish_calls(calls):
+    return [c for c in calls if c[0] == "publish"]
+
+
+def _site_health(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    try:
+        return store.get_source_health("site")
+    finally:
+        store.close()
+
+
+def test_run_publishes_once_after_a_send(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    cfg_file = _site_config_file(tmp_path)
+    calls, _ = _wire_publish(monkeypatch, tmp_path, sent=True)
+
+    runtime.run(str(cfg_file))
+
+    published = _publish_calls(calls)
+    assert len(published) == 1
+    assert published[0][1].repo_path == str(tmp_path / "site")
+    row = _site_health(tmp_path)
+    assert row["consecutive_failures"] == 0
+    assert row["label"] == "site publish"
+
+
+def test_run_publishes_once_when_send_and_refresh_share_a_tick(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.refresh import RefreshResult
+
+    cfg_file = _site_config_file(tmp_path, feedback=True)
+    calls, _ = _wire_publish(
+        monkeypatch,
+        tmp_path,
+        sent=True,
+        refresh_result=RefreshResult(performed=True, ok=True),
+    )
+
+    runtime.run(str(cfg_file))
+
+    assert [c[0] for c in calls] == ["refresh", "publish"]
+
+
+def test_run_publishes_after_a_successful_refresh_without_send(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.refresh import RefreshResult
+
+    cfg_file = _site_config_file(tmp_path, feedback=True)
+    calls, _ = _wire_publish(
+        monkeypatch,
+        tmp_path,
+        sent=False,
+        refresh_result=RefreshResult(performed=True, ok=True),
+    )
+
+    runtime.run(str(cfg_file))
+
+    assert len(_publish_calls(calls)) == 1
+
+
+def test_run_skips_publish_after_a_failed_refresh_without_send(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.refresh import RefreshResult
+
+    cfg_file = _site_config_file(tmp_path, feedback=True)
+    calls, _ = _wire_publish(
+        monkeypatch,
+        tmp_path,
+        sent=False,
+        refresh_result=RefreshResult(performed=True, ok=False),
+    )
+
+    runtime.run(str(cfg_file))
+
+    assert _publish_calls(calls) == []
+
+
+def test_run_skips_publish_when_nothing_happened(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.refresh import RefreshResult
+
+    cfg_file = _site_config_file(tmp_path, feedback=True)
+    calls, _ = _wire_publish(
+        monkeypatch,
+        tmp_path,
+        sent=False,
+        refresh_result=RefreshResult(performed=True, ok=True),
+    )
+    # A fresh refresh watermark leaves nothing owed, so the refresh is skipped.
+    store = Store(tmp_path / "pw.db")
+    store.set_last_feedback_refresh_at(
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    store.close()
+
+    runtime.run(str(cfg_file))
+
+    assert calls == []
+    assert _site_health(tmp_path) is None
+
+
+def test_run_dry_run_never_publishes(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    cfg_file = _site_config_file(tmp_path)
+    calls, _ = _wire_publish(monkeypatch, tmp_path, sent=True)
+
+    runtime.run(str(cfg_file), dry_run=True)
+
+    assert _publish_calls(calls) == []
+
+
+def test_run_without_site_block_never_publishes(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.refresh import RefreshResult
+
+    cfg_file = _site_config_file(tmp_path, site=False, feedback=True)
+    calls, _ = _wire_publish(
+        monkeypatch,
+        tmp_path,
+        sent=True,
+        refresh_result=RefreshResult(performed=True, ok=True),
+    )
+
+    runtime.run(str(cfg_file))
+
+    assert _publish_calls(calls) == []
+
+
+def test_publish_failure_records_health_and_alerts_operator(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.site import SitePublishError
+
+    monkeypatch.setenv("SITE_DEPLOY_KEY", _DEPLOY_KEY)
+    cfg_file = _site_config_file(tmp_path)
+    first = "git push failed (exit 128): fatal: Could not read from remote repository."
+
+    def boom():
+        raise SitePublishError(
+            first + f"\nWarning: Identity file {_DEPLOY_KEY} not accessible"
+        )
+
+    _, notices = _wire_publish(monkeypatch, tmp_path, sent=True, publish=boom)
+
+    runtime.run(str(cfg_file))
+
+    row = _site_health(tmp_path)
+    assert row["consecutive_failures"] == 1
+    assert row["last_error"] == first
+    assert len(notices) == 1
+    subject, body = notices[0]
+    assert subject == "site publish failed"
+    assert "Could not read from remote repository" in body
+    assert "Identity file" not in body
+    assert _DEPLOY_KEY not in body
+    assert "paper-watch-site_deploy_key" not in body
+
+
+def test_publish_failure_redacts_key_path_in_first_line(tmp_path, monkeypatch):
+    from paper_watch import runtime
+    from paper_watch.site import SitePublishError
+
+    monkeypatch.setenv("SITE_DEPLOY_KEY", _DEPLOY_KEY)
+    cfg_file = _site_config_file(tmp_path)
+
+    def boom():
+        raise SitePublishError(f"ssh cannot read {_DEPLOY_KEY} for the push")
+
+    _, notices = _wire_publish(monkeypatch, tmp_path, sent=True, publish=boom)
+
+    runtime.run(str(cfg_file))
+
+    row = _site_health(tmp_path)
+    assert row["last_error"] == "ssh cannot read <deploy key> for the push"
+    assert "<deploy key>" in notices[0][1]
+    assert _DEPLOY_KEY not in notices[0][1]
+
+
+def test_publish_failure_does_not_reach_digest_warnings(tmp_path):
+    from paper_watch.runtime import source_warnings
+
+    store = Store(tmp_path / "pw.db")
+    for _ in range(5):
+        store.record_source_failure(
+            "site", label="site publish", error="boom", at="2026-11-08T12:00:00Z"
+        )
+    store.record_source_failure(
+        "page:https://example.com/blog",
+        label="Example Blog",
+        error="404",
+        at="2026-11-08T12:00:00Z",
+    )
+
+    warnings = source_warnings(store, 1)
+
+    assert [w.label for w in warnings] == ["Example Blog"]
+    store.close()
+
+
+def test_publish_exception_of_any_type_is_contained(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    cfg_file = _site_config_file(tmp_path)
+
+    def boom():
+        raise RuntimeError("something else went wrong")
+
+    _, notices = _wire_publish(monkeypatch, tmp_path, sent=True, publish=boom)
+
+    runtime.run(str(cfg_file))
+
+    row = _site_health(tmp_path)
+    assert row["consecutive_failures"] == 1
+    assert row["last_error"] == "something else went wrong"
+    assert len(notices) == 1

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +41,12 @@ from paper_watch.score import (
 )
 
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+_log = logging.getLogger(__name__)
+
+# The source health key the site publish records itself under. It is a
+# health row for diagnosis only, and `source_warnings` leaves it out.
+SITE_SOURCE_KEY = "site"
 
 
 @dataclass
@@ -113,6 +121,11 @@ def source_warnings(store, alert_after_failures: int | None) -> list[SourceWarni
     A streak, not a single failure: a dead URL fails every run, while a rate
     limit clears on the next one, and only the first is worth interrupting a
     digest for. A falsy threshold disables the check.
+
+    The site publish is left out whatever its streak. These warnings go into
+    the digest, and the digest goes to the reading group, who cannot act on a
+    failed push. Publish failures go to the operator instead, through the
+    alert channels `_publish_site` uses.
     """
     if not alert_after_failures:
         return []
@@ -126,7 +139,67 @@ def source_warnings(store, alert_after_failures: int | None) -> list[SourceWarni
             error=row["last_error"] or "",
         )
         for row in store.unhealthy_sources(alert_after_failures)
+        if row["source"] != SITE_SOURCE_KEY
     ]
+
+
+def _site_failure_summary(exc: BaseException, environ: Mapping[str, str]) -> str:
+    """One short line about a failed publish, safe to send and to store.
+
+    Only the first line of the error is kept, because git puts its advice on
+    the lines after it, and the deploy key path is replaced, because the
+    notice goes out over email and Slack.
+    """
+    text = str(exc)
+    summary = text.splitlines()[0].strip() if text.strip() else ""
+    if not summary:
+        summary = type(exc).__name__
+    key = environ.get("SITE_DEPLOY_KEY") or ""
+    if key:
+        summary = summary.replace(key, "<deploy key>")
+    return summary
+
+
+def _publish_site(
+    store,
+    config: Config,
+    *,
+    now: datetime,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Render and push the public site, containing any failure.
+
+    A failed publish must not change what the rest of the tick did: the digest
+    has already gone out, so the failure is logged, recorded under the `site`
+    health row, and sent to the operator, and the next send or refresh tick
+    tries again.
+    """
+    from paper_watch import refresh, site
+
+    environ = environ if environ is not None else os.environ
+    now_iso = now.strftime(_ISO)
+    try:
+        site.publish(store, config.site, now=now)
+    except Exception as exc:  # noqa: BLE001 - a publish must never fail a tick
+        summary = _site_failure_summary(exc, environ)
+        _log.warning("site publish failed: %s", summary)
+        store.record_source_failure(
+            SITE_SOURCE_KEY, label="site publish", error=summary, at=now_iso
+        )
+        body = (
+            summary
+            + "\nThe digest was sent normally. The site will be published again"
+            + " on the next send or feedback refresh."
+        )
+        try:
+            refresh._default_alert_send(
+                config.alerts, "site publish failed", body, config=config, now=now
+            )
+        except Exception:  # noqa: BLE001 - a broken channel must not fail a tick
+            _log.warning("site publish notice could not be sent", exc_info=True)
+        return False
+    store.record_source_ok(SITE_SOURCE_KEY, label="site publish", at=now_iso)
+    return True
 
 
 def fresh_start(store, new_window: str, now: datetime) -> str:
@@ -1548,6 +1621,7 @@ def run(
             store.set_last_run_at(now.strftime(_ISO))
         # The weekly feedback refresh runs after the pipeline so its failure
         # can never block a digest; its own machinery keeps it owed on failure.
+        fr_result = None
         if config.feedback_refresh is not None and not dry_run:
             from paper_watch import refresh
 
@@ -1558,8 +1632,20 @@ def run(
                 days=fr.weekdays,
                 at=fr.at_time,
             ):
-                refresh.run_feedback_refresh(store, config, now=now)
+                fr_result = refresh.run_feedback_refresh(store, config, now=now)
                 result.refreshed = True
+        # The public site is published at most once per tick, after both the
+        # send and the refresh have had their chance, so one publish covers
+        # whatever they changed. A tick that changed neither publishes nothing.
+        if (
+            config.site is not None
+            and not dry_run
+            and (
+                result.sent
+                or (fr_result is not None and fr_result.performed and fr_result.ok)
+            )
+        ):
+            _publish_site(store, config, now=now)
         # Last, and only on real ticks: the send above either moved the
         # watermark or raised (systemd's OnFailure= reports that). What is left
         # is a digest quietly still owed.
