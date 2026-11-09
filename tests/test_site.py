@@ -730,10 +730,20 @@ def _add_another_digest(store):
     )
 
 
+def _reject_pushes(origin, reject=True):
+    """Make the bare `origin` refuse every push while still serving fetches."""
+    hook = origin / "hooks" / "pre-receive"
+    if reject:
+        hook.write_text("#!/bin/sh\necho 'pushes are closed' >&2\nexit 1\n")
+        hook.chmod(0o755)
+    else:
+        hook.unlink()
+
+
 def test_push_failure_raises_and_keeps_local_commit(site_store, site_repo, tmp_path):
     cfg, origin = site_repo
     publish(site_store, cfg, now=NOW)
-    origin.rename(tmp_path / "origin-moved.git")
+    _reject_pushes(origin)
     _add_another_digest(site_store)
     with pytest.raises(SitePublishError):
         publish(site_store, cfg, now=NOW)
@@ -743,11 +753,11 @@ def test_push_failure_raises_and_keeps_local_commit(site_store, site_repo, tmp_p
 def test_unpushed_commit_is_pushed_on_next_publish(site_store, site_repo, tmp_path):
     cfg, origin = site_repo
     publish(site_store, cfg, now=NOW)
-    origin.rename(tmp_path / "origin-moved.git")
+    _reject_pushes(origin)
     _add_another_digest(site_store)
     with pytest.raises(SitePublishError):
         publish(site_store, cfg, now=NOW)
-    (tmp_path / "origin-moved.git").rename(origin)
+    _reject_pushes(origin, reject=False)
 
     result = publish(site_store, cfg, now=NOW)
     assert result.committed is False
@@ -810,6 +820,93 @@ def test_precondition_foreign_dirty_file(site_store, site_repo):
     assert "notes.txt" in str(excinfo.value)
     assert not (Path(cfg.repo_path) / "index.html").exists()
     assert _commit_count(cfg.repo_path) == 0
+
+
+def _push_from_second_clone(origin, tmp_path, name="other"):
+    """Clone `origin` elsewhere, commit a file on main, and push it."""
+    other = tmp_path / name
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(other)],
+        check=True,
+        capture_output=True,
+        env=dict(os.environ),
+    )
+    # The bare origin's HEAD names the default branch, not main, so the clone
+    # does not check main out by itself.
+    has_main = subprocess.run(
+        ["git", "-C", str(other), "rev-parse", "--verify", "--quiet", "origin/main"],
+        capture_output=True,
+        env=dict(os.environ),
+    )
+    if has_main.returncode == 0:
+        _git(other, "checkout", "--quiet", "-B", "main", "origin/main")
+    else:
+        _git(other, "symbolic-ref", "HEAD", "refs/heads/main")
+    (other / "extra.txt").write_text("from elsewhere\n", encoding="utf-8")
+    _git(other, "add", "extra.txt")
+    _git(
+        other,
+        "-c",
+        "user.name=Someone",
+        "-c",
+        "user.email=someone@example.org",
+        "commit",
+        "--quiet",
+        "-m",
+        "edit from another clone",
+    )
+    _git(other, "push", "--quiet", "origin", "main")
+
+
+def test_checkout_behind_remote_is_an_error(site_store, site_repo, tmp_path):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    _push_from_second_clone(origin, tmp_path)
+    _add_another_digest(site_store)
+    head_before = _git(cfg.repo_path, "rev-parse", "HEAD")
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "behind" in str(excinfo.value)
+    assert "pull" in str(excinfo.value)
+    assert _git(cfg.repo_path, "rev-parse", "HEAD") == head_before
+    assert _git(cfg.repo_path, "status", "--porcelain") == ""
+    assert _commit_count(origin, "main") == 2
+
+
+def test_checkout_diverged_from_remote_is_an_error(site_store, site_repo, tmp_path):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    _reject_pushes(origin)
+    _add_another_digest(site_store)
+    with pytest.raises(SitePublishError):
+        publish(site_store, cfg, now=NOW)
+    _reject_pushes(origin, reject=False)
+    _push_from_second_clone(origin, tmp_path)
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "behind" in str(excinfo.value)
+    assert _git(origin, "log", "-1", "--format=%s", "main") == "edit from another clone"
+
+
+def test_unborn_checkout_behind_remote_is_an_error(site_store, site_repo, tmp_path):
+    cfg, origin = site_repo
+    _push_from_second_clone(origin, tmp_path)
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "behind" in str(excinfo.value)
+    assert not (Path(cfg.repo_path) / "index.html").exists()
+    assert _commit_count(origin, "main") == 1
+
+
+def test_fetch_failure_with_existing_tracking_ref_is_an_error(
+    site_store, site_repo, tmp_path
+):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    origin.rename(tmp_path / "origin-moved.git")
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "fetch" in str(excinfo.value)
 
 
 def test_dirty_managed_file_is_allowed(site_store, site_repo):

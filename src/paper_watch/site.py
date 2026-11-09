@@ -751,6 +751,54 @@ def _is_ahead(repo: Path, remote: str, branch: str, env: Mapping[str, str]) -> b
     return int(count.strip() or "0") > 0
 
 
+def _check_not_behind(
+    repo: Path, remote: str, branch: str, env: Mapping[str, str]
+) -> None:
+    """Fetch the remote branch and fail if the checkout is missing commits from it.
+
+    Publish only fast-forwards the remote, so a checkout that is behind or has
+    diverged would end in a rejected push on every tick. Failing here, before
+    any file is written, gives the operator one clear message and leaves the
+    checkout ready for a manual pull.
+
+    A failed fetch is tolerated only while the remote-tracking ref does not
+    exist, which is the state of a brand new, empty remote that has no branch
+    to fetch. Once the ref exists, a failed fetch is an error, because the
+    comparison below would otherwise use stale data.
+    """
+    tracking = f"refs/remotes/{remote}/{branch}"
+    refspec = f"+refs/heads/{branch}:{tracking}"
+    proc = _run_git(repo, ("fetch", "--quiet", remote, refspec), env)
+    has_tracking = (
+        _run_git(repo, ("rev-parse", "--verify", "--quiet", tracking), env).returncode
+        == 0
+    )
+    if proc.returncode != 0:
+        if not has_tracking:
+            return
+        stderr = proc.stderr or ""
+        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+        first = lines[0] if lines else "no error output"
+        raise SitePublishError(
+            f"git fetch failed (exit {proc.returncode}): {first}", stderr=stderr
+        )
+    if not has_tracking:
+        return
+    has_head = (
+        _run_git(repo, ("rev-parse", "--verify", "--quiet", "HEAD"), env).returncode == 0
+    )
+    if has_head:
+        missing = _git(repo, "rev-list", "--count", f"HEAD..{tracking}", env=env)
+        behind = int(missing.strip() or "0") > 0
+    else:
+        behind = True
+    if behind:
+        raise SitePublishError(
+            f"the site checkout {repo} is behind the remote {remote}/{branch}, so "
+            "it needs a manual pull before publish can push"
+        )
+
+
 def _dry_run_diff(repo: Path, files: Mapping[str, str]) -> list[str]:
     """The managed files whose content on disk differs from what we would write.
 
@@ -781,7 +829,8 @@ def publish(
     Every precondition is checked before the first file is written, so a
     publish that cannot finish leaves the checkout as it was. A clean tree
     still pushes when there is a local commit the remote does not have, which
-    is how a publish recovers from an earlier push failure.
+    is how a publish recovers from an earlier push failure. An ordinary publish
+    fetches the remote branch first and stops if the checkout is behind it.
     """
     source_environ = environ if environ is not None else os.environ
     env = _git_env(source_environ)
@@ -804,6 +853,8 @@ def publish(
         return PublishResult(
             changed=bool(diff), committed=False, pushed=False, files=diff
         )
+
+    _check_not_behind(repo, site.remote, site.branch, env)
 
     for name, content in files.items():
         (repo / name).write_text(content, encoding="utf-8")
