@@ -539,6 +539,22 @@ class PublishResult:
     message: str | None = None
 
 
+def _deploy_key(environ: Mapping[str, str]) -> str:
+    """The path in `SITE_DEPLOY_KEY`, with a leading `~` expanded, or "".
+
+    python-dotenv stores the value as written, and ssh does not expand a tilde
+    in the argument to `-i`, so the expansion happens here. Both the existence
+    check and `GIT_SSH_COMMAND` use this, so they always name the same file.
+    """
+    key = environ.get("SITE_DEPLOY_KEY") or ""
+    if not key:
+        return ""
+    home = environ.get("HOME")
+    if key.startswith("~") and home:
+        return str(Path(key.replace("~", home, 1)))
+    return str(Path(key).expanduser())
+
+
 def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
     """`environ` with the ssh and prompt settings every git call needs.
 
@@ -550,7 +566,7 @@ def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
     prompting.
     """
     env = dict(environ)
-    key = env.get("SITE_DEPLOY_KEY") or ""
+    key = _deploy_key(env)
     if key:
         env["GIT_SSH_COMMAND"] = (
             f"ssh -o BatchMode=yes -i {shlex.quote(key)} -o IdentitiesOnly=yes"
@@ -732,7 +748,7 @@ def publish(
     repo = Path(site.repo_path)
     _check_preconditions(repo, site.branch, env)
 
-    key = source_environ.get("SITE_DEPLOY_KEY") or ""
+    key = _deploy_key(source_environ)
     if key and not Path(key).exists():
         raise SitePublishError(
             "SITE_DEPLOY_KEY names a file that does not exist, so the site "

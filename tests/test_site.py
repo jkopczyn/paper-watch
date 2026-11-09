@@ -801,6 +801,33 @@ def test_git_env_with_key_adds_identity():
     )
 
 
+def test_git_env_expands_home_in_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    env = _git_env({"SITE_DEPLOY_KEY": "~/.ssh/site_key"})
+    assert (
+        env["GIT_SSH_COMMAND"]
+        == f"ssh -o BatchMode=yes -i {tmp_path}/.ssh/site_key -o IdentitiesOnly=yes"
+    )
+
+
+def test_deploy_key_under_home_is_accepted(site_store, site_repo, tmp_path, monkeypatch):
+    """A `~`-relative key is the value the documentation gives, and neither
+    python-dotenv nor ssh expands it, so publish expands it itself."""
+    cfg, _origin = site_repo
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "site_key").write_text("key material", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    result = publish(
+        site_store,
+        cfg,
+        now=NOW,
+        dry_run=True,
+        environ={**os.environ, "HOME": str(home), "SITE_DEPLOY_KEY": "~/.ssh/site_key"},
+    )
+    assert result.changed is True
+
+
 def test_git_env_overrides_ambient_ssh_command():
     env = _git_env({"GIT_SSH_COMMAND": "ssh -v"})
     assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
