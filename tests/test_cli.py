@@ -354,3 +354,98 @@ def test_alert_command_fans_out_and_reports(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "tick failed: exit 1 | boom" in (tmp_path / "a.log").read_text()
     assert "log: ok" in result.output and "desktop: skipped" in result.output
+
+
+def _publish_config(tmp_path, *, with_site=True):
+    cfg = tmp_path / "config.yaml"
+    text = f"db_path: {tmp_path / 'pw.db'}\n"
+    if with_site:
+        text += (
+            "site:\n"
+            f"  repo_path: {tmp_path / 'checkout'}\n"
+            "  domain: example.org\n"
+            "  committer_email: bot@example.org\n"
+        )
+    cfg.write_text(text)
+    return cfg
+
+
+def test_publish_requires_site_block(tmp_path):
+    cfg = _publish_config(tmp_path, with_site=False)
+    result = CliRunner().invoke(cli, ["publish", "--config", str(cfg)])
+    assert result.exit_code != 0
+    assert "site" in result.output and "missing" in result.output
+
+
+def test_publish_passes_dry_run_through(tmp_path, monkeypatch):
+    import paper_watch.site as site_mod
+
+    cfg = _publish_config(tmp_path)
+    captured = {}
+
+    def fake_publish(store, site, **kw):
+        captured.update(kw)
+        return site_mod.PublishResult(
+            changed=True,
+            committed=False,
+            pushed=False,
+            files=["index.html", "papers.json"],
+        )
+
+    monkeypatch.setattr(site_mod, "publish", fake_publish)
+    result = CliRunner().invoke(cli, ["publish", "--config", str(cfg), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert captured["dry_run"] is True
+    assert "index.html" in result.output
+    assert "papers.json" in result.output
+
+
+def test_publish_reports_unchanged(tmp_path, monkeypatch):
+    import paper_watch.site as site_mod
+
+    cfg = _publish_config(tmp_path)
+    monkeypatch.setattr(
+        site_mod,
+        "publish",
+        lambda store, site, **kw: site_mod.PublishResult(
+            changed=False, committed=False, pushed=False
+        ),
+    )
+    result = CliRunner().invoke(cli, ["publish", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "site unchanged" in result.output
+
+
+def test_publish_reports_commit_and_push(tmp_path, monkeypatch):
+    import paper_watch.site as site_mod
+
+    cfg = _publish_config(tmp_path)
+    monkeypatch.setattr(
+        site_mod,
+        "publish",
+        lambda store, site, **kw: site_mod.PublishResult(
+            changed=True,
+            committed=True,
+            pushed=True,
+            files=["index.html"],
+            message="site: 2 digests, 3 papers (2026-11-08T12:00:00Z)",
+        ),
+    )
+    result = CliRunner().invoke(cli, ["publish", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert "site: 2 digests, 3 papers (2026-11-08T12:00:00Z)" in result.output
+
+
+def test_publish_error_is_click_error(tmp_path, monkeypatch):
+    import paper_watch.site as site_mod
+
+    cfg = _publish_config(tmp_path)
+
+    def fake_publish(store, site, **kw):
+        raise site_mod.SitePublishError("boom")
+
+    monkeypatch.setattr(site_mod, "publish", fake_publish)
+    result = CliRunner().invoke(cli, ["publish", "--config", str(cfg)])
+    assert result.exit_code != 0
+    assert "boom" in result.output
+    assert "Traceback" not in result.output
