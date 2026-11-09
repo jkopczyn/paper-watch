@@ -351,6 +351,17 @@ def _row_for(html, title):
     return html[start : html.index("</tr>", start)]
 
 
+def _article_for(html, title, *, last=False):
+    """The `<article>` of `index.html` that holds `title`.
+
+    `last` picks the paper's final appearance instead of its first, which is
+    what a resurfaced paper needs.
+    """
+    at = html.rindex(title) if last else html.index(title)
+    start = html.rindex("<article", 0, at)
+    return html[start : html.index("</article>", start)]
+
+
 def test_index_renders_every_title(site_store):
     html = _render_all_pages(site_store)[0]
     assert TITLE_A in html
@@ -370,10 +381,10 @@ def test_index_orders_digests_newest_first_and_entries_by_rank(site_store):
 
 def test_index_marks_estimates_and_ratings(site_store):
     html = _render_all_pages(site_store)[0]
-    assert "~2026-08" in html
-    assert "group rating 4/5" in html
-    assert "picked" in html
-    assert "read" in html
+    assert "~2026-08" in _article_for(html, TITLE_C)
+    assert "group rating 4/5" in _article_for(html, TITLE_A)
+    assert '<span class="chip">picked</span>' in _article_for(html, TITLE_B)
+    assert '<span class="chip">read</span>' in _article_for(html, TITLE_C)
     # Only A's second appearance is resurfaced.
     assert html.count("resurfaced") == 1
     assert html.index("resurfaced") < html.rindex(TITLE_A)
