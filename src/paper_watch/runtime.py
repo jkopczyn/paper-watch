@@ -173,33 +173,45 @@ def _publish_site(
     has already gone out, so the failure is logged, recorded under the `site`
     health row, and sent to the operator, and the next send or refresh tick
     tries again.
-    """
-    from paper_watch import refresh, site
 
+    Nothing in this function raises out of it. The import, the timestamp and
+    the success health write are inside the same try as the publish, and the
+    failure path guards its own health write and its notice separately.
+    """
     environ = environ if environ is not None else os.environ
-    now_iso = now.strftime(_ISO)
     try:
+        from paper_watch import site
+
+        now_iso = now.strftime(_ISO)
         site.publish(store, config.site, now=now)
+        store.record_source_ok(SITE_SOURCE_KEY, label="site publish", at=now_iso)
+        return True
     except Exception as exc:  # noqa: BLE001 - a publish must never fail a tick
-        summary = _site_failure_summary(exc, environ)
-        _log.warning("site publish failed: %s", summary)
-        store.record_source_failure(
-            SITE_SOURCE_KEY, label="site publish", error=summary, at=now_iso
-        )
-        body = (
-            summary
-            + "\nThe digest was sent normally. The site will be published again"
-            + " on the next send or feedback refresh."
-        )
         try:
-            refresh._default_alert_send(
-                config.alerts, "site publish failed", body, config=config, now=now
-            )
-        except Exception:  # noqa: BLE001 - a broken channel must not fail a tick
-            _log.warning("site publish notice could not be sent", exc_info=True)
-        return False
-    store.record_source_ok(SITE_SOURCE_KEY, label="site publish", at=now_iso)
-    return True
+            summary = _site_failure_summary(exc, environ)
+        except Exception:  # noqa: BLE001 - str() of an exception can itself raise
+            summary = type(exc).__name__
+        _log.warning("site publish failed: %s", summary)
+    try:
+        store.record_source_failure(
+            SITE_SOURCE_KEY, label="site publish", error=summary, at=now.strftime(_ISO)
+        )
+    except Exception:  # noqa: BLE001 - a broken store must not fail a tick
+        _log.warning("site publish failure could not be recorded", exc_info=True)
+    body = (
+        summary
+        + "\nThe digest was sent normally. The site will be published again"
+        + " on the next send or feedback refresh."
+    )
+    try:
+        from paper_watch import refresh
+
+        refresh._default_alert_send(
+            config.alerts, "site publish failed", body, config=config, now=now
+        )
+    except Exception:  # noqa: BLE001 - a broken channel must not fail a tick
+        _log.warning("site publish notice could not be sent", exc_info=True)
+    return False
 
 
 def fresh_start(store, new_window: str, now: datetime) -> str:

@@ -3334,3 +3334,60 @@ def test_publish_exception_of_any_type_is_contained(tmp_path, monkeypatch):
     assert row["consecutive_failures"] == 1
     assert row["last_error"] == "something else went wrong"
     assert len(notices) == 1
+
+
+def _break_site_health(monkeypatch, *, ok=True, failure=False):
+    """Make the store's health writes for the `site` key raise."""
+    from paper_watch.store import Store as StoreClass
+
+    real_ok = StoreClass.record_source_ok
+    real_failure = StoreClass.record_source_failure
+
+    def broken_ok(self, source, **kwargs):
+        if ok and source == "site":
+            raise RuntimeError("database is locked")
+        return real_ok(self, source, **kwargs)
+
+    def broken_failure(self, source, **kwargs):
+        if failure and source == "site":
+            raise RuntimeError("database is locked")
+        return real_failure(self, source, **kwargs)
+
+    monkeypatch.setattr(StoreClass, "record_source_ok", broken_ok)
+    monkeypatch.setattr(StoreClass, "record_source_failure", broken_failure)
+
+
+def test_publish_health_write_failure_is_contained(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    cfg_file = _site_config_file(tmp_path)
+    calls, notices = _wire_publish(monkeypatch, tmp_path, sent=True)
+    _break_site_health(monkeypatch)
+
+    result = runtime.run(str(cfg_file))
+
+    assert result.sent is True
+    assert len(_publish_calls(calls)) == 1
+    row = _site_health(tmp_path)
+    assert row["consecutive_failures"] == 1
+    assert row["last_error"] == "database is locked"
+    assert len(notices) == 1
+
+
+def test_publish_failure_with_broken_health_store_is_contained(tmp_path, monkeypatch):
+    from paper_watch import runtime
+
+    cfg_file = _site_config_file(tmp_path)
+
+    def boom():
+        raise RuntimeError("push rejected")
+
+    _, notices = _wire_publish(monkeypatch, tmp_path, sent=True, publish=boom)
+    _break_site_health(monkeypatch, ok=True, failure=True)
+
+    result = runtime.run(str(cfg_file))
+
+    assert result.sent is True
+    assert _site_health(tmp_path) is None
+    assert len(notices) == 1
+    assert "push rejected" in notices[0][1]
