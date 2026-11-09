@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pydantic
 import pytest
 
 from paper_watch.config import Config
@@ -300,3 +301,51 @@ def test_max_date_resolve_per_run_default(tmp_path: Path):
     cfg_file.write_text("")
 
     assert Config.load(cfg_file).max_date_resolve_per_run == 25
+
+
+def test_site_absent_defaults_to_none(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("")
+    assert Config.load(cfg_file).site is None
+
+
+def test_site_block_parses(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+site:
+  repo_path: ../paper-watch-site
+  remote: upstream
+  branch: pages
+  domain: example.org
+  committer_name: bot
+  committer_email: bot@example.org
+"""
+    )
+    cfg = Config.load(cfg_file)
+    assert cfg.site is not None
+    assert cfg.site.repo_path == "../paper-watch-site"
+    assert cfg.site.remote == "upstream"
+    assert cfg.site.branch == "pages"
+    assert cfg.site.domain == "example.org"
+    assert cfg.site.committer_name == "bot"
+    assert cfg.site.committer_email == "bot@example.org"
+
+
+def test_site_defaults(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("site:\n  repo_path: ../paper-watch-site\n")
+    site = Config.load(cfg_file).site
+    assert site is not None
+    assert site.remote == "origin"
+    assert site.branch == "main"
+    assert site.domain == "papers.cupchinski.com"
+    assert site.committer_name == "paper-watch"
+    assert site.committer_email is None
+
+
+def test_site_requires_repo_path(tmp_path: Path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("site: {}\n")
+    with pytest.raises(pydantic.ValidationError):
+        Config.load(cfg_file)

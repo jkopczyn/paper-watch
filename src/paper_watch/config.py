@@ -92,6 +92,25 @@ class FeedbackRefreshConfig(BaseModel):
         return value
 
 
+class SiteConfig(BaseModel):
+    """The public site at `domain`, published from a local checkout of its repo.
+
+    `repo_path` points at that checkout; publish renders the managed files into
+    it, commits them under the configured identity, and pushes them to
+    `<remote>/<branch>`.
+    """
+
+    repo_path: str
+    remote: str = "origin"
+    branch: str = "main"
+    # Written to the site repo's CNAME file and used for absolute links.
+    domain: str = "papers.cupchinski.com"
+    committer_name: str = "paper-watch"
+    # None means publish reads the site checkout's own configured commit email
+    # at publish time, and fails if that is unset.
+    committer_email: str | None = None
+
+
 class GraphqlFeedConfig(BaseModel):
     """A ForumMagnum GraphQL feed (LessWrong / Alignment Forum), filtered by tag.
 
@@ -288,6 +307,9 @@ class Config(BaseModel):
     # Weekly export→import of the reading group's poll votes; absent means the
     # feedback loop stays manual (`paper-watch groundtruth` / `feedback import`).
     feedback_refresh: FeedbackRefreshConfig | None = None
+    # The public site for digest history and ratings. An absent block means the
+    # public site is not published.
+    site: SiteConfig | None = None
     top_n: int = 20
     # The digest leads with up to `max_new` genuinely new papers (never shown
     # before, first mentioned within `new_window`); the remaining slots up to
