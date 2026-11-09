@@ -796,7 +796,9 @@ class Store:
         The entry columns `id`, `published_at`, `first_seen_at` and `links_json`
         are selected under those names because `runtime._pub_display` and
         `runtime._display_links` read them from the row. This is the query the
-        public site is built from.
+        public site is built from. `abstract` and `why` are selected only so
+        that the site can decide whether the stored title and tldr are safe to
+        publish; the site never publishes either column.
         """
         return self.conn.execute(
             """
@@ -810,6 +812,8 @@ class Store:
                 e.arxiv_id                 AS arxiv_id,
                 e.tags_json                AS tags_json,
                 e.tldr                     AS tldr,
+                e.abstract                 AS abstract,
+                e.why                      AS why,
                 e.links_json               AS links_json,
                 e.published_at             AS published_at,
                 e.first_seen_at            AS first_seen_at,

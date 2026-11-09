@@ -7,6 +7,20 @@ digest never appears here. The internal `score`, the `why` text, the stored
 and no field identifies an individual voter: the store holds only per-paper
 aggregates. Only http and https links are published; a paper whose first
 display link is anything else is shown without a link.
+
+Mention text, such as a Slack message or a tweet, must never reach the site,
+including indirectly through a field that was derived from it. Two stored
+fields can carry it, so `load_records` excludes them in these cases:
+
+- The tldr of an entry with no abstract is not published. The enricher writes
+  the TL;DR from the title, the abstract and the mention snippets, so without
+  an abstract the TL;DR is written mostly from what people said about the
+  paper, which can be a private message.
+- An OpenReview fallback entry (its `why` starts with "OpenReview submission")
+  publishes no tldr and a title made from its link, such as
+  "openreview.net/forum?id=abc". `runtime._flag_openreview_fallback` copies the
+  longest mention text into both the stored title and the tldr when the
+  abstract is behind a login, so neither stored value is safe.
 """
 
 from __future__ import annotations
@@ -127,31 +141,67 @@ def entry_link(store, entry_id: int, links: dict[str, str]) -> str | None:
     return None
 
 
+# The start of the `why` text `runtime._flag_openreview_fallback` stores. An
+# entry whose `why` starts with this had its title and tldr copied from mention
+# text.
+_OPENREVIEW_FALLBACK_WHY = "OpenReview submission"
+
+# The title shown for an OpenReview fallback entry that has no public link.
+_OPENREVIEW_UNTITLED = "OpenReview submission"
+
+
+def _link_title(url: str | None) -> str:
+    """A title made from a link: its host, path and query, such as
+    "openreview.net/forum?id=abc". It is only ever built from a link that
+    passed `public_url`."""
+    if not url:
+        return _OPENREVIEW_UNTITLED
+    parts = urlsplit(url)
+    title = (parts.hostname or "") + parts.path
+    if parts.query:
+        title += "?" + parts.query
+    return title or _OPENREVIEW_UNTITLED
+
+
+def _public_title_and_tldr(row, link: str | None) -> tuple[str, str | None]:
+    """The title and tldr the site may publish for `row`.
+
+    See the module docstring for why each exclusion exists.
+    """
+    if (row["why"] or "").startswith(_OPENREVIEW_FALLBACK_WHY):
+        return _link_title(link), None
+    tldr = row["tldr"] if (row["abstract"] or "").strip() else None
+    return row["title"], tldr
+
+
 def load_records(store) -> list[SiteRecord]:
     """One record per `shown` row, newest digest first and in rank order.
 
     The publication date comes from the same helper the digest email uses, so
     the site and the email agree on it. The link is chosen by `entry_link`.
+    The title and tldr pass through `_public_title_and_tldr`, which keeps
+    mention text off the site.
     """
     records: list[SiteRecord] = []
     for row in store.shown_history():
         entry_id = int(row["id"])
         link = entry_link(store, entry_id, json.loads(row["links_json"]))
         published, is_estimate = _pub_display(store, row)
+        title, tldr = _public_title_and_tldr(row, link)
         records.append(
             SiteRecord(
                 entry_id=entry_id,
                 digest_at=row["digest_at"],
                 rank=row["rank"],
                 resurfaced=bool(row["resurfaced"]),
-                title=row["title"],
+                title=title,
                 authors=json.loads(row["authors_json"]),
                 url=link,
                 arxiv_id=row["arxiv_id"],
                 published=published,
                 is_estimate=is_estimate,
                 tags=json.loads(row["tags_json"]),
-                tldr=row["tldr"],
+                tldr=tldr,
                 group_rating=row["latest_rating"],
                 picked=bool(row["picked"]),
                 read=bool(row["read"]),

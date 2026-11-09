@@ -575,6 +575,124 @@ def test_empty_store_renders(tmp_path):
         store.close()
 
 
+# --- mention text never reaches the site ---------------------------------
+
+CONFIDENTIAL = "confidential: our lab's unreleased eval results, do not share"
+
+
+def test_tldr_dropped_when_entry_has_no_abstract(tmp_path):
+    """An abstract-less entry's TL;DR is written from the title and mention
+    snippets, so it can repeat a private Slack message and is not published."""
+    store = Store(tmp_path / "pw.db")
+    try:
+        entry_id = store.insert_entry(
+            title="A paper with no abstract",
+            title_norm="a paper with no abstract",
+            first_seen_at="2026-10-01T00:00:00Z",
+            links={"abstract": "https://example.org/paper"},
+        )
+        store.add_mention(
+            entry_id=entry_id,
+            source="slack:alignment:papers",
+            source_item_url="https://example.slack.com/archives/C1/p1",
+            mention_text=CONFIDENTIAL,
+            published_at="2026-09-01T00:00:00Z",
+            fetched_at="2026-10-01T00:00:00Z",
+        )
+        store.set_enrichment(
+            entry_id,
+            tldr=f"Summary: {CONFIDENTIAL}",
+            why="why",
+            tags=["evals"],
+            relevance=7,
+            version=2,
+        )
+        store.record_shown(
+            entry_id=entry_id, digest_at=D1, rank=1, score=1.0, resurfaced=False
+        )
+        records = load_records(store)
+        assert [r.tldr for r in records] == [None]
+        assert records[0].title == "A paper with no abstract"
+        for page in _render_all_pages(store):
+            assert CONFIDENTIAL not in page
+            assert "unreleased eval results" not in page
+    finally:
+        store.close()
+
+
+def test_tldr_dropped_when_abstract_is_blank(tmp_path):
+    store = Store(tmp_path / "pw.db")
+    try:
+        entry_id = store.insert_entry(
+            title="Blank abstract",
+            title_norm="blank abstract",
+            first_seen_at="2026-10-01T00:00:00Z",
+            abstract="   ",
+        )
+        store.set_enrichment(
+            entry_id, tldr="From a snippet.", why="w", tags=[], relevance=5, version=2
+        )
+        store.record_shown(
+            entry_id=entry_id, digest_at=D1, rank=1, score=1.0, resurfaced=False
+        )
+        assert [r.tldr for r in load_records(store)] == [None]
+    finally:
+        store.close()
+
+
+def test_tldr_kept_when_entry_has_abstract(site_store):
+    record = _by_title(load_records(site_store), TITLE_A)[0]
+    assert record.tldr == "One sentence about oversight."
+
+
+def test_openreview_fallback_publishes_link_title_and_no_tldr(tmp_path):
+    from paper_watch.runtime import _flag_openreview_fallback
+
+    url = "https://openreview.net/forum?id=abc"
+    store = Store(tmp_path / "pw.db")
+    try:
+        entry_id = store.insert_entry(
+            title=url,
+            title_norm=url,
+            first_seen_at="2026-10-01T00:00:00Z",
+            links={"abstract": url},
+        )
+        store.add_mention(
+            entry_id=entry_id,
+            source="slack:alignment:papers",
+            source_item_url="https://example.slack.com/archives/C1/p2",
+            mention_text=CONFIDENTIAL,
+            published_at="2026-09-01T00:00:00Z",
+            fetched_at="2026-10-01T00:00:00Z",
+        )
+        _flag_openreview_fallback(store, entry_id)
+        # The fallback promoted the Slack text to the stored title and tldr.
+        row = store.get_entry(entry_id)
+        assert row["title"] == CONFIDENTIAL
+        assert row["tldr"] == CONFIDENTIAL
+        store.record_shown(
+            entry_id=entry_id, digest_at=D1, rank=1, score=1.0, resurfaced=False
+        )
+
+        records = load_records(store)
+        assert len(records) == 1
+        assert records[0].title == "openreview.net/forum?id=abc"
+        assert records[0].tldr is None
+        assert records[0].url == url
+
+        index, all_html, papers_json = _render_all_pages(store)
+        for page in (index, all_html, papers_json):
+            assert CONFIDENTIAL not in page
+            assert str(escape(CONFIDENTIAL)) not in page
+            assert "unreleased eval results" not in page
+        entry = json.loads(papers_json)["digests"][0]["entries"][0]
+        assert entry["title"] == "openreview.net/forum?id=abc"
+        assert entry["tldr"] is None
+        assert "openreview.net/forum?id=abc" in index
+    finally:
+        store.close()
+
+
 # ---------------------------------------------------------------------------
 # publish
 # ---------------------------------------------------------------------------
