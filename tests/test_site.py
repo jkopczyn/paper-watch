@@ -1,11 +1,22 @@
 import json
 
 import pytest
+from markupsafe import escape
 
 from paper_watch.site import (
+    MANAGED_FILES,
+    RATINGS_NOTE,
+    SITE_DESCRIPTION,
+    SITE_TITLE,
+    TLDR_LABEL,
+    build_site,
     group_by_digest,
+    latest_digest_at,
     load_records,
     public_url,
+    render_all,
+    render_index,
+    render_json,
     table_rows,
 )
 from paper_watch.store import Store
@@ -307,5 +318,202 @@ def test_slack_app_mention_fallback_has_no_url(tmp_path):
         records = load_records(store)
         assert len(records) == 1
         assert records[0].url is None
+    finally:
+        store.close()
+
+
+# --- renderers -----------------------------------------------------------
+
+
+def _render_all_pages(store):
+    records = load_records(store)
+    latest = latest_digest_at(records)
+    return (
+        render_index(group_by_digest(records), latest_digest_at=latest),
+        render_all(table_rows(records), latest_digest_at=latest),
+        render_json(group_by_digest(records), latest_digest_at=latest),
+    )
+
+
+def _row_for(html, title):
+    """The `<tr>` of `all.html` that holds `title`."""
+    start = html.rindex("<tr", 0, html.index(title))
+    return html[start : html.index("</tr>", start)]
+
+
+def test_index_renders_every_title(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert TITLE_A in html
+    assert TITLE_B in html
+    assert TITLE_C in html
+    assert TITLE_D not in html
+
+
+def test_index_orders_digests_newest_first_and_entries_by_rank(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert html.index("2026-10-09") < html.index("2026-10-02")
+    # D2 holds C at rank 1 and A at rank 2, so A's first appearance follows C.
+    assert html.index(TITLE_C) < html.index(TITLE_A)
+    # D1 holds A at rank 1 and B at rank 2, so A's last appearance precedes B.
+    assert html.rindex(TITLE_A) < html.index(TITLE_B)
+
+
+def test_index_marks_estimates_and_ratings(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert "~2026-08" in html
+    assert "group rating 4/5" in html
+    assert "picked" in html
+    assert "read" in html
+    # Only A's second appearance is resurfaced.
+    assert html.count("resurfaced") == 1
+    assert html.index("resurfaced") < html.rindex(TITLE_A)
+
+
+def test_index_tldr_under_ai_summary_label(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert TLDR_LABEL == "AI summary"
+    start = html.index("<details")
+    block = html[start : html.index("</details>", start)]
+    assert f"<summary>{TLDR_LABEL}</summary>" in block
+    assert "One sentence about oversight." in block
+
+
+def test_index_footer_links_and_ratings_note(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert 'href="all.html"' in html
+    assert 'href="papers.json"' in html
+    # The note carries an apostrophe, which autoescaping turns into an entity.
+    assert escape(RATINGS_NOTE) in html
+    assert "Latest digest: 2026-10-09" in html
+
+
+def test_index_shows_placeholder_title_and_description(site_store):
+    html = _render_all_pages(site_store)[0]
+    assert SITE_TITLE in html
+    assert escape(SITE_DESCRIPTION) in html
+
+
+def test_all_renders_one_row_per_paper(site_store):
+    html = _render_all_pages(site_store)[1]
+    for title in (TITLE_A, TITLE_B, TITLE_C):
+        assert html.count(title) == 1
+    assert TITLE_D not in html
+    assert ">2<" in _row_for(html, TITLE_A)
+    assert "Latest digest: 2026-10-09" in html
+
+
+def test_all_has_filter_box_and_no_network(site_store):
+    html = _render_all_pages(site_store)[1]
+    assert "<input" in html
+    scripts = html.split("<script")[1:]
+    assert scripts
+    for script in scripts:
+        assert "src=" not in script[: script.index(">")]
+    assert "fetch(" not in html
+    assert "XMLHttpRequest" not in html
+
+
+def test_json_shape(site_store):
+    payload = json.loads(_render_all_pages(site_store)[2])
+    assert set(payload) == {"latest_digest_at", "digests"}
+    assert payload["latest_digest_at"] == D2
+    assert [d["digest_at"] for d in payload["digests"]] == [D2, D1]
+    for digest in payload["digests"]:
+        assert set(digest) == {"digest_at", "entries"}
+        for entry in digest["entries"]:
+            assert set(entry) == {
+                "digest_at",
+                "rank",
+                "resurfaced",
+                "title",
+                "authors",
+                "url",
+                "arxiv_id",
+                "published",
+                "is_estimate",
+                "tags",
+                "tldr",
+                "group_rating",
+                "picked",
+                "read",
+            }
+
+
+def test_titles_are_escaped(tmp_path):
+    raw = "Attacks on <script>alert(1)</script> models"
+    store = Store(tmp_path / "pw.db")
+    try:
+        entry_id = store.insert_entry(
+            title=raw,
+            title_norm="attacks",
+            first_seen_at="2026-10-01T00:00:00Z",
+            links={"abstract": "https://example.org/x"},
+            published_at="2026-09-01T00:00:00Z",
+        )
+        store.record_shown(
+            entry_id=entry_id, digest_at=D1, rank=1, score=1.0, resurfaced=False
+        )
+        index_html, all_html, payload = _render_all_pages(store)
+        for html in (index_html, all_html):
+            assert "&lt;script&gt;" in html
+            assert "<script>alert(1)</script>" not in html
+        assert json.loads(payload)["digests"][0]["entries"][0]["title"] == raw
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("url", UNSAFE_URLS)
+def test_unsafe_url_renders_title_unlinked(tmp_path, url):
+    store = _store_with_link(tmp_path, url)
+    try:
+        index_html, all_html, payload = _render_all_pages(store)
+        escaped = escape(url)
+        for html in (index_html, all_html):
+            assert "Only link" in html
+            assert f'href="{url}"' not in html
+            assert f'href="{escaped}"' not in html
+            assert ">Only link</a>" not in html
+        assert json.loads(payload)["digests"][0]["entries"][0]["url"] is None
+    finally:
+        store.close()
+
+
+def test_build_site_is_deterministic(site_store):
+    first = build_site(site_store, domain="papers.cupchinski.com")
+    second = build_site(site_store, domain="papers.cupchinski.com")
+    assert first == second
+
+
+def test_build_site_returns_managed_files(site_store):
+    files = build_site(site_store, domain="papers.cupchinski.com")
+    assert set(files) == set(MANAGED_FILES)
+    assert set(MANAGED_FILES) == {
+        "index.html",
+        "all.html",
+        "papers.json",
+        "style.css",
+        "CNAME",
+        "README.md",
+    }
+    assert files["CNAME"] == "papers.cupchinski.com\n"
+
+
+def test_cname_uses_configured_domain(site_store):
+    files = build_site(site_store, domain="example.org")
+    assert files["CNAME"] == "example.org\n"
+    for name, content in files.items():
+        assert "papers.cupchinski.com" not in content, name
+
+
+def test_empty_store_renders(tmp_path):
+    store = Store(tmp_path / "empty.db")
+    try:
+        files = build_site(store, domain="example.org")
+        assert json.loads(files["papers.json"]) == {
+            "latest_digest_at": None,
+            "digests": [],
+        }
+        for name in ("index.html", "all.html"):
+            assert "Latest digest" not in files[name]
     finally:
         store.close()
