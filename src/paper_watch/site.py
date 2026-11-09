@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -869,7 +869,7 @@ def publish(
 
     digests = len({record.digest_at for record in records})
     papers = len({record.entry_id for record in records})
-    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     message = f"site: {digests} digests, {papers} papers ({stamp})"
 
     _git(repo, "add", "-A", env=env)

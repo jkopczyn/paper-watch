@@ -1069,3 +1069,12 @@ def test_only_clickable_tag_chips_get_a_pointer(site_store):
     assert '<span class="chip tag">oversight</span>' in files["index.html"]
     assert 'data-tag="oversight"' not in files["index.html"]
     assert 'data-tag="oversight"' in files["all.html"]
+
+
+def test_commit_stamp_is_converted_to_utc(site_store, site_repo):
+    from datetime import timedelta
+
+    cfg, _origin = site_repo
+    eastern = timezone(timedelta(hours=-4))
+    result = publish(site_store, cfg, now=datetime(2026, 10, 10, 5, 0, 0, tzinfo=eastern))
+    assert result.message == f"site: 2 digests, 3 papers ({STAMP})"
