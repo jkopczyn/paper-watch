@@ -1155,6 +1155,41 @@ def test_git_timeout_drain_is_bounded(tmp_path, monkeypatch):
     assert proc.stdout.closed and proc.stderr.closed
 
 
+def test_redact_deploy_key_covers_raw_expanded_and_resolved_forms(tmp_path):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    real = tmp_path / "keys" / "site_key"
+    real.parent.mkdir()
+    real.write_text("not a key")
+    (home / ".ssh" / "site_key").symlink_to(real)
+    environ = {"SITE_DEPLOY_KEY": "~/.ssh/site_key", "HOME": str(home)}
+    text = (
+        f"raw ~/.ssh/site_key, expanded {home}/.ssh/site_key, "
+        f"resolved {real.resolve()}"
+    )
+    assert site_mod.redact_deploy_key(text, environ) == (
+        "raw <deploy key>, expanded <deploy key>, resolved <deploy key>"
+    )
+    assert site_mod.redact_deploy_key("no key here", {}) == "no key here"
+
+
+def test_git_error_message_redacts_deploy_key(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    expanded = f"{home}/.ssh/site_key"
+
+    class _FailingPopen(_FakePopen):
+        def communicate(self, timeout=None):
+            self.returncode = 255
+            return "", f"Warning: Identity file {expanded} not accessible\n"
+
+    monkeypatch.setattr(site_mod.subprocess, "Popen", _FailingPopen)
+    env = {"SITE_DEPLOY_KEY": "~/.ssh/site_key", "HOME": str(home)}
+    with pytest.raises(SitePublishError) as excinfo:
+        site_mod._git(tmp_path, "push", "origin", "main", env=env)
+    assert expanded not in str(excinfo.value)
+    assert "<deploy key>" in str(excinfo.value)
+
+
 def test_git_runs_in_its_own_process_group(tmp_path, monkeypatch):
     """git starts ssh as a grandchild, so the timeout kills the whole group,
     which only works when git leads a new session."""

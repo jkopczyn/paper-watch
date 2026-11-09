@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -3295,6 +3296,51 @@ def test_publish_failure_redacts_key_path_in_first_line(tmp_path, monkeypatch):
     assert row["last_error"] == "ssh cannot read <deploy key> for the push"
     assert "<deploy key>" in notices[0][1]
     assert _DEPLOY_KEY not in notices[0][1]
+
+
+def test_site_failure_summary_redacts_expanded_tilde_key(tmp_path, monkeypatch):
+    from paper_watch.runtime import _site_failure_summary
+    from paper_watch.site import SitePublishError
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    expanded = os.path.expanduser("~/.ssh/site_key")
+    assert expanded == str(home / ".ssh" / "site_key")
+    environ = {"SITE_DEPLOY_KEY": "~/.ssh/site_key", "HOME": str(home)}
+
+    summary = _site_failure_summary(
+        SitePublishError(f"Warning: Identity file {expanded} not accessible"),
+        environ,
+    )
+
+    assert summary == "Warning: Identity file <deploy key> not accessible"
+    assert str(home) not in summary
+
+
+def test_site_failure_summary_redacts_resolved_key(tmp_path):
+    from paper_watch.runtime import _site_failure_summary
+    from paper_watch.site import SitePublishError
+
+    target_dir = tmp_path / "real"
+    target_dir.mkdir()
+    target = target_dir / "site_key"
+    target.write_text("not a key")
+    link = tmp_path / "link_key"
+    link.symlink_to(target)
+    environ = {"SITE_DEPLOY_KEY": str(link)}
+
+    summary = _site_failure_summary(
+        SitePublishError(f"cannot read {target.resolve()}"), environ
+    )
+
+    assert summary == "cannot read <deploy key>"
+
+
+def test_site_failure_summary_survives_unresolvable_key():
+    from paper_watch.runtime import _site_failure_summary
+
+    environ = {"SITE_DEPLOY_KEY": "/no/such/dir/\x00key"}
+    assert _site_failure_summary(RuntimeError("boom"), environ) == "boom"
 
 
 def test_publish_failure_does_not_reach_digest_warnings(tmp_path):

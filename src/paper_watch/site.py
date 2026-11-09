@@ -629,6 +629,43 @@ def _deploy_key(environ: Mapping[str, str]) -> str:
     return str(Path(key).expanduser())
 
 
+DEPLOY_KEY_PLACEHOLDER = "<deploy key>"
+
+
+def redact_deploy_key(text: str, environ: Mapping[str, str]) -> str:
+    """`text` with every form of the `SITE_DEPLOY_KEY` path replaced.
+
+    The forms are the value as written, its expansion by `os.path.expanduser`,
+    the expansion `_deploy_key` uses, and, when the file exists, its fully
+    resolved path, since ssh and git may report any of them. Longer forms are
+    replaced first so that a short form never leaves part of a longer one
+    behind. A form that cannot be computed is skipped rather than raising,
+    because this runs on the error path.
+    """
+    raw = environ.get("SITE_DEPLOY_KEY") or ""
+    if not raw:
+        return text
+    forms = {raw}
+    for compute in (
+        lambda: os.path.expanduser(raw),
+        lambda: _deploy_key(environ),
+    ):
+        try:
+            forms.add(compute())
+        except Exception:  # noqa: BLE001 - redaction must not raise
+            pass
+    for candidate in list(forms):
+        try:
+            path = Path(candidate)
+            if path.exists():
+                forms.add(str(path.resolve()))
+        except Exception:  # noqa: BLE001 - redaction must not raise
+            pass
+    for form in sorted((f for f in forms if f), key=len, reverse=True):
+        text = text.replace(form, DEPLOY_KEY_PLACEHOLDER)
+    return text
+
+
 # The ssh options every push and fetch uses. ConnectTimeout bounds the TCP
 # connect separately from GIT_TIMEOUT_SECONDS, so an unreachable host fails in
 # seconds rather than holding the whole git timeout.
@@ -719,17 +756,27 @@ def _run_git(
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+def _git_failure(
+    subcommand: str, proc: subprocess.CompletedProcess, env: Mapping[str, str]
+) -> SitePublishError:
+    """The error for a git call that exited non-zero.
+
+    The message is the first line of standard error, with the deploy key path
+    redacted, because the message is sent to the operator over email and Slack.
+    """
+    stderr = redact_deploy_key(proc.stderr or "", env)
+    lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+    first = lines[0] if lines else "no error output"
+    return SitePublishError(
+        f"git {subcommand} failed (exit {proc.returncode}): {first}", stderr=stderr
+    )
+
+
 def _git(repo: Path, *args: str, env: Mapping[str, str]) -> str:
     """Run git in `repo` and return its standard output, or raise."""
     proc = _run_git(repo, args, env)
     if proc.returncode != 0:
-        stderr = proc.stderr or ""
-        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
-        first = lines[0] if lines else "no error output"
-        raise SitePublishError(
-            f"git {_subcommand(args)} failed (exit {proc.returncode}): {first}",
-            stderr=stderr,
-        )
+        raise _git_failure(_subcommand(args), proc, env)
     return proc.stdout
 
 
@@ -840,12 +887,7 @@ def _check_not_behind(
     if proc.returncode != 0:
         if not has_tracking:
             return
-        stderr = proc.stderr or ""
-        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
-        first = lines[0] if lines else "no error output"
-        raise SitePublishError(
-            f"git fetch failed (exit {proc.returncode}): {first}", stderr=stderr
-        )
+        raise _git_failure("fetch", proc, env)
     if not has_tracking:
         return
     has_head = (

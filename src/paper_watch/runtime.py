@@ -147,17 +147,16 @@ def _site_failure_summary(exc: BaseException, environ: Mapping[str, str]) -> str
     """One short line about a failed publish, safe to send and to store.
 
     Only the first line of the error is kept, because git puts its advice on
-    the lines after it, and the deploy key path is replaced, because the
-    notice goes out over email and Slack.
+    the lines after it, and every form of the deploy key path is replaced by
+    `site.redact_deploy_key`, because the notice goes out over email and Slack.
     """
+    from paper_watch.site import redact_deploy_key
+
     text = str(exc)
     summary = text.splitlines()[0].strip() if text.strip() else ""
     if not summary:
         summary = type(exc).__name__
-    key = environ.get("SITE_DEPLOY_KEY") or ""
-    if key:
-        summary = summary.replace(key, "<deploy key>")
-    return summary
+    return redact_deploy_key(summary, environ)
 
 
 def _publish_site(
