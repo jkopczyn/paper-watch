@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pydantic
 import pytest
+import yaml
 
+from paper_watch.cli import EXAMPLE_CONFIG
 from paper_watch.config import Config
 
 
@@ -349,3 +351,16 @@ def test_site_requires_repo_path(tmp_path: Path):
     cfg_file.write_text("site: {}\n")
     with pytest.raises(pydantic.ValidationError):
         Config.load(cfg_file)
+
+
+def test_example_configs_parse():
+    """The shipped examples must stay loadable as the config grows.
+
+    `config.example.yaml` is what a new install copies, and `EXAMPLE_CONFIG` is
+    what `paper-watch init` writes, so a broken block in either one would only
+    show up on someone else's first run.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    example_file = repo_root / "config.example.yaml"
+    for text in (example_file.read_text(), EXAMPLE_CONFIG):
+        Config.model_validate(yaml.safe_load(text) or {})

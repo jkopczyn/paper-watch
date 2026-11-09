@@ -36,6 +36,14 @@ schedule:        # tick every few hours (sources poll ~daily); mail on these day
 #  groundtruth_path: groundtruth.csv
 #  exclude_read_weeks: 26    # papers read this recently stay out of digests
 
+#site:              # public site at `domain`, pushed after a send or refresh; omit to skip
+#  repo_path: ../paper-watch-site   # local checkout publish renders into
+#  remote: origin
+#  branch: main                     # branch GitHub Pages serves
+#  domain: papers.cupchinski.com    # written to the site's CNAME file
+#  committer_name: paper-watch
+#  committer_email: ""              # omit to use the checkout's own configured commit email
+
 authors: []      # arXiv author names (replaces Google Scholar alerts)
 feeds: []        # - {name: ML Safety, url: https://newsletter.mlsafety.org/feed}
 handles: []      # Twitter usernames (seeded via `paper-watch seed-handles`)

@@ -26,6 +26,17 @@ schedule:
   deliver_days: [tue, fri]
   deliver_at: "12:00"            # local time
 
+# The public site at `domain`, published from a local checkout of its repo on
+# every tick that sent a digest or completed a feedback refresh. Omit this
+# block to leave the site unpublished.
+#site:
+#  repo_path: ../paper-watch-site   # local checkout publish renders into
+#  remote: origin                   # remote it pushes to
+#  branch: main                     # branch GitHub Pages serves
+#  domain: papers.cupchinski.com    # written to the site's CNAME file
+#  committer_name: paper-watch      # name recorded on the site's commits
+#  committer_email: ""              # omit to use the checkout's own configured commit email
+
 # arXiv author feeds — replaces the Google Scholar alerts in method-rec.md.
 authors:
   - Ilya Sutskever

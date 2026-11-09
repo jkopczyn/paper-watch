@@ -31,6 +31,13 @@ feedback_refresh:
   workspace: far
   groundtruth_path: groundtruth.csv
   exclude_read_weeks: 26
+# The public site at papers.cupchinski.com, rendered into a local checkout of
+# its own repo and pushed from there on every tick that sent a digest or
+# completed a feedback refresh. The deploy key path is SITE_DEPLOY_KEY in .env.
+site:
+  repo_path: ../paper-watch-site
+  remote: origin
+  branch: main
 authors:
 - Ilya Sutskever
 - Jason Wei
