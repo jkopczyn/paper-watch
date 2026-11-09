@@ -1,19 +1,29 @@
 import json
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from markupsafe import escape
 
+from paper_watch import site as site_mod
+from paper_watch.config import SiteConfig
 from paper_watch.site import (
+    GIT_TIMEOUT_SECONDS,
     MANAGED_FILES,
     RATINGS_NOTE,
     SITE_DESCRIPTION,
     SITE_TITLE,
     TLDR_LABEL,
+    SitePublishError,
+    _git_env,
     build_site,
     group_by_digest,
     latest_digest_at,
     load_records,
     public_url,
+    publish,
     render_all,
     render_index,
     render_json,
@@ -517,3 +527,318 @@ def test_empty_store_renders(tmp_path):
             assert "Latest digest" not in files[name]
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# publish
+# ---------------------------------------------------------------------------
+
+NOW = datetime(2026, 10, 10, 9, 0, 0, tzinfo=timezone.utc)
+STAMP = "2026-10-10T09:00:00Z"
+
+
+def _git(repo, *args):
+    """Run git in `repo` for the test's own setup and assertions."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+@pytest.fixture
+def site_repo(tmp_path, monkeypatch):
+    """A bare `origin.git` and a clone of it on an unborn `main` branch.
+
+    The git configuration is isolated so that the developer's own settings
+    (signing, hooks, default branch, identity) cannot change the result.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.delenv("SITE_DEPLOY_KEY", raising=False)
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--quiet", str(origin)],
+        check=True,
+        env=dict(os.environ),
+    )
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(checkout)],
+        check=True,
+        capture_output=True,
+        env=dict(os.environ),
+    )
+    _git(checkout, "symbolic-ref", "HEAD", "refs/heads/main")
+
+    cfg = SiteConfig(
+        repo_path=str(checkout),
+        committer_name="Test Bot",
+        committer_email="bot@example.org",
+    )
+    return cfg, origin
+
+
+def _commit_count(repo, ref="HEAD"):
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--count", ref],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+    )
+    if proc.returncode != 0:
+        return 0
+    return int(proc.stdout.strip())
+
+
+def test_first_publish_commits_and_pushes(site_store, site_repo):
+    cfg, origin = site_repo
+    result = publish(site_store, cfg, now=NOW)
+    assert result.committed is True
+    assert result.pushed is True
+    assert result.changed is True
+    assert result.message == f"site: 2 digests, 3 papers ({STAMP})"
+    assert _git(origin, "log", "-1", "--format=%s", "main") == result.message
+    assert _commit_count(origin, "main") == 1
+    tree = _git(origin, "ls-tree", "-r", "--name-only", "main").splitlines()
+    assert sorted(tree) == sorted(MANAGED_FILES)
+
+
+def test_commit_uses_configured_identity(site_store, site_repo):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    identity = _git(origin, "log", "-1", "--format=%an <%ae>|%cn <%ce>", "main")
+    assert identity == "Test Bot <bot@example.org>|Test Bot <bot@example.org>"
+
+
+def test_committer_email_falls_back_to_repo_git_config(site_store, site_repo):
+    cfg, origin = site_repo
+    cfg = cfg.model_copy(update={"committer_email": None})
+    _git(cfg.repo_path, "config", "user.email", "repo@example.org")
+    publish(site_store, cfg, now=NOW)
+    assert _git(origin, "log", "-1", "--format=%ae", "main") == "repo@example.org"
+
+
+def test_missing_committer_email_is_a_clear_error(site_store, site_repo):
+    cfg, _origin = site_repo
+    cfg = cfg.model_copy(update={"committer_email": None})
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "committer_email" in str(excinfo.value)
+    assert "user.email" in str(excinfo.value)
+    assert not (Path(cfg.repo_path) / "index.html").exists()
+    assert _commit_count(cfg.repo_path) == 0
+
+
+def test_second_publish_unchanged_makes_no_commit(site_store, site_repo):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    before = _commit_count(origin, "main")
+    result = publish(site_store, cfg, now=NOW)
+    assert result.changed is False
+    assert result.committed is False
+    assert result.pushed is False
+    assert _commit_count(origin, "main") == before
+
+
+def test_publish_after_new_digest_commits_again(site_store, site_repo):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    entry_id = site_store.insert_entry(
+        title="A newly suggested paper",
+        title_norm="a newly suggested paper",
+        first_seen_at="2026-10-15T00:00:00Z",
+        links={"abstract": "https://arxiv.org/abs/2410.09999"},
+        published_at="2026-10-14T00:00:00Z",
+    )
+    site_store.record_shown(
+        entry_id=entry_id,
+        digest_at="2026-10-16T12:00:00Z",
+        rank=1,
+        score=1.0,
+        resurfaced=False,
+    )
+    result = publish(site_store, cfg, now=NOW)
+    assert result.committed is True
+    assert _commit_count(origin, "main") == 2
+
+
+def _add_another_digest(store):
+    entry_id = store.insert_entry(
+        title="Another suggested paper",
+        title_norm="another suggested paper",
+        first_seen_at="2026-10-15T00:00:00Z",
+        links={"abstract": "https://arxiv.org/abs/2410.08888"},
+        published_at="2026-10-14T00:00:00Z",
+    )
+    store.record_shown(
+        entry_id=entry_id,
+        digest_at="2026-10-16T12:00:00Z",
+        rank=1,
+        score=1.0,
+        resurfaced=False,
+    )
+
+
+def test_push_failure_raises_and_keeps_local_commit(site_store, site_repo, tmp_path):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    origin.rename(tmp_path / "origin-moved.git")
+    _add_another_digest(site_store)
+    with pytest.raises(SitePublishError):
+        publish(site_store, cfg, now=NOW)
+    assert _commit_count(cfg.repo_path) == 2
+
+
+def test_unpushed_commit_is_pushed_on_next_publish(site_store, site_repo, tmp_path):
+    cfg, origin = site_repo
+    publish(site_store, cfg, now=NOW)
+    origin.rename(tmp_path / "origin-moved.git")
+    _add_another_digest(site_store)
+    with pytest.raises(SitePublishError):
+        publish(site_store, cfg, now=NOW)
+    (tmp_path / "origin-moved.git").rename(origin)
+
+    result = publish(site_store, cfg, now=NOW)
+    assert result.committed is False
+    assert result.pushed is True
+    assert _commit_count(origin, "main") == 2
+
+
+def test_dry_run_leaves_repo_untouched(site_store, site_repo):
+    cfg, _origin = site_repo
+    result = publish(site_store, cfg, now=NOW, dry_run=True)
+    assert result.changed is True
+    assert sorted(result.files) == sorted(MANAGED_FILES)
+    assert result.committed is False
+    assert result.pushed is False
+    assert _git(cfg.repo_path, "status", "--porcelain") == ""
+    assert _commit_count(cfg.repo_path) == 0
+
+
+def test_publish_writes_configured_domain(site_store, site_repo):
+    cfg, origin = site_repo
+    cfg = cfg.model_copy(update={"domain": "example.org"})
+    publish(site_store, cfg, now=NOW)
+    assert _git(origin, "show", "main:CNAME") == "example.org"
+
+
+def test_precondition_missing_repo_path(site_store, site_repo, tmp_path):
+    cfg, _origin = site_repo
+    missing = tmp_path / "nowhere"
+    cfg = cfg.model_copy(update={"repo_path": str(missing)})
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert str(missing) in str(excinfo.value)
+
+
+def test_precondition_not_a_git_checkout(site_store, site_repo, tmp_path):
+    cfg, _origin = site_repo
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    cfg = cfg.model_copy(update={"repo_path": str(plain)})
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "not a git checkout" in str(excinfo.value)
+    assert list(plain.iterdir()) == []
+
+
+def test_precondition_wrong_branch(site_store, site_repo):
+    cfg, _origin = site_repo
+    _git(cfg.repo_path, "symbolic-ref", "HEAD", "refs/heads/other")
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "other" in str(excinfo.value)
+    assert "main" in str(excinfo.value)
+
+
+def test_precondition_foreign_dirty_file(site_store, site_repo):
+    cfg, _origin = site_repo
+    (Path(cfg.repo_path) / "notes.txt").write_text("mine\n", encoding="utf-8")
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(site_store, cfg, now=NOW)
+    assert "notes.txt" in str(excinfo.value)
+    assert not (Path(cfg.repo_path) / "index.html").exists()
+    assert _commit_count(cfg.repo_path) == 0
+
+
+def test_dirty_managed_file_is_allowed(site_store, site_repo):
+    cfg, _origin = site_repo
+    index = Path(cfg.repo_path) / "index.html"
+    index.write_text("hand written\n", encoding="utf-8")
+    result = publish(site_store, cfg, now=NOW)
+    assert result.committed is True
+    assert "hand written" not in index.read_text(encoding="utf-8")
+
+
+def test_git_env_without_key_is_batch_mode():
+    for environ in ({}, {"SITE_DEPLOY_KEY": ""}):
+        env = _git_env(environ)
+        assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_git_env_with_key_adds_identity():
+    env = _git_env({"SITE_DEPLOY_KEY": "/k/my key"})
+    assert (
+        env["GIT_SSH_COMMAND"]
+        == "ssh -o BatchMode=yes -i '/k/my key' -o IdentitiesOnly=yes"
+    )
+
+
+def test_git_env_overrides_ambient_ssh_command():
+    env = _git_env({"GIT_SSH_COMMAND": "ssh -v"})
+    assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+
+
+def test_git_timeout_is_a_publish_error(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        raise subprocess.TimeoutExpired(cmd, GIT_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(site_mod.subprocess, "run", fake_run)
+    with pytest.raises(SitePublishError) as excinfo:
+        site_mod._git(tmp_path, "status", "--porcelain", env={})
+    assert "status" in str(excinfo.value)
+    assert "120" in str(excinfo.value)
+    assert GIT_TIMEOUT_SECONDS == 120
+    assert calls[0]["timeout"] == GIT_TIMEOUT_SECONDS
+
+
+def test_git_error_message_is_first_stderr_line(site_repo):
+    cfg, _origin = site_repo
+    with pytest.raises(SitePublishError) as excinfo:
+        site_mod._git(
+            Path(cfg.repo_path),
+            "push",
+            "origin",
+            "no-such-ref",
+            env=_git_env(dict(os.environ)),
+        )
+    lines = [line.strip() for line in excinfo.value.stderr.strip().splitlines()]
+    assert len(lines) > 1
+    assert lines[0] in str(excinfo.value)
+    for line in lines[1:]:
+        assert line not in str(excinfo.value)
+
+
+def test_missing_deploy_key_file_is_a_clear_error(site_store, site_repo, tmp_path):
+    cfg, _origin = site_repo
+    missing_key = tmp_path / "no-such-key"
+    with pytest.raises(SitePublishError) as excinfo:
+        publish(
+            site_store,
+            cfg,
+            now=NOW,
+            environ={**os.environ, "SITE_DEPLOY_KEY": str(missing_key)},
+        )
+    assert "SITE_DEPLOY_KEY" in str(excinfo.value)
+    assert str(missing_key) not in str(excinfo.value)
+    assert not (Path(cfg.repo_path) / "index.html").exists()
+    assert _commit_count(cfg.repo_path) == 0

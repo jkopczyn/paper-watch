@@ -12,12 +12,23 @@ display link is anything else is shown without a link.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import logging
+import os
+import shlex
+import subprocess
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from jinja2 import Environment
 
+from paper_watch.config import SiteConfig
 from paper_watch.runtime import _display_links, _pub_display
+
+_log = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
@@ -474,7 +485,11 @@ def build_site(store, *, domain: str) -> dict[str, str]:
     The result depends only on the store and the domain, so building twice
     without new data gives identical files and publish has nothing to commit.
     """
-    records = load_records(store)
+    return _build_files(load_records(store), domain=domain)
+
+
+def _build_files(records: list[SiteRecord], *, domain: str) -> dict[str, str]:
+    """`build_site` for a caller that already loaded the records."""
     latest = latest_digest_at(records)
     groups = group_by_digest(records)
     return {
@@ -485,3 +500,284 @@ def build_site(store, *, domain: str) -> dict[str, str]:
         "CNAME": f"{domain}\n",
         "README.md": SITE_README.format(domain=domain),
     }
+
+
+# ---------------------------------------------------------------------------
+# Publishing to the site repo
+# ---------------------------------------------------------------------------
+
+# Every git call publish makes is given this timeout, so a hung network or a
+# credential prompt cannot stall the systemd tick.
+GIT_TIMEOUT_SECONDS = 120
+
+
+class SitePublishError(RuntimeError):
+    """A publish could not be completed.
+
+    The message is short enough to put in an operator notice and in the source
+    health row. When the failure came from git, the full standard error is kept
+    on `stderr` for the log instead.
+    """
+
+    def __init__(self, message: str, *, stderr: str = "") -> None:
+        super().__init__(message)
+        self.stderr = stderr
+
+
+@dataclass
+class PublishResult:
+    """What one publish did.
+
+    On a dry run, `files` holds the managed files that would be added or
+    changed. On an ordinary publish it holds the paths git reported as changed.
+    """
+
+    changed: bool
+    committed: bool
+    pushed: bool
+    files: list[str] = field(default_factory=list)
+    message: str | None = None
+
+
+def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """`environ` with the ssh and prompt settings every git call needs.
+
+    `BatchMode=yes` and `GIT_TERMINAL_PROMPT=0` mean a missing or unusable
+    credential fails rather than waiting for a keyring or a password, which
+    matters because publish normally runs from the systemd timer. When
+    `SITE_DEPLOY_KEY` names a key, only that key is offered; when it is unset
+    or empty, the ambient agent and default keys are still used, but without
+    prompting.
+    """
+    env = dict(environ)
+    key = env.get("SITE_DEPLOY_KEY") or ""
+    if key:
+        env["GIT_SSH_COMMAND"] = (
+            f"ssh -o BatchMode=yes -i {shlex.quote(key)} -o IdentitiesOnly=yes"
+        )
+    else:
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _subcommand(args: tuple[str, ...]) -> str:
+    """The git subcommand in `args`, for an error message."""
+    pending = list(args)
+    while pending:
+        arg = pending.pop(0)
+        if arg == "-c":
+            if pending:
+                pending.pop(0)
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return "git"
+
+
+def _run_git(
+    repo: Path, args: tuple[str, ...], env: Mapping[str, str]
+) -> subprocess.CompletedProcess:
+    """Run git in `repo`, raising only when it times out.
+
+    Callers that need a non-zero exit to be an error use `_git` instead. This
+    one exists for the checks where a non-zero exit is an answer rather than a
+    failure, such as asking whether a ref exists.
+    """
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env=dict(env),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SitePublishError(
+            f"git {_subcommand(args)} timed out after {GIT_TIMEOUT_SECONDS} seconds"
+        ) from exc
+
+
+def _git(repo: Path, *args: str, env: Mapping[str, str]) -> str:
+    """Run git in `repo` and return its standard output, or raise."""
+    proc = _run_git(repo, args, env)
+    if proc.returncode != 0:
+        stderr = proc.stderr or ""
+        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+        first = lines[0] if lines else "no error output"
+        raise SitePublishError(
+            f"git {_subcommand(args)} failed (exit {proc.returncode}): {first}",
+            stderr=stderr,
+        )
+    return proc.stdout
+
+
+def _status_paths(status: str) -> list[str]:
+    """The paths in `git status --porcelain` output."""
+    paths = []
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip().strip('"'))
+    return paths
+
+
+def _committer_email(repo: Path, site: SiteConfig, env: Mapping[str, str]) -> str:
+    """The email to commit under: the configured one, else the checkout's own."""
+    if site.committer_email:
+        return site.committer_email
+    proc = _run_git(repo, ("config", "user.email"), env)
+    email = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not email:
+        raise SitePublishError(
+            "no commit email for the site publish: set committer_email in the "
+            f"site config block, or set user.email in {repo}"
+        )
+    return email
+
+
+def _check_preconditions(repo: Path, branch: str, env: Mapping[str, str]) -> None:
+    """Fail before anything is written if the checkout is not as expected."""
+    if not repo.exists():
+        raise SitePublishError(f"the site repo_path does not exist: {repo}")
+    proc = _run_git(repo, ("rev-parse", "--show-toplevel"), env)
+    if proc.returncode != 0:
+        raise SitePublishError(f"the site repo_path is not a git checkout: {repo}")
+    toplevel = Path(proc.stdout.strip()).resolve()
+    if toplevel != repo.resolve():
+        raise SitePublishError(
+            f"the site repo_path {repo} is inside a git checkout rooted at "
+            f"{toplevel}, not at the path itself"
+        )
+    proc = _run_git(repo, ("symbolic-ref", "--short", "HEAD"), env)
+    if proc.returncode != 0:
+        raise SitePublishError(
+            f"the site checkout {repo} has no branch checked out, so publish "
+            f"cannot tell whether it is on {branch}"
+        )
+    current = proc.stdout.strip()
+    if current != branch:
+        raise SitePublishError(
+            f"the site checkout {repo} is on branch {current}, but the site "
+            f"config says {branch}"
+        )
+    foreign = sorted(
+        set(_status_paths(_git(repo, "status", "--porcelain", env=env)))
+        - set(MANAGED_FILES)
+    )
+    if foreign:
+        raise SitePublishError(
+            "the site checkout has changes to files publish does not generate, "
+            f"so it was left alone: {', '.join(foreign)}"
+        )
+
+
+def _is_ahead(repo: Path, remote: str, branch: str, env: Mapping[str, str]) -> bool:
+    """Whether there is a local commit the remote does not have.
+
+    This reads local refs only and never fetches, so it says yes when the
+    remote-tracking ref is missing, which is the state after a failed push and
+    after a fresh clone of an empty repo.
+    """
+    if _run_git(repo, ("rev-parse", "--verify", "--quiet", "HEAD"), env).returncode != 0:
+        return False
+    tracking = f"refs/remotes/{remote}/{branch}"
+    if (
+        _run_git(repo, ("rev-parse", "--verify", "--quiet", tracking), env).returncode
+        != 0
+    ):
+        return True
+    count = _git(repo, "rev-list", "--count", f"{remote}/{branch}..HEAD", env=env)
+    return int(count.strip() or "0") > 0
+
+
+def _dry_run_diff(repo: Path, files: Mapping[str, str]) -> list[str]:
+    """The managed files whose content on disk differs from what we would write.
+
+    The files are rendered into a temporary directory rather than into the
+    checkout, so a dry run never changes the site repo.
+    """
+    diff = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, content in files.items():
+            rendered = Path(tmp) / name
+            rendered.write_text(content, encoding="utf-8")
+            current = repo / name
+            if not current.exists() or current.read_bytes() != rendered.read_bytes():
+                diff.append(name)
+    return sorted(diff)
+
+
+def publish(
+    store,
+    site: SiteConfig,
+    *,
+    now: datetime,
+    dry_run: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> PublishResult:
+    """Render the site into its checkout, commit the changes, and push them.
+
+    Every precondition is checked before the first file is written, so a
+    publish that cannot finish leaves the checkout as it was. A clean tree
+    still pushes when there is a local commit the remote does not have, which
+    is how a publish recovers from an earlier push failure.
+    """
+    source_environ = environ if environ is not None else os.environ
+    env = _git_env(source_environ)
+    repo = Path(site.repo_path)
+    _check_preconditions(repo, site.branch, env)
+
+    key = source_environ.get("SITE_DEPLOY_KEY") or ""
+    if key and not Path(key).exists():
+        raise SitePublishError(
+            "SITE_DEPLOY_KEY names a file that does not exist, so the site "
+            "cannot be pushed"
+        )
+    committer_email = _committer_email(repo, site, env)
+
+    records = load_records(store)
+    files = _build_files(records, domain=site.domain)
+
+    if dry_run:
+        diff = _dry_run_diff(repo, files)
+        return PublishResult(
+            changed=bool(diff), committed=False, pushed=False, files=diff
+        )
+
+    for name, content in files.items():
+        (repo / name).write_text(content, encoding="utf-8")
+
+    changed = sorted(set(_status_paths(_git(repo, "status", "--porcelain", env=env))))
+    if not changed:
+        if _is_ahead(repo, site.remote, site.branch, env):
+            _git(repo, "push", site.remote, site.branch, env=env)
+            return PublishResult(changed=False, committed=False, pushed=True)
+        _log.info("site unchanged")
+        return PublishResult(changed=False, committed=False, pushed=False)
+
+    digests = len({record.digest_at for record in records})
+    papers = len({record.entry_id for record in records})
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    message = f"site: {digests} digests, {papers} papers ({stamp})"
+
+    _git(repo, "add", "-A", env=env)
+    _git(
+        repo,
+        "-c",
+        f"user.name={site.committer_name}",
+        "-c",
+        f"user.email={committer_email}",
+        "commit",
+        "-m",
+        message,
+        env=env,
+    )
+    _git(repo, "push", site.remote, site.branch, env=env)
+    return PublishResult(
+        changed=True, committed=True, pushed=True, files=changed, message=message
+    )
