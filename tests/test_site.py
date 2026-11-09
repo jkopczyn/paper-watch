@@ -1120,6 +1120,41 @@ def test_git_timeout_is_a_publish_error(tmp_path, monkeypatch):
     assert killed == [(4242, signal.SIGKILL)]
 
 
+class _FakePipe:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _StuckPopen(_FakePopen):
+    """A stand-in whose second `communicate` also times out, as when a
+    process outside the killed group still holds the pipes open."""
+
+    def __init__(self, cmd, **kwargs):
+        super().__init__(cmd, **kwargs)
+        self.stdout = _FakePipe()
+        self.stderr = _FakePipe()
+
+    def communicate(self, timeout=None):
+        self.communicate_calls.append(timeout)
+        raise subprocess.TimeoutExpired(self.cmd, timeout)
+
+
+def test_git_timeout_drain_is_bounded(tmp_path, monkeypatch):
+    _FakePopen.instances = []
+    monkeypatch.setattr(site_mod.subprocess, "Popen", _StuckPopen)
+    monkeypatch.setattr(site_mod.os, "killpg", lambda pid, sig: None)
+    with pytest.raises(SitePublishError) as excinfo:
+        site_mod._git(tmp_path, "push", "origin", "main", env={})
+    assert "push" in str(excinfo.value)
+    assert "timed out" in str(excinfo.value)
+    proc = _FakePopen.instances[0]
+    assert proc.communicate_calls == [GIT_TIMEOUT_SECONDS, 5]
+    assert proc.stdout.closed and proc.stderr.closed
+
+
 def test_git_runs_in_its_own_process_group(tmp_path, monkeypatch):
     """git starts ssh as a grandchild, so the timeout kills the whole group,
     which only works when git leads a new session."""

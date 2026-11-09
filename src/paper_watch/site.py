@@ -580,6 +580,10 @@ def _build_files(records: list[SiteRecord], *, domain: str) -> dict[str, str]:
 # credential prompt cannot stall the systemd tick.
 GIT_TIMEOUT_SECONDS = 120
 
+# How long to wait for the output pipes to close after a timed-out git's
+# process group has been killed. Normally they close at once.
+GIT_DRAIN_TIMEOUT_SECONDS = 5
+
 
 class SitePublishError(RuntimeError):
     """A publish could not be completed.
@@ -698,7 +702,17 @@ def _run_git(
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        proc.communicate()
+        try:
+            proc.communicate(timeout=GIT_DRAIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A process outside the killed group still holds the pipes open.
+            # Close our ends so the call can return, and report the timeout.
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
         raise SitePublishError(
             f"git {_subcommand(args)} timed out after {GIT_TIMEOUT_SECONDS} seconds"
         ) from exc
