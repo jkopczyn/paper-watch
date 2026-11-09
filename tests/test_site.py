@@ -1050,3 +1050,22 @@ def test_missing_deploy_key_file_is_a_clear_error(site_store, site_repo, tmp_pat
     assert str(missing_key) not in str(excinfo.value)
     assert not (Path(cfg.repo_path) / "index.html").exists()
     assert _commit_count(cfg.repo_path) == 0
+
+
+def test_only_clickable_tag_chips_get_a_pointer(site_store):
+    """Tag chips filter the table on all.html but do nothing on the index, so
+    only the all.html chips, which carry data-tag, get the pointer cursor."""
+    import re
+
+    files = build_site(site_store, domain="example.org")
+    css = files["style.css"]
+    pointer_rules = [
+        selector.strip()
+        for selector, body in re.findall(r"([^{}]+)\{([^}]*)\}", css)
+        if "cursor: pointer" in body
+    ]
+    assert ".chip.tag" not in pointer_rules
+    assert ".chip.tag[data-tag]" in pointer_rules
+    assert '<span class="chip tag">oversight</span>' in files["index.html"]
+    assert 'data-tag="oversight"' not in files["index.html"]
+    assert 'data-tag="oversight"' in files["all.html"]

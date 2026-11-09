@@ -278,7 +278,7 @@ summary { color: var(--muted); cursor: pointer; }
   font-size: 12px;
 }
 .chip.flag { background: var(--flag-bg); color: var(--flag-fg); }
-.chip.tag { cursor: pointer; }
+.chip.tag[data-tag] { cursor: pointer; }
 .chip.tag.active { outline: 1px solid var(--link); }
 
 footer {
