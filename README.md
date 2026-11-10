@@ -41,6 +41,7 @@ Technical Setup:
 - `lookback` (default 7d): baseline fetch window for a run; the systemd path widens it to cover the gap since the last completed run, and `--since` overrides it
 - `smtp`: config for sending emails (without this, only `--dry-run` works)
 - `llm`: enrichment model + budget; defaults to `claude-haiku-4-5` with `max_enrich_per_run: 50`. Enrichment is actually disabled by a missing `ANTHROPIC_API_KEY`, not by this key — without the key a passthrough enricher marks everything relevance 5 with no TL;DR/tags
+- `site`: the public site of digest history and reading-group ratings. `repo_path` is a local checkout of the site's own repo that publish renders the generated files into (a relative path resolves against the working directory, so `../paper-watch-site` means `~/Code/paper-watch-site` under the systemd unit); `remote` and `branch` are what it pushes to (defaults `origin` and `main`, the branch GitHub Pages serves); `domain` (default `papers.cupchinski.com`) is written to the site's `CNAME` file; `committer_name` and `committer_email` are the identity recorded on the generated commits, and leaving `committer_email` unset makes publish read the checkout's own configured commit email and fail if that is missing. Omitting the whole `site` block turns publishing off. On a real tick, publish runs once, after both the send and the feedback refresh have had their chance, and only when the tick sent a digest or completed a successful refresh. The key it pushes with is `SITE_DEPLOY_KEY` in `.env`
 
 Options:
 
@@ -75,6 +76,7 @@ For secrets.
 - `ANTHROPIC_API_KEY`: Doesn't block digest if missing, but without tags and summaries, and allowing everything through the relevance gate. Also powers the fallbacks that recover titles for bare-URL entries (web search) and extract publication dates from page text when no date metadata exists
 - `SLACK_TOKEN_*`: One **user** token (`xoxp-…`) per workspace, named to match `token_env` in config. Scopes: `channels:history` (ingest), `channels:read` (the `slack-channels` helper; add `groups:read` to also list private channels — it falls back to public-only without it)
 - `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD`: Optional OpenReview account (your website login). Set both to read login-gated submissions' abstracts; without them only public notes resolve
+- `SITE_DEPLOY_KEY`: Path to the private deploy key that pushes the public site, for example `~/.ssh/paper-watch-site_deploy_key`. Leave it blank to use the SSH agent and the default keys instead. Publish never prompts, so a key that would need an interactive passphrase fails rather than hanging the tick
 
 ### Local state (never checked in — ask an existing user for a copy)
 
@@ -112,6 +114,8 @@ journalctl --user -u paper-watch -n 50             # logs from the last runs
 
 Failure mode to know: the SMTP app password lives in `.env` as `SMTP_APP_PASSWORD`. If Google revokes it, every run fails at the send step with `SMTPAuthenticationError` 535 — regenerate at <https://myaccount.google.com/apppasswords> and update `.env`.
 
+The site has a failure mode of its own: if the deploy key is revoked, or its path in `.env` is wrong, every publish fails. The tick still sends the digest, because publishing happens after the send. The failure is reported on the operator alert channels (the alerts log, a desktop notification, the operator's email and Slack) and recorded in the store's source health table under the `site` key, for later diagnosis. It never reaches the digest itself, since the digest goes to the reading group rather than to the operator.
+
 A failed tick is not silent: `OnFailure=` on the service fires `deploy/systemd/alert.sh`, which appends a line to `paper-watch-alerts.log` (repo root, gitignored), raises a desktop notification, and then tries Slack and email via `paper-watch alert` — each channel best-effort, configured under `alerts:` in `config.yaml`. A digest still undelivered 24h after its slot with every tick exiting cleanly is alerted the same way, once per due point. So: an empty alerts log plus a moving `last_sent_at` is the healthy state.
 
 ### Manual runs
@@ -143,6 +147,7 @@ Add `--dry-run` to render it without sending or marking anything shown.
 - `paper-watch feedback export`: write recently-shown papers to a CSV for picks + 1–5 ratings. `feedback import` reads it back and updates the learned author/tag/source weights; it auto-detects a ground-truth *votes* CSV too, feeding real Slack poll votes into the learning loop (votes scaled by turnout and by prediction error against the paper's current score).
 - `paper-watch groundtruth --workspace NAME`: export reading-group poll messages + number-emoji votes to a CSV (scans the workspace's `voting_channels` unless `--channel` overrides). Eyeball and prune before eval.
 - `paper-watch eval`: score the ranker's top-N against that ground truth, offline — recall@N, nDCG, and ingest misses. `--weights-json` overrides scoring weights to compare rankers.
+- `paper-watch publish`: render the public site into its checkout, commit it, and push it, which is the same work a tick does after a send or a feedback refresh. `--dry-run` lists which of the managed files would change without writing to the checkout or pushing anything.
 
 ## Ranking
 

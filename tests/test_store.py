@@ -649,6 +649,111 @@ def test_fill_published_at_clears_nothing_else(tmp_path: Path):
     store.close()
 
 
+def test_shown_history_joins_entries_and_aggregates(tmp_path: Path):
+    store = Store(tmp_path / "pw.db")
+    d1 = "2026-10-02T12:00:00Z"
+    d2 = "2026-10-09T12:00:00Z"
+
+    rated = store.insert_entry(
+        title="Rated", title_norm="rated", first_seen_at="2026-09-30T00:00:00Z"
+    )
+    picked = store.insert_entry(
+        title="Picked", title_norm="picked", first_seen_at="2026-09-30T00:00:00Z"
+    )
+    read = store.insert_entry(
+        title="Read", title_norm="read", first_seen_at="2026-09-30T00:00:00Z"
+    )
+    unranked = store.insert_entry(
+        title="Unranked", title_norm="unranked", first_seen_at="2026-09-30T00:00:00Z"
+    )
+
+    store.record_shown(
+        entry_id=rated, digest_at=d1, rank=1, score=1.5, resurfaced=False
+    )
+    store.record_shown(
+        entry_id=picked, digest_at=d1, rank=2, score=1.4, resurfaced=False
+    )
+    store.record_shown(
+        entry_id=read, digest_at=d2, rank=1, score=1.3, resurfaced=False
+    )
+    store.record_shown(
+        entry_id=rated, digest_at=d2, rank=2, score=1.2, resurfaced=True
+    )
+    store.conn.execute(
+        "INSERT INTO shown (entry_id, digest_at, rank, score, resurfaced) "
+        "VALUES (?, ?, NULL, NULL, 0)",
+        (unranked, d2),
+    )
+    store.conn.commit()
+
+    # The latest week with a rating wins, and a later week without one does not
+    # clear it.
+    store.record_feedback(
+        entry_id=rated,
+        week="2026-W40",
+        picked=False,
+        group_rating=2,
+        notes=None,
+        imported_at=d1,
+    )
+    store.record_feedback(
+        entry_id=rated,
+        week="2026-W41",
+        picked=False,
+        group_rating=4,
+        notes=None,
+        imported_at=d2,
+    )
+    store.record_feedback(
+        entry_id=rated,
+        week="2026-W42",
+        picked=False,
+        group_rating=None,
+        notes=None,
+        imported_at=d2,
+    )
+    store.record_feedback(
+        entry_id=picked,
+        week="2026-W40",
+        picked=True,
+        group_rating=None,
+        notes=None,
+        imported_at=d1,
+    )
+    store.record_reading(
+        week="2026-W41",
+        message_ts="1700000000.000100",
+        url="https://example.org/read",
+        arxiv_id=None,
+        title_norm="read",
+        entry_id=read,
+        recorded_at=d2,
+    )
+
+    rows = store.shown_history()
+    assert [(r["title"], r["digest_at"]) for r in rows] == [
+        ("Read", d2),
+        ("Rated", d2),
+        ("Unranked", d2),
+        ("Rated", d1),
+        ("Picked", d1),
+    ]
+
+    by_key = {(r["title"], r["digest_at"]): r for r in rows}
+    assert by_key[("Rated", d1)]["latest_rating"] == 4
+    assert by_key[("Rated", d2)]["latest_rating"] == 4
+    assert by_key[("Rated", d2)]["resurfaced"] == 1
+    assert by_key[("Picked", d1)]["latest_rating"] is None
+    assert by_key[("Picked", d1)]["picked"] == 1
+    assert by_key[("Picked", d1)]["read"] == 0
+    assert by_key[("Read", d2)]["read"] == 1
+    assert by_key[("Read", d2)]["picked"] == 0
+    assert by_key[("Rated", d1)]["id"] == rated
+    for name in ("published_at", "first_seen_at", "links_json"):
+        assert name in by_key[("Rated", d1)].keys()
+    store.close()
+
+
 def test_date_attempt_columns_migrate_onto_an_existing_db(tmp_path: Path):
     db = tmp_path / "pw.db"
     Store(db).close()

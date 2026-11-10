@@ -36,6 +36,14 @@ schedule:        # tick every few hours (sources poll ~daily); mail on these day
 #  groundtruth_path: groundtruth.csv
 #  exclude_read_weeks: 26    # papers read this recently stay out of digests
 
+#site:              # public site at `domain`, pushed after a send or refresh; omit to skip
+#  repo_path: ../paper-watch-site   # local checkout publish renders into
+#  remote: origin
+#  branch: main                     # branch GitHub Pages serves
+#  domain: papers.cupchinski.com    # written to the site's CNAME file
+#  committer_name: paper-watch
+#  committer_email: ""              # omit to use the checkout's own configured commit email
+
 authors: []      # arXiv author names (replaces Google Scholar alerts)
 feeds: []        # - {name: ML Safety, url: https://newsletter.mlsafety.org/feed}
 handles: []      # Twitter usernames (seeded via `paper-watch seed-handles`)
@@ -211,6 +219,66 @@ def alert(config_path: str, subject: str, skip: str) -> None:
     )
     for channel in alerts.CHANNELS:
         click.echo(f"{channel}: {outcome[channel] or 'ok'}")
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config.yaml", show_default=True)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report which managed files would change, without writing or pushing.",
+)
+def publish(config_path: str, dry_run: bool) -> None:
+    """Render the public site into its checkout, commit it, and push it.
+
+    The same work the tick does after a send or a feedback refresh. Failures
+    are reported here on the terminal; the manual command sends no operator
+    notice.
+    """
+    from datetime import datetime, timezone
+
+    from paper_watch import site
+    from paper_watch.config import Config
+    from paper_watch.store import Store
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+    cfg = Config.load(config_path)
+    if cfg.site is None:
+        raise click.ClickException(
+            "The `site` block is missing from the config, so there is no site "
+            "to publish."
+        )
+    store = Store(cfg.db_path)
+    try:
+        result = site.publish(
+            store,
+            cfg.site,
+            now=datetime.now(timezone.utc),
+            dry_run=dry_run,
+        )
+    except site.SitePublishError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        store.close()
+
+    if dry_run:
+        if result.changed:
+            click.echo(f"Dry run: {len(result.files)} file(s) would change.")
+            for name in result.files:
+                click.echo(f"  {name}")
+        else:
+            click.echo("Dry run: site unchanged.")
+    elif result.committed:
+        click.echo(f"Committed and pushed: {result.message}")
+    elif result.pushed:
+        click.echo("Pushed an earlier commit; no new changes to commit.")
+    else:
+        click.echo("site unchanged")
 
 
 @cli.command()

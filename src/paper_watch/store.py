@@ -784,6 +784,51 @@ class Store:
             (since,),
         ).fetchall()
 
+    def shown_history(self) -> list[sqlite3.Row]:
+        """Every `shown` row joined to its entry, newest digest first.
+
+        One row per appearance, so a paper shown in three digests comes back
+        three times. Each row carries the group's verdict on the paper as a
+        whole: `latest_rating` is the rating from the most recent week that has
+        one, and `picked` and `read` are 0 or 1. Week labels are ISO-week
+        strings such as `2026-W41`, so ordering by week is chronological.
+
+        The entry columns `id`, `published_at`, `first_seen_at` and `links_json`
+        are selected under those names because `runtime._pub_display` and
+        `runtime._display_links` read them from the row. This is the query the
+        public site is built from. `abstract` and `why` are selected only so
+        that the site can decide whether the stored title and tldr are safe to
+        publish; the site never publishes either column.
+        """
+        return self.conn.execute(
+            """
+            SELECT
+                s.digest_at                AS digest_at,
+                s.rank                     AS rank,
+                s.resurfaced               AS resurfaced,
+                e.id                       AS id,
+                e.title                    AS title,
+                e.authors_json             AS authors_json,
+                e.arxiv_id                 AS arxiv_id,
+                e.tags_json                AS tags_json,
+                e.tldr                     AS tldr,
+                e.abstract                 AS abstract,
+                e.why                      AS why,
+                e.links_json               AS links_json,
+                e.published_at             AS published_at,
+                e.first_seen_at            AS first_seen_at,
+                (SELECT f.group_rating FROM feedback f
+                  WHERE f.entry_id = e.id AND f.group_rating IS NOT NULL
+                  ORDER BY f.week DESC LIMIT 1) AS latest_rating,
+                EXISTS(SELECT 1 FROM feedback f
+                        WHERE f.entry_id = e.id AND f.picked = 1) AS picked,
+                EXISTS(SELECT 1 FROM readings r
+                        WHERE r.entry_id = e.id) AS read
+            FROM shown s JOIN entries e ON e.id = s.entry_id
+            ORDER BY s.digest_at DESC, s.rank IS NULL, s.rank, s.id
+            """
+        ).fetchall()
+
     # -- feedback ----------------------------------------------------------
     def record_feedback(
         self,
