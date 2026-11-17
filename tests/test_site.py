@@ -1048,7 +1048,17 @@ def test_git_env_with_key_adds_identity():
     assert (
         env["GIT_SSH_COMMAND"]
         == "ssh -o BatchMode=yes -o ConnectTimeout=30 -i '/k/my key' -o IdentitiesOnly=yes"
+        " -o IdentityAgent=none -o AddKeysToAgent=no"
     )
+
+
+def test_git_env_with_key_ignores_ambient_agent():
+    # An agent that holds a copy of the deploy key signs in place of the key
+    # file, and gpg-agent's copy needs a passphrase prompt that an unattended
+    # run cannot answer.
+    env = _git_env({"SITE_DEPLOY_KEY": "/k/key", "SSH_AUTH_SOCK": "/run/agent.sock"})
+    assert "-o IdentityAgent=none" in env["GIT_SSH_COMMAND"]
+    assert "-o AddKeysToAgent=no" in env["GIT_SSH_COMMAND"]
 
 
 def test_git_env_expands_home_in_key(monkeypatch, tmp_path):
@@ -1057,7 +1067,7 @@ def test_git_env_expands_home_in_key(monkeypatch, tmp_path):
     assert (
         env["GIT_SSH_COMMAND"]
         == f"ssh -o BatchMode=yes -o ConnectTimeout=30 -i {tmp_path}/.ssh/site_key"
-        " -o IdentitiesOnly=yes"
+        " -o IdentitiesOnly=yes -o IdentityAgent=none -o AddKeysToAgent=no"
     )
 
 

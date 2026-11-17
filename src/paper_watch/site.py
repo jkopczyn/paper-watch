@@ -678,15 +678,22 @@ def _git_env(environ: Mapping[str, str]) -> dict[str, str]:
     `BatchMode=yes` and `GIT_TERMINAL_PROMPT=0` mean a missing or unusable
     credential fails rather than waiting for a keyring or a password, which
     matters because publish normally runs from the systemd timer. When
-    `SITE_DEPLOY_KEY` names a key, only that key is offered; when it is unset
-    or empty, the ambient agent and default keys are still used, but without
-    prompting.
+    `SITE_DEPLOY_KEY` names a key, only that key is offered, and it is read
+    from the file with no agent involved; when it is unset or empty, the
+    ambient agent and default keys are still used, but without prompting.
+
+    The agent is excluded because ssh asks an agent that holds a copy of the
+    key to sign, and does not retry with the file when the agent refuses.
+    gpg-agent keeps every key added to it under a passphrase of its own, so
+    an `AddKeysToAgent` in the user's ssh config made the first publish store
+    a copy that later unattended runs could not unlock.
     """
     env = dict(environ)
     key = _deploy_key(env)
     if key:
         env["GIT_SSH_COMMAND"] = (
             f"{_SSH_BASE} -i {shlex.quote(key)} -o IdentitiesOnly=yes"
+            " -o IdentityAgent=none -o AddKeysToAgent=no"
         )
     else:
         env["GIT_SSH_COMMAND"] = _SSH_BASE
